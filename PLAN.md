@@ -24,7 +24,7 @@ tamagotchi needs, and later gains an AI brain, screen vision and voice.
 
 | Phase | Scope | Status |
 |-------|-------|--------|
-| 1 | Desktop MVP: sprite character with 21 states, transparent no-focus window, drag, multi-monitor/DPI, bubbles with portraits, tray + context menu, state machine, autonomous wandering/sitting/sleeping, tamagotchi needs, SQLite, opt-in activity monitor (games, IDEs, browsers, idle/return), offline Ukrainian reactions with budget/cooldowns/quiet mode, settings/status/chat/first-run UI, tests, CI on Windows | **in progress** |
+| 1 | Desktop MVP: sprite character with 21 states, transparent no-focus window, drag, multi-monitor/DPI, bubbles with portraits, tray + context menu, state machine, autonomous wandering/sitting/sleeping, tamagotchi needs, SQLite, opt-in activity monitor (games, IDEs, browsers, idle/return), offline Ukrainian reactions with budget/cooldowns/quiet mode, settings/status/chat/first-run UI, tests, CI on Windows | **done** (needs a manual check on real Windows) |
 | 2 | AI brain: `TextProvider` for OpenAI / Anthropic / Ollama (timeouts, retries, cost & context limits, streaming, caching), keys in Windows Credential Manager, personality prompt from sliders, Emotion Engine (adds curiosity, excitement, trust), short/long-term memory with viewer/editor, AI phrasing of reaction triggers, Autonomous Decision Engine scoring | planned |
 | 3 | Screen vision: Windows Graphics Capture adapter, per-app allow-list, capture indicator + instant stop, privacy check before capture, frame dedup (perceptual hash), rate & budget limits, `VisionProvider` (local first, cloud only with separate consent), validated observations (multi-frame confirmation), Gaming Companion mode | planned |
 | 4 | Voice: local Ukrainian STT (faster-whisper), push-to-talk, optional wake phrase, TTS with Ukrainian female voice, interruption, talking animation sync, voice comments in games | planned |
@@ -34,11 +34,24 @@ tamagotchi needs, and later gains an AI brain, screen vision and voice.
 
 - [x] Sprite pack built from the owner's sheets (`tools/build_sprites.py`)
 - [x] Core: events, bus, clock, settings, SQLite + migrations, permissions
-- [ ] Character logic: animation player, state machine, movement, behavior
-- [ ] Desktop: window, renderers (sprite + vector fallback), overlays, bubble, tray, controller
-- [ ] Activity monitor (Windows backend), classifier, games DB, privacy filter
-- [ ] Tamagotchi needs + offline catch-up (never punishes absence)
-- [ ] Ukrainian phrase bank, reaction engine, offline chat
-- [ ] Settings / status / chat / first-run windows
-- [ ] App integration, tests green, headless smoke test
-- [ ] Verified on real Windows (CI covers Win32 API calls; UI behaviour needs a manual check)
+- [x] Character logic: animation player, state machine, movement, behavior
+- [x] Desktop: window, renderers (sprite + vector fallback), overlays, bubble, tray, controller
+- [x] Activity monitor (Windows backend via ctypes), classifier, games DB (85 games), privacy filter
+- [x] Tamagotchi needs + offline catch-up (never punishes absence)
+- [x] Ukrainian phrase bank (626 lines / 94 situations), reaction engine, offline chat
+- [x] Settings / status / chat / first-run windows
+- [x] App integration, ~1800 tests green, headless end-to-end smoke test, CPU measured
+- [x] Six-lens adversarial review: 42 confirmed findings fixed, regression-checked
+- [x] CI on windows-latest: full suite + native-window tests pass against the real Win32 API
+- [ ] Manual check on a real Windows desktop: transparency/click-through, no focus stealing,
+      fullscreen/borderless hiding, tray, multi-monitor with mixed DPI, real CPU usage
+
+## Known gaps carried into Phase 2+
+
+* While a fullscreen game runs she hides and stays quiet; game-start lines only
+  show for windowed games (voice in Phase 4 fixes this).
+* Sprite frames are separate AI-generated poses, not in-betweens: motion is
+  pose-to-pose with crossfades.  Smooth animation needs proper sheets or Live2D.
+* Perching on other windows' edges is not implemented yet.
+* A game session flushed by revoke/shutdown right after the PC slept with the
+  game open still counts the sleep time (statistics only).
