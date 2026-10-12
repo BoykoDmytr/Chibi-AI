@@ -249,6 +249,7 @@ class ActivityMonitor:
     def start(self) -> None; def stop(self, timeout: float = 2.0) -> None
     def is_running(self) -> bool
     def poll_once(self) -> None          # one synchronous cycle (tests)
+    def reconfigure(self, classifier, privacy) -> None   # thread-safe swap after settings change
 
 # gaming/sessions.py
 class GameSessionTracker:          # main thread; persists finished sessions
@@ -273,7 +274,9 @@ class TamagotchiService:
     needs: Needs; sleeping: bool
     def load(self) -> None; def save(self) -> None; def tick(self) -> None
     def set_sleeping(self, sleeping: bool) -> None
-    # subscribes to CharacterInteraction -> publishes InteractionOutcome (+ NeedsChanged)
+    def interact(self, kind: InteractionKind, *, announce: bool = True) -> str   # returns outcome
+    # subscribes to CharacterInteraction -> interact(kind) -> publishes InteractionOutcome (+ NeedsChanged).
+    # announce=False is for the chat, which composes its own reply (avoids saying two lines).
 ```
 
 ### personality
@@ -289,7 +292,8 @@ class PhraseBank:
 class PhraseSelector:
     def __init__(self, bank, history: PhraseHistoryRepository, settings: Callable[[], Settings],
                  clock: Clock, rng: random.Random)
-    def say(self, *keys: str, **variables) -> SpeechRequested | None   # first key with phrases wins
+    def say(self, *keys: str, solicited: bool = False, **variables) -> SpeechRequested | None
+        # first key with an eligible phrase wins; records usage for anti-repeat
 
 # personality/reactions.py
 class ReactionEngine:
@@ -301,7 +305,9 @@ class ReactionEngine:
 
 # personality/chat_offline.py
 class OfflineChatResponder:
-    def __init__(self, selector, reactions: ReactionEngine, settings: Callable[[], Settings], clock)
+    def __init__(self, selector, reactions: ReactionEngine, settings: Callable[[], Settings], clock,
+                 perform: Callable[[str], str] | None = None,        # "feed"|"pet"|"rest" -> outcome
+                 needs: Callable[[], Mapping[str, float]] | None = None)
     def respond(self, text: str) -> ChatReply
 ```
 
