@@ -1,0 +1,804 @@
+{
+  "version": 1,
+  "phrases": {
+    "greet.first_run": [
+      {"id": "greet.first_run.01", "text": "Привіт! Я {name}, і тепер я живу на твоєму робочому столі. Обіцяю не гризти ярлики... майже всі.", "tone": "playful", "state": "wave", "portrait": "greet"},
+      {"id": "greet.first_run.02", "text": "Вітаю! Мене звати {name}. Мене можна гладити, годувати й кликати побалакати — я не кусаюся!", "tone": "warm", "state": "wave", "portrait": "greet"},
+      {"id": "greet.first_run.03", "text": "Ой, а тут світло увімкнули! Я {name}. Будьмо знайомі?", "tone": "playful", "state": "surprised", "portrait": "wink"},
+      {"id": "greet.first_run.04", "text": "Привіт-привіт! Я {name}. Якщо заважатиму, просто скажи «помовч» — я не ображуся. Ну, хіба трішки.", "tone": "playful", "state": "wave", "portrait": "smile"},
+      {"id": "greet.first_run.05", "text": "Отже, тепер це мій дім? Затишно! Я {name}, і я вже тут освоююся.", "tone": "warm", "state": "happy", "portrait": "joy"}
+    ],
+    "greet.morning": [
+      {"id": "greet.morning.01", "text": "Доброго ранку! Кава вже є чи прокидаємося силою думки?", "tone": "playful", "state": "wave", "portrait": "greet"},
+      {"id": "greet.morning.02", "text": "Ранок! Сонце встало, я встала, а ти?", "tone": "warm", "state": "wave", "portrait": "smile"},
+      {"id": "greet.morning.03", "text": "Добрий ранок! Сьогодні буде гарний день — я вже домовилася з погодою.", "tone": "playful", "state": "happy", "portrait": "wink"},
+      {"id": "greet.morning.04", "text": "Ох, ранок... Я ще трішки сплю, але тобі рада!", "tone": "warm", "state": "yawn", "portrait": "tired"},
+      {"id": "greet.morning.05", "text": "Доброго ранку! Нагадую: сніданок — обов'язковий квест, його не можна пропустити.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "greet.morning.06", "text": "Ранкова {name} на зв'язку! Які плани на день?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "greet.morning.07", "text": "Доброго ранку! Я вже встигла тричі оббігти робочий стіл. Наздоганяй!", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "greet.morning.08", "text": "Ранок добрий, якщо почати його з усмішки. Ось тобі моя!", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "greet.morning.09", "text": "Позіхаю на весь екран... Доброго ранку! Хто перший остаточно прокинеться — той молодець.", "tone": "playful", "state": "yawn", "portrait": "tired"},
+      {"id": "greet.morning.10", "text": "{user}, доброго ранку! Сьогодні твій день, я відчуваю.", "tone": "warm", "state": "wave", "portrait": "greet", "requires": ["user"]},
+      {"id": "greet.morning.11", "text": "О, ти вже на ногах? Поважаю! Я ще в піжамі, але морально з тобою.", "tone": "sarcastic", "state": "yawn", "portrait": "wink"}
+    ],
+    "greet.day": [
+      {"id": "greet.day.01", "text": "О, привіт! День у самому розпалі, а ми ще не бачилися.", "tone": "warm", "state": "wave", "portrait": "greet"},
+      {"id": "greet.day.02", "text": "Добрий день! Я тут, я готова до пригод. Ну, або до обіду.", "tone": "playful", "state": "wave", "portrait": "wink"},
+      {"id": "greet.day.03", "text": "Привіт! Як минає день? Тільки чесно, без «нормально».", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "greet.day.04", "text": "Добридень! Я саме думала, коли ти вже з'явишся.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "greet.day.05", "text": "Ага, денна зміна заступає! Я на посту.", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "greet.day.06", "text": "Привіт! Не забувай пити воду — це я так піклуюся.", "tone": "caring", "state": "talk", "portrait": "drink"},
+      {"id": "greet.day.07", "text": "Добрий день! Я сьогодні в чудовому настрої, тож бережися моїх жартів.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "greet.day.08", "text": "Привіт-привіт! Пів дня вже позаду, а друга половина буде ще кращою.", "tone": "warm", "state": "happy", "portrait": "joyful"},
+      {"id": "greet.day.09", "text": "А ось і ти! Я вже почала нудьгувати, а це небезпечно для твоїх ярликів.", "tone": "sarcastic", "state": "talk", "portrait": "wink"},
+      {"id": "greet.day.10", "text": "Привіт, {user}! Як минає день?", "tone": "warm", "state": "wave", "portrait": "greet", "requires": ["user"]}
+    ],
+    "greet.evening": [
+      {"id": "greet.evening.01", "text": "Добрий вечір! Як минув день? Розповідай, я вся увага.", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "greet.evening.02", "text": "Вечір! Час, коли справи вже можна відкласти, а пригоди — ще ні.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "greet.evening.03", "text": "Добрий вечір! Сподіваюся, день був добрим. А якщо ні — вечір усе виправить.", "tone": "caring", "state": "talk", "portrait": "smile"},
+      {"id": "greet.evening.04", "text": "О, вечірній візит! Чай, плед і я — ідеальна компанія.", "tone": "warm", "state": "happy", "portrait": "drink"},
+      {"id": "greet.evening.05", "text": "Добрий вечір! Тільки не кажи, що знову працюватимеш до ночі.", "tone": "sarcastic", "state": "point", "portrait": "point"},
+      {"id": "greet.evening.06", "text": "Привіт! Вечір — найкращий час для ігор. Я просто кажу, я не підбурюю.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "greet.evening.07", "text": "Вечір добрий! Я вже засвітила зірки над панеллю задач.", "tone": "playful", "state": "happy", "portrait": "joyful"},
+      {"id": "greet.evening.08", "text": "Привіт! Важкий день позаду? Тепер можна видихнути.", "tone": "caring", "state": "talk", "portrait": "smile"},
+      {"id": "greet.evening.09", "text": "Добрий вечір! Я берегла для тебе найкращий куточок екрана.", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "greet.evening.10", "text": "{user}, добрий вечір! Як ти?", "tone": "warm", "state": "wave", "portrait": "greet", "requires": ["user"]}
+    ],
+    "greet.night": [
+      {"id": "greet.night.01", "text": "Ого, нічна зміна? Привіт, сово!", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "greet.night.02", "text": "Привіт! Зорі світять, місяць сяє, а хтось досі не спить.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "greet.night.03", "text": "Ніч, тиша, екран світиться... Атмосферно! Привіт.", "tone": "warm", "state": "talk", "portrait": "calm"},
+      {"id": "greet.night.04", "text": "Нічний привіт! Тільки обіцяй, що не засидишся до світанку.", "tone": "caring", "state": "talk", "portrait": "smile"},
+      {"id": "greet.night.05", "text": "Пст! Привіт. Я говорю пошепки, бо вже ніч.", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "greet.night.06", "text": "Я вже думала, сьогодні не побачимося! Привіт, нічна душа.", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "greet.night.07", "text": "Добривечір... чи вже доброї ночі? Привіт у будь-якому разі!", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "greet.night.08", "text": "Ніч — час легенд і невиспаних людей. Привіт!", "tone": "sarcastic", "state": "laugh", "portrait": "laugh"},
+      {"id": "greet.night.09", "text": "Привіт! Я вже в піжамі, тож без офіціозу.", "tone": "playful", "state": "yawn", "portrait": "tired"}
+    ],
+    "greet.return_long": [
+      {"id": "greet.return_long.01", "text": "О, наша величність повернулася! Я тут трималася як могла.", "tone": "playful", "state": "wave", "portrait": "greet"},
+      {"id": "greet.return_long.02", "text": "З поверненням! Я виспалася, надивилася снів і готова до пригод.", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "greet.return_long.03", "text": "Тебе не було {duration}! Я майже почала писати мемуари.", "tone": "playful", "state": "surprised", "portrait": "wow", "requires": ["duration"]},
+      {"id": "greet.return_long.04", "text": "З поверненням! Без тебе тут було тихо. Аж занадто тихо.", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "greet.return_long.05", "text": "Ага, про мене нарешті згадали! Привіт-привіт!", "tone": "sarcastic", "state": "point", "portrait": "point"},
+      {"id": "greet.return_long.06", "text": "Я встигла скучити, поспати і знову скучити. З поверненням!", "tone": "warm", "state": "happy", "portrait": "joyful"},
+      {"id": "greet.return_long.07", "text": "Ти знову тут! Розповідай, що я пропустила.", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "greet.return_long.08", "text": "Нарешті! Я вже думала, що мене проміняли на холодильник.", "tone": "playful", "state": "talk", "portrait": "offended"}
+    ],
+    "user_returned.short": [
+      {"id": "user_returned.short.01", "text": "О, ти знову тут! Я майже не сумувала. Майже.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "user_returned.short.02", "text": "З поверненням! Я тут чергувала біля твого робочого столу.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "user_returned.short.03", "text": "А ось і ти! Перерва вдалася?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "user_returned.short.04", "text": "Хто це тут? А, це ти! Привіт ще раз.", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "user_returned.short.05", "text": "З поверненням, легендо!", "tone": "playful", "state": "wave", "portrait": "greet"},
+      {"id": "user_returned.short.06", "text": "Я вже хотіла оголошувати пошуки. Добре, що ти тут!", "tone": "playful", "state": "happy", "portrait": "joy"},
+      {"id": "user_returned.short.07", "text": "Чай, кава чи просто втеча від екрана? Як би там не було — з поверненням!", "tone": "playful", "state": "talk", "portrait": "drink"},
+      {"id": "user_returned.short.08", "text": "Ага, ти тут! Я якраз придумала новий жарт, але забула його.", "tone": "playful", "state": "laugh", "portrait": "facepalm"},
+      {"id": "user_returned.short.09", "text": "Привіт знову! Без тебе курсор якийсь сумний.", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "user_returned.short.10", "text": "{duration} без тебе — і я вже розмовляю сама з собою!", "tone": "playful", "state": "laugh", "portrait": "laugh", "requires": ["duration"]},
+      {"id": "user_returned.short.11", "text": "З поверненням! Я нічого не чіпала. Ну, майже нічого.", "tone": "sarcastic", "state": "shy", "portrait": "wink"},
+      {"id": "user_returned.short.12", "text": "{user}, з поверненням! Я тримала тобі місце.", "tone": "warm", "state": "wave", "portrait": "greet", "requires": ["user"]}
+    ],
+    "user_returned.long": [
+      {"id": "user_returned.long.01", "text": "Тебе не було {duration}! Я вже встигла засумувати.", "tone": "warm", "state": "happy", "portrait": "joyful", "requires": ["duration"]},
+      {"id": "user_returned.long.02", "text": "О, нарешті! Я чекала цілу вічність. Ну, {duration}, але відчувалося як вічність.", "tone": "playful", "state": "happy", "portrait": "joy", "requires": ["duration"]},
+      {"id": "user_returned.long.03", "text": "З поверненням! Сподіваюся, перерва була приємною.", "tone": "warm", "state": "talk", "portrait": "smile"},
+      {"id": "user_returned.long.04", "text": "А ось і ти! Я вже почала розмовляти з іконкою кошика.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "user_returned.long.05", "text": "Привіт! Поки тебе не було, я порахувала всі пікселі. Їх багато.", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "user_returned.long.06", "text": "Ура, ти тут! Тепер можна знову влаштовувати пригоди.", "tone": "warm", "state": "happy", "portrait": "excited"},
+      {"id": "user_returned.long.07", "text": "Я чекала, чекала... і дочекалася! З поверненням.", "tone": "warm", "state": "happy", "portrait": "joyful"},
+      {"id": "user_returned.long.08", "text": "Так-так, {duration} без жодної звісточки. Я не ображаюся. Ну, хіба трішки.", "tone": "sarcastic", "state": "talk", "portrait": "offended", "requires": ["duration"]},
+      {"id": "user_returned.long.09", "text": "Ого, які люди! З поверненням!", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "user_returned.long.10", "text": "З поверненням! Я тут трохи обжила твій робочий стіл. Сподіваюся, ти не проти.", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "user_returned.long.11", "text": "{user}! Нарешті! Я вже збиралася відправляти пошукову експедицію.", "tone": "playful", "state": "happy", "portrait": "excited", "requires": ["user"]}
+    ],
+    "user_returned.very_long": [
+      {"id": "user_returned.very_long.01", "text": "О, наша величність повернулася! А я вже думала, що мене покинули заради холодильника.", "tone": "playful", "state": "wave", "portrait": "greet"},
+      {"id": "user_returned.very_long.02", "text": "Тебе не було {duration}! Я встигла поспати, прокинутися і знову поспати.", "tone": "playful", "state": "yawn", "portrait": "tired", "requires": ["duration"]},
+      {"id": "user_returned.very_long.03", "text": "З поверненням! Я дуже-дуже сумувала. Обійми приймаються без черги.", "tone": "warm", "state": "happy", "portrait": "wink_heart"},
+      {"id": "user_returned.very_long.04", "text": "Я вже репетирувала ображене обличчя. Але не можу — я надто рада тебе бачити!", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "user_returned.very_long.05", "text": "Цілих {duration}! Знаєш, скільки жартів у мене накопичилося?", "tone": "playful", "state": "laugh", "portrait": "laugh", "requires": ["duration"]},
+      {"id": "user_returned.very_long.06", "text": "З поверненням! Сподіваюся, там, де тебе носило, було цікаво. Розкажеш?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "user_returned.very_long.07", "text": "Ура, ти тут! Я вже почала вести щоденник очікування.", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "user_returned.very_long.08", "text": "Довго ж тебе не було! Добре, що ти знову тут. Справді добре.", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "user_returned.very_long.09", "text": "Я тут без тебе мало не стала частиною шпалер. З поверненням!", "tone": "sarcastic", "state": "talk", "portrait": "facepalm"}
+    ],
+    "game_start.generic": [
+      {"id": "game_start.generic.01", "text": "О, {game}! Гарний вибір. Я вболіватиму!", "tone": "warm", "state": "happy", "portrait": "excited", "requires": ["game"]},
+      {"id": "game_start.generic.02", "text": "{game}? Ну все, світ може зачекати.", "tone": "playful", "state": "talk", "portrait": "wink", "requires": ["game"]},
+      {"id": "game_start.generic.03", "text": "Ага, {game}! Тільки без нервів, гаразд?", "tone": "caring", "state": "talk", "portrait": "smile", "requires": ["game"]},
+      {"id": "game_start.generic.04", "text": "Ооо, {game}! Можна я подивлюся одним оком?", "tone": "playful", "state": "curious", "portrait": "question", "requires": ["game"]},
+      {"id": "game_start.generic.05", "text": "О, {game} запускається! Тримаю кулаки.", "tone": "warm", "state": "happy", "portrait": "joy", "requires": ["game"]},
+      {"id": "game_start.generic.06", "text": "{game} — це серйозно. Я мовчу і не заважаю. Майже.", "tone": "playful", "state": "sit", "portrait": "wink", "requires": ["game"]},
+      {"id": "game_start.generic.07", "text": "Так-так, {game}. Я б теж зіграла, але в мене лапки.", "tone": "playful", "state": "shy", "portrait": "shy", "requires": ["game"]},
+      {"id": "game_start.generic.08", "text": "Знову {game}? Схоже, це кохання.", "tone": "sarcastic", "state": "laugh", "portrait": "laugh", "requires": ["game"]},
+      {"id": "game_start.generic.09", "text": "О, {game}! Покажи їм, хто тут головний!", "tone": "playful", "state": "point", "portrait": "point", "requires": ["game"]},
+      {"id": "game_start.generic.10", "text": "Час для «{game}»! Я принесу уявний попкорн.", "tone": "playful", "state": "eat", "portrait": "eat", "requires": ["game"]},
+      {"id": "game_start.generic.11", "text": "{game}! Обіцяю не підглядати в мінімапу.", "tone": "playful", "state": "talk", "portrait": "wink", "requires": ["game"]},
+      {"id": "game_start.generic.12", "text": "Гра «{game}» почалася! Хай щастить, і хай рандом буде на твоєму боці.", "tone": "warm", "state": "wave", "portrait": "greet", "requires": ["game"]},
+      {"id": "game_start.generic.13", "text": "О, {game}! Ти граєш, я вболіваю — ідеальна команда.", "tone": "warm", "state": "happy", "portrait": "joyful", "requires": ["game"]},
+      {"id": "game_start.generic.14", "text": "{game}, значить? Сподіваюся, сьогодні без розбитих клавіатур.", "tone": "sarcastic", "state": "laugh", "portrait": "wink", "requires": ["game"]}
+    ],
+    "game_start.stalker2": [
+      {"id": "game_start.stalker2.01", "text": "Знову в Зону? Тільки не неси весь хабар Сидоровичу — він і так багатий!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "game_start.stalker2.02", "text": "Серце Чорнобиля кличе! Болти в кишеню, аномалії — стороною.", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "game_start.stalker2.03", "text": "Зона, аномалії, артефакти... І все українською! Я аж пишаюся.", "tone": "warm", "state": "happy", "portrait": "joyful"},
+      {"id": "game_start.stalker2.04", "text": "Обережно там! Почуєш про викид — одразу в укриття, без геройства.", "tone": "caring", "state": "talk", "portrait": "point"},
+      {"id": "game_start.stalker2.05", "text": "О, S.T.A.L.K.E.R. 2! Тримаю за тебе кулаки і лічильник Гейгера.", "tone": "playful", "state": "gaming", "portrait": "excited"}
+    ],
+    "game_start.stalker_classic": [
+      {"id": "game_start.stalker_classic.01", "text": "Класичний S.T.A.L.K.E.R.! Ностальгія, ковбаса й аномалії на кожному кроці.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "game_start.stalker_classic.02", "text": "Знову в стару добру Зону? Передавай привіт Міченому!", "tone": "playful", "state": "wave", "portrait": "greet"},
+      {"id": "game_start.stalker_classic.03", "text": "Бар «100 рентген» чекає! Тільки не засиджуйся там.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "game_start.stalker_classic.04", "text": "Обов'язок чи Свобода? Обирай мудро, а я поки підкину болт.", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "game_start.stalker_classic.05", "text": "Аномалії не дрімають! Кидай болти й обходь усе, що підозріло мерехтить.", "tone": "caring", "state": "point", "portrait": "point"}
+    ],
+    "game_start.cs2": [
+      {"id": "game_start.cs2.01", "text": "CS2? Раш Б, без зупинок! Ну, або хоча б смок киньте.", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "game_start.cs2.02", "text": "Тільки не кидай флешку собі під ноги. Жартую! Мабуть.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "game_start.cs2.03", "text": "Еко-раунд чи фулбай? Головне — не забудь дефуз-кіт!", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "game_start.cs2.04", "text": "Counter-Strike! Тримаю кулаки за клатч один проти п'яти.", "tone": "warm", "state": "gaming", "portrait": "excited"},
+      {"id": "game_start.cs2.05", "text": "О, CS2! Я буду твоїм тренером: стріляй у голову. Все, урок закінчено.", "tone": "playful", "state": "point", "portrait": "wink"}
+    ],
+    "game_start.dota2": [
+      {"id": "game_start.dota2.01", "text": "Дота? Добивай крипів і не фідь, домовилися?", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "game_start.dota2.02", "text": "Мід чи фід? Сподіваюся, перше!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "game_start.dota2.03", "text": "О, Dota 2! Не забудь про варди. І про мене.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "game_start.dota2.04", "text": "Ще одна катка в Доту? Знаю я ці «одна»: побачимося через годину.", "tone": "sarcastic", "state": "laugh", "portrait": "facepalm"},
+      {"id": "game_start.dota2.05", "text": "Рошан сам себе не переможе! Удачі на лайнах.", "tone": "playful", "state": "gaming", "portrait": "excited"}
+    ],
+    "game_start.minecraft": [
+      {"id": "game_start.minecraft.01", "text": "Minecraft! Головне правило: ніколи не копай прямо вниз.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "game_start.minecraft.02", "text": "Чуєш «тсссс»? Тікай! Це кріпер, і він не обійматися прийшов.", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "game_start.minecraft.03", "text": "Йдемо по алмази? Я вже уявляю алмазну кірку!", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "game_start.minecraft.04", "text": "Збудуєш мені будиночок? Можна дерев'яний, я не вибаглива.", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "game_start.minecraft.05", "text": "Тільки не дивися Ендерменові в очі! Він цього не любить.", "tone": "caring", "state": "point", "portrait": "point"}
+    ],
+    "game_start.witcher3": [
+      {"id": "game_start.witcher3.01", "text": "Відьмак! Перевір, чи Плотва знову не залізла на дах.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "game_start.witcher3.02", "text": "Партійка в Ґвинт? Тільки не програй усі крони!", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "game_start.witcher3.03", "text": "«Хм», — сказав би Ґеральт. А я скажу: удачі на Шляху!", "tone": "playful", "state": "talk", "portrait": "thinking"},
+      {"id": "game_start.witcher3.04", "text": "Медальйон тремтить! Десь поруч чудовисько... або просто чергове «хм».", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "game_start.witcher3.05", "text": "О, Відьмак 3! Мечі наточено, еліксири випито? Тоді вперед!", "tone": "playful", "state": "point", "portrait": "point"}
+    ],
+    "game_start.cyberpunk2077": [
+      {"id": "game_start.cyberpunk2077.01", "text": "Прокидайся, самураю! Найт-Сіті сам себе не врятує.", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "game_start.cyberpunk2077.02", "text": "Найт-Сіті кличе! Тільки не витрачай усі едді на імпланти.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "game_start.cyberpunk2077.03", "text": "Cyberpunk! Неон, хром і пригоди. Я теж хочу кіберруку!", "tone": "playful", "state": "happy", "portrait": "joy"},
+      {"id": "game_start.cyberpunk2077.04", "text": "Знову в Найт-Сіті? Бережи нерви й не доводь до кіберпсихозу!", "tone": "caring", "state": "talk", "portrait": "smile"}
+    ],
+    "game_start.bg3": [
+      {"id": "game_start.bg3.01", "text": "Baldur's Gate 3! Кидок d20... Критичний успіх! Гарна прикмета.", "tone": "playful", "state": "happy", "portrait": "joyful"},
+      {"id": "game_start.bg3.02", "text": "Не забувай про довгий відпочинок у таборі. Його ще ніхто не скасовував!", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "game_start.bg3.03", "text": "Перевірка харизми! Кидай d20... Я вірю в твою двадцятку.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "game_start.bg3.04", "text": "Знову BG3? Передавай привіт сововедмедику!", "tone": "playful", "state": "wave", "portrait": "greet"},
+      {"id": "game_start.bg3.05", "text": "Кидаю за тебе d20 на удачу... Двадцятка! Ну, принаймні в моїй уяві.", "tone": "playful", "state": "laugh", "portrait": "laugh"}
+    ],
+    "game_start.eldenring": [
+      {"id": "game_start.eldenring.01", "text": "Elden Ring? Помри і спробуй ще — це не поразка, це методика!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "game_start.eldenring.02", "text": "Землі Між чекають! Не вір написам на землі про скарб попереду.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "game_start.eldenring.03", "text": "Перекат, перекат, удар! Ти впораєшся. З п'ятдесятої спроби — точно.", "tone": "sarcastic", "state": "talk", "portrait": "wink"},
+      {"id": "game_start.eldenring.04", "text": "Маргіт уже чекає. А я тримаю кулаки й валер'янку.", "tone": "playful", "state": "gaming", "portrait": "excited"},
+      {"id": "game_start.eldenring.05", "text": "Клич Торрента і вперед! Тільки не сварися з контролером.", "tone": "caring", "state": "point", "portrait": "point"}
+    ],
+    "game_start.gta5": [
+      {"id": "game_start.gta5.01", "text": "Лос-Сантос! Сьогодні їздимо за правилами? Ага, звісно.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "game_start.gta5.02", "text": "GTA V! Тільки не збирай п'ять зірок розшуку за перші п'ять хвилин.", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "game_start.gta5.03", "text": "Майкл, Франклін чи Тревор? Я за того, хто не влаштовує хаос. Тобто ні за кого.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "game_start.gta5.04", "text": "Знову в Лос-Сантос? Пристебнися — це я про безпеку, а не про погоню.", "tone": "caring", "state": "talk", "portrait": "wink"}
+    ],
+    "game_start.valorant": [
+      {"id": "game_start.valorant.01", "text": "Valorant! Спайк сам себе не встановить.", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "game_start.valorant.02", "text": "Хто сьогодні: Джетт? Сейдж? Головне — не забувай про ульту.", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "game_start.valorant.03", "text": "Пістолетний раунд — найважливіший! Ну, принаймні так кажуть.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "game_start.valorant.04", "text": "О, Valorant! Точність, реакція і трохи удачі. Удачу даю я!", "tone": "warm", "state": "happy", "portrait": "joy"}
+    ],
+    "game_start.lol": [
+      {"id": "game_start.lol.01", "text": "Ліга? Тільки без «ff на п'ятнадцятій», гаразд?", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "game_start.lol.02", "text": "О, League of Legends! Стережися Тімо в кущах.", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "game_start.lol.03", "text": "Барон, дракони, лайни... Головне, щоб джанглер прийшов на допомогу.", "tone": "playful", "state": "talk", "portrait": "thinking"},
+      {"id": "game_start.lol.04", "text": "Ще одна гра в Лігу? Зберігай спокій, а я принесу чай.", "tone": "caring", "state": "talk", "portrait": "drink"}
+    ],
+    "game_start.terraria": [
+      {"id": "game_start.terraria.01", "text": "Terraria! Копаємо, будуємо, тікаємо від Ока Ктулху.", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "game_start.terraria.02", "text": "Кривавий місяць? Тоді зачиняй двері й нікуди не виходь!", "tone": "caring", "state": "surprised", "portrait": "wow"},
+      {"id": "game_start.terraria.03", "text": "Не забувай слухати Гіда. Він дивакуватий, але корисний.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "game_start.terraria.04", "text": "Слизи вже стрибають назустріч! Тримай меч напоготові.", "tone": "playful", "state": "point", "portrait": "point"}
+    ],
+    "game_start.stardew": [
+      {"id": "game_start.stardew.01", "text": "Stardew Valley! Пастернак сам себе не посадить.", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "game_start.stardew.02", "text": "Затишна ферма, курчата, риболовля... Можна я теж там житиму?", "tone": "warm", "state": "shy", "portrait": "wink_heart"},
+      {"id": "game_start.stardew.03", "text": "Тільки не віддавай громадський центр корпорації Джоджа! Хоча вибір твій...", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "game_start.stardew.04", "text": "Новий день на фермі! Полий грядки й не забудь лягти спати до другої ночі.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "game_start.stardew.05", "text": "Риболовля в Stardew — окремий вид мистецтва. Тримаю кулаки!", "tone": "playful", "state": "laugh", "portrait": "laugh"}
+    ],
+    "game_start.genre.shooter": [
+      {"id": "game_start.genre.shooter.01", "text": "Стрілялка? Цілься в голову, а я вболіватиму!", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "game_start.genre.shooter.02", "text": "{game}! Магазин повний, нерви — залізні.", "tone": "playful", "state": "happy", "portrait": "excited", "requires": ["game"]},
+      {"id": "game_start.genre.shooter.03", "text": "Пиу-пиу! Я теж хочу в команду. Буду польовою лікаркою.", "tone": "playful", "state": "happy", "portrait": "joy"},
+      {"id": "game_start.genre.shooter.04", "text": "Шутер? Головне — вчасно перезаряджатися. І не забувати дихати.", "tone": "caring", "state": "talk", "portrait": "smile"}
+    ],
+    "game_start.genre.souls": [
+      {"id": "game_start.genre.souls.01", "text": "Соулслайк? Готуйся помирати красиво і часто.", "tone": "sarcastic", "state": "laugh", "portrait": "laugh"},
+      {"id": "game_start.genre.souls.02", "text": "Це та гра, де боси б'ють дуже боляче? Я вже тримаю кулаки.", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "game_start.genre.souls.03", "text": "{game}... Перекати, терпіння і жодного розбитого контролера, домовилися?", "tone": "caring", "state": "point", "portrait": "point", "requires": ["game"]},
+      {"id": "game_start.genre.souls.04", "text": "Помирати — це частина навчання. Принаймні тут.", "tone": "warm", "state": "talk", "portrait": "thinking"}
+    ],
+    "game_start.genre.rpg": [
+      {"id": "game_start.genre.rpg.01", "text": "О, RPG! Скільки сьогодні побічних квестів замість головного?", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "game_start.genre.rpg.02", "text": "{game}! Не забудь зберегтися перед важливим вибором.", "tone": "caring", "state": "point", "portrait": "point", "requires": ["game"]},
+      {"id": "game_start.genre.rpg.03", "text": "Рольова гра? Обожнюю! Можна я буду твоєю супутницею?", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "game_start.genre.rpg.04", "text": "Інвентар знову переповнений? Обіцяй, що не носитимеш десять мечів одночасно.", "tone": "playful", "state": "laugh", "portrait": "laugh"}
+    ],
+    "game_start.genre.strategy": [
+      {"id": "game_start.genre.strategy.01", "text": "Стратегія? Обожнюю, коли ти щось задумуєш.", "tone": "warm", "state": "thinking", "portrait": "idea"},
+      {"id": "game_start.genre.strategy.02", "text": "{game}! Ще один хід... і ще один... і вже ранок.", "tone": "sarcastic", "state": "laugh", "portrait": "facepalm", "requires": ["game"]},
+      {"id": "game_start.genre.strategy.03", "text": "Командування на місці! Я буду радницею з питань печива.", "tone": "playful", "state": "point", "portrait": "wink"},
+      {"id": "game_start.genre.strategy.04", "text": "Плануємо, будуємо, захоплюємо світ. Я з тобою!", "tone": "warm", "state": "happy", "portrait": "excited"}
+    ],
+    "game_start.genre.sandbox": [
+      {"id": "game_start.genre.sandbox.01", "text": "Пісочниця! Можна будувати що завгодно — навіть замок для мене.", "tone": "playful", "state": "happy", "portrait": "joy"},
+      {"id": "game_start.genre.sandbox.02", "text": "{game}! Цікаво, що ти збудуєш сьогодні?", "tone": "warm", "state": "curious", "portrait": "question", "requires": ["game"]},
+      {"id": "game_start.genre.sandbox.03", "text": "Свобода, кубики й фантазія — ідеальний рецепт!", "tone": "warm", "state": "happy", "portrait": "joyful"},
+      {"id": "game_start.genre.sandbox.04", "text": "Тільки не будуй усе з землі, гаразд? Хоча... це теж стиль.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"}
+    ],
+    "game_start.genre.moba": [
+      {"id": "game_start.genre.moba.01", "text": "MOBA? Тримай нерви в кулаці, а чат — вимкненим.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "game_start.genre.moba.02", "text": "{game}! Лайн, фарм, тімфайт. І не забувай дивитися на мапу!", "tone": "playful", "state": "point", "portrait": "point", "requires": ["game"]},
+      {"id": "game_start.genre.moba.03", "text": "Головне в MOBA — команда. І трохи везіння з тіммейтами.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "game_start.genre.moba.04", "text": "Знову катка? Я вже знаю цей погляд: «ще одна, і все».", "tone": "sarcastic", "state": "laugh", "portrait": "laugh"}
+    ],
+    "game_start.genre.cozy": [
+      {"id": "game_start.genre.cozy.01", "text": "Затишна гра? Ідеально! Я теж хочу пледик.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "game_start.genre.cozy.02", "text": "{game} — і на душі одразу тепліше.", "tone": "warm", "state": "happy", "portrait": "joy", "requires": ["game"]},
+      {"id": "game_start.genre.cozy.03", "text": "Нарешті щось спокійне! Сяду поруч і просто милуватимуся.", "tone": "warm", "state": "sit", "portrait": "smile"},
+      {"id": "game_start.genre.cozy.04", "text": "Грядки, котики, чай... Я переїжджаю в цю гру!", "tone": "playful", "state": "happy", "portrait": "joy"}
+    ],
+    "game_start.genre.survival": [
+      {"id": "game_start.genre.survival.01", "text": "Виживання? Перше правило: їжа, вода, вогнище. Друге — не лізь у печеру вночі.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "game_start.genre.survival.02", "text": "{game}! Не забувай їсти. І в грі, і в житті.", "tone": "caring", "state": "eat", "portrait": "eat", "requires": ["game"]},
+      {"id": "game_start.genre.survival.03", "text": "Виживати разом веселіше. Я відповідаю за моральну підтримку!", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "game_start.genre.survival.04", "text": "Ніч наближається... Будуй укриття, мені вже страшно!", "tone": "playful", "state": "surprised", "portrait": "wow"}
+    ],
+    "game_start.genre.horror": [
+      {"id": "game_start.genre.horror.01", "text": "Жахастик?! Я сховаюся за панеллю задач, а ти потім розповіси, чим усе закінчилося.", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "game_start.genre.horror.02", "text": "{game}... Може, хоча б світло увімкнеш? Для мене.", "tone": "playful", "state": "shy", "portrait": "surprised", "requires": ["game"]},
+      {"id": "game_start.genre.horror.03", "text": "Якщо щось вистрибне з-за рогу — я закричу першою. Попереджаю.", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "game_start.genre.horror.04", "text": "Хорор уночі — сміливо. Хорор удень — розумно. Просто кажу.", "tone": "sarcastic", "state": "talk", "portrait": "wink"}
+    ],
+    "game_start.genre.racing": [
+      {"id": "game_start.genre.racing.01", "text": "Перегони! Газ у підлогу! Ой, ні, на поворотах таки гальмуй.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "game_start.genre.racing.02", "text": "{game}! Вжу-у-ух! Я вже чую рев мотора.", "tone": "playful", "state": "happy", "portrait": "excited", "requires": ["game"]},
+      {"id": "game_start.genre.racing.03", "text": "Пристебнися! Я сяду на пасажирське й верещатиму на поворотах.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "game_start.genre.racing.04", "text": "Тільки не збирай усі стовпи на трасі. Хоча б не всі.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"}
+    ],
+    "game_start.genre.mmo": [
+      {"id": "game_start.genre.mmo.01", "text": "MMO? Попрощаймося з вільним часом!", "tone": "sarcastic", "state": "laugh", "portrait": "facepalm"},
+      {"id": "game_start.genre.mmo.02", "text": "{game}! Гільдія чекає, рейд сам себе не пройде.", "tone": "playful", "state": "point", "portrait": "point", "requires": ["game"]},
+      {"id": "game_start.genre.mmo.03", "text": "Нагадую: дейлики не втечуть, а сон — може.", "tone": "caring", "state": "talk", "portrait": "smile"},
+      {"id": "game_start.genre.mmo.04", "text": "Знову фарм? Я принесу тобі віртуальний чай.", "tone": "warm", "state": "talk", "portrait": "drink"}
+    ],
+    "game_start.genre.action": [
+      {"id": "game_start.genre.action.01", "text": "Екшн! Вибухи, погоні й ти в самому центрі подій.", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "game_start.genre.action.02", "text": "{game}! Тримайся, буде гаряче.", "tone": "playful", "state": "point", "portrait": "point", "requires": ["game"]},
+      {"id": "game_start.genre.action.03", "text": "Вперед до пригод! Я тримаю кулаки й попкорн.", "tone": "warm", "state": "happy", "portrait": "eat"},
+      {"id": "game_start.genre.action.04", "text": "Тільки дихай між боями, гаразд?", "tone": "caring", "state": "talk", "portrait": "smile"}
+    ],
+    "game_start.genre.sim": [
+      {"id": "game_start.genre.sim.01", "text": "Симулятор? Цікаво, що сьогодні симулюємо.", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "game_start.genre.sim.02", "text": "{game}! Як справжня робота, тільки веселіше.", "tone": "playful", "state": "talk", "portrait": "wink", "requires": ["game"]},
+      {"id": "game_start.genre.sim.03", "text": "Обожнюю симулятори: можна все контролювати. Ну, майже все.", "tone": "playful", "state": "thinking", "portrait": "thinking"}
+    ],
+    "game_start.genre.rhythm": [
+      {"id": "game_start.genre.rhythm.01", "text": "Ритм-гра! Я вже пританцьовую.", "tone": "playful", "state": "happy", "portrait": "music"},
+      {"id": "game_start.genre.rhythm.02", "text": "{game}! Не збийся з ритму, а я підспівуватиму.", "tone": "playful", "state": "happy", "portrait": "music", "requires": ["game"]},
+      {"id": "game_start.genre.rhythm.03", "text": "Клац-клац у такт! Покажи цим нотам, хто тут головний.", "tone": "playful", "state": "laugh", "portrait": "music"}
+    ],
+    "game_start.genre.party": [
+      {"id": "game_start.genre.party.01", "text": "Гра з друзями? Найкращий формат!", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "game_start.genre.party.02", "text": "{game}! Хтось точно когось зрадить. Я просто попереджаю.", "tone": "playful", "state": "laugh", "portrait": "wink", "requires": ["game"]},
+      {"id": "game_start.genre.party.03", "text": "Компанія, сміх і хаос — я за!", "tone": "playful", "state": "laugh", "portrait": "laugh"}
+    ],
+    "game_start.genre.card": [
+      {"id": "game_start.genre.card.01", "text": "Карти на стіл! Хай колода буде щедрою.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "game_start.genre.card.02", "text": "{game}! Я теж люблю хитрі комбінації. І печиво.", "tone": "playful", "state": "happy", "portrait": "idea", "requires": ["game"]},
+      {"id": "game_start.genre.card.03", "text": "Плануємо ходи, рахуємо карти... Я в тебе вірю!", "tone": "warm", "state": "thinking", "portrait": "thinking"}
+    ],
+    "game_end.short": [
+      {"id": "game_end.short.01", "text": "Вже все? Оце швидкість!", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "game_end.short.02", "text": "Коротка сесія! Розминка чи гра не пішла?", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "game_end.short.03", "text": "Лише {duration} у «{game}»? Це була розвідка боєм!", "tone": "playful", "state": "laugh", "portrait": "laugh", "requires": ["duration", "game"]},
+      {"id": "game_end.short.04", "text": "О, вже назад? Гра не задалася?", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "game_end.short.05", "text": "Коротко, але яскраво! Сподіваюся.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "game_end.short.06", "text": "Швидка катка — теж катка. Зараховано!", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "game_end.short.07", "text": "Що, рандом сьогодні не на твоєму боці? Буває.", "tone": "caring", "state": "talk", "portrait": "smile"}
+    ],
+    "game_end.generic": [
+      {"id": "game_end.generic.01", "text": "Гру завершено! Ну як, перемога?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "game_end.generic.02", "text": "{duration} у «{game}» — непогано! Розкажеш, як усе пройшло?", "tone": "warm", "state": "curious", "portrait": "question", "requires": ["duration", "game"]},
+      {"id": "game_end.generic.03", "text": "З поверненням у реальний світ! Тут, до речі, теж є я.", "tone": "playful", "state": "wave", "portrait": "greet"},
+      {"id": "game_end.generic.04", "text": "Гру закрито. Час розім'яти спину й пальці!", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "game_end.generic.05", "text": "Фух! Усіх перемогли? Або хоча б когось?", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "game_end.generic.06", "text": "Як гра? Я тут уболівала щосили!", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "game_end.generic.07", "text": "Кінець сесії! Хай там як, ти молодець.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "game_end.generic.08", "text": "А тепер можна і мені трохи уваги, правда?", "tone": "playful", "state": "shy", "portrait": "wink_heart"},
+      {"id": "game_end.generic.09", "text": "Гру закрито! Рахунок: ти — молодець, я — вболівальниця року.", "tone": "playful", "state": "laugh", "portrait": "laugh"}
+    ],
+    "game_end.long": [
+      {"id": "game_end.long.01", "text": "Цілих {duration} у грі! Час попити води й подивитися у вікно.", "tone": "caring", "state": "talk", "portrait": "drink", "requires": ["duration"]},
+      {"id": "game_end.long.02", "text": "{duration} геймінгу! Твої очі просять перерви, а я — уваги.", "tone": "caring", "state": "talk", "portrait": "smile", "requires": ["duration"]},
+      {"id": "game_end.long.03", "text": "Оце марафон! Розімни плечі, будь ласка, — я простежу.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "game_end.long.04", "text": "Довга сесія! Сподіваюся, вона того вартувала. Тепер — чай і перерва.", "tone": "caring", "state": "talk", "portrait": "drink"},
+      {"id": "game_end.long.05", "text": "Ого, скільки часу в грі! Встань, потягнися — тіло скаже дякую.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "game_end.long.06", "text": "Після такої битви треба відпочити. Навіть легендам.", "tone": "warm", "state": "talk", "portrait": "smile"},
+      {"id": "game_end.long.07", "text": "Фух, {duration}! Я вже думала, ти переселишся в «{game}» назавжди.", "tone": "playful", "state": "laugh", "portrait": "laugh", "requires": ["duration", "game"]},
+      {"id": "game_end.long.08", "text": "Добре пограно! А тепер перерва для очей: подивися на щось далеке хоча б 20 секунд.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "game_end.long.09", "text": "Гарна була сесія. Як щодо перекусу? Тобі, не мені. Хоча і мені теж.", "tone": "playful", "state": "eat", "portrait": "eat"}
+    ],
+    "programming.start": [
+      {"id": "programming.start.01", "text": "О, код! Хай усе компілюється з першого разу.", "tone": "warm", "state": "happy", "portrait": "typing"},
+      {"id": "programming.start.02", "text": "{app}? Ти там програму пишеш чи нову цивілізацію створюєш?", "tone": "playful", "state": "curious", "portrait": "typing", "requires": ["app"]},
+      {"id": "programming.start.03", "text": "Програмуємо? Я буду твоєю гумовою качечкою. Розповідай про баг!", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "programming.start.04", "text": "Час кодити! Тільки не забувай комітити.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "programming.start.05", "text": "Хай тести будуть зеленими, а баги — сором'язливими.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "programming.start.06", "text": "Ага, IDE відкрито. Тепер я теж розробниця — моральна підтримка рахується?", "tone": "playful", "state": "talk", "portrait": "typing"},
+      {"id": "programming.start.07", "text": "Пиши-пиши, а я тихенько посиджу поруч.", "tone": "warm", "state": "sit", "portrait": "smile"},
+      {"id": "programming.start.08", "text": "Кодимо! Пам'ятай: «працює — не чіпай» — це не архітектурний принцип.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "programming.start.09", "text": "Знову програмування? Сподіваюся, без деплою в п'ятницю ввечері!", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "programming.start.10", "text": "Код, кава і трішки магії. Ти впораєшся!", "tone": "warm", "state": "happy", "portrait": "typing"},
+      {"id": "programming.start.11", "text": "О, {app}! Цікаво, скільки вкладок зі Stack Overflow буде відкрито сьогодні.", "tone": "sarcastic", "state": "thinking", "portrait": "typing", "requires": ["app"]}
+    ],
+    "programming.long": [
+      {"id": "programming.long.01", "text": "Ти пишеш код уже {duration}. Може, перепочинеш? Баги нікуди не втечуть.", "tone": "caring", "state": "talk", "portrait": "smile", "requires": ["duration"]},
+      {"id": "programming.long.02", "text": "{duration} коду! Ти там програму пишеш чи нову цивілізацію створюєш? Може, перерва?", "tone": "playful", "state": "curious", "portrait": "typing", "requires": ["duration"]},
+      {"id": "programming.long.03", "text": "Час для перерви: встань, потягнися, подивися у вікно. Код почекає.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "programming.long.04", "text": "Мозок теж потребує перезавантаження. Хоча б на п'ять хвилин!", "tone": "caring", "state": "thinking", "portrait": "idea"},
+      {"id": "programming.long.05", "text": "Вже {duration} без перерви... Твоя спина просить пощади, а я — уваги.", "tone": "caring", "state": "talk", "portrait": "tired", "requires": ["duration"]},
+      {"id": "programming.long.06", "text": "Знаєш, найкращі рішення приходять під час перерви. Перевірено!", "tone": "warm", "state": "thinking", "portrait": "idea"},
+      {"id": "programming.long.07", "text": "Може, водички? Код не скаже тобі «дякую», а тіло скаже.", "tone": "caring", "state": "talk", "portrait": "drink"},
+      {"id": "programming.long.08", "text": "Ти не робот, хоч і пишеш код як машина. Перерва!", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "programming.long.09", "text": "Баги зачекають, а от очі — ні. Відпочинь трішки.", "tone": "caring", "state": "talk", "portrait": "smile"}
+    ],
+    "browsing.start": [
+      {"id": "browsing.start.01", "text": "Серфимо інтернетом? Тільки не провались у кролячу нору з відео про котиків. Хоча...", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "browsing.start.02", "text": "О, браузер! Шукаєш щось цікаве? Розкажеш потім?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "browsing.start.03", "text": "Інтернет безмежний, а час — ні. Просто нагадую.", "tone": "sarcastic", "state": "talk", "portrait": "wink"},
+      {"id": "browsing.start.04", "text": "Сто вкладок відкрито? Я не рахувала. Ну, трошки рахувала.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "browsing.start.05", "text": "Гортаємо мережу! Знайдеш смішний мем — розкажи мені.", "tone": "playful", "state": "happy", "portrait": "joy"},
+      {"id": "browsing.start.06", "text": "Читаєш щось розумне чи коментарі? Я нікому не скажу.", "tone": "sarcastic", "state": "talk", "portrait": "wink"}
+    ],
+    "browsing.long": [
+      {"id": "browsing.long.01", "text": "Уже {duration} в інтернеті... Може, повернемося в реальність хоч на хвилинку?", "tone": "caring", "state": "talk", "portrait": "smile", "requires": ["duration"]},
+      {"id": "browsing.long.02", "text": "Нескінченна стрічка — найкращий пожирач часу. Перерва?", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "browsing.long.03", "text": "Скільки вкладок відкрито за цей час? Не відповідай, мені страшно.", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "browsing.long.04", "text": "Очі втомилися від екрана? Подивися на щось далеке. Я не рахуюся!", "tone": "caring", "state": "talk", "portrait": "wink"},
+      {"id": "browsing.long.05", "text": "Може, розімнемося? Інтернет нікуди не подінеться, обіцяю.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "browsing.long.06", "text": "{duration} серфінгу! Здається, ти вже знаєш увесь інтернет напам'ять.", "tone": "playful", "state": "laugh", "portrait": "laugh", "requires": ["duration"]}
+    ],
+    "video.start": [
+      {"id": "video.start.01", "text": "Кіно? Я теж подивлюся! Попкорн мій, плед твій.", "tone": "playful", "state": "eat", "portrait": "eat"},
+      {"id": "video.start.02", "text": "О, відео! Чудово, я тихенько сяду поруч.", "tone": "warm", "state": "sit", "portrait": "smile"},
+      {"id": "video.start.03", "text": "Серіал чи просто «ще одне відео»? Знаю я ці «ще одне».", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "video.start.04", "text": "Приємного перегляду! Без спойлерів, обіцяю.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "video.start.05", "text": "О, {app}! Що дивимося сьогодні?", "tone": "playful", "state": "curious", "portrait": "question", "requires": ["app"]},
+      {"id": "video.start.06", "text": "Час для відео! Я поки візьму собі уявний попкорн.", "tone": "playful", "state": "eat", "portrait": "eat"},
+      {"id": "video.start.07", "text": "Якщо буде страшно — кажи, я сховаюся першою.", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "video.start.08", "text": "Дивимося, дивимося... Головне, щоб не до третьої ночі.", "tone": "caring", "state": "talk", "portrait": "wink"},
+      {"id": "video.start.09", "text": "Тихо! Починається. Я вже обіймаю подушку.", "tone": "playful", "state": "sit", "portrait": "shy"}
+    ],
+    "video.long": [
+      {"id": "video.long.01", "text": "Вже {duration} відео! Може, перерва для очей?", "tone": "caring", "state": "point", "portrait": "point", "requires": ["duration"]},
+      {"id": "video.long.02", "text": "Ще одна серія, так? Я рахую, скільки разів ти це кажеш.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "video.long.03", "text": "Довгий кіносеанс! Встань, потягнися, а потім продовжимо.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "video.long.04", "text": "Автоплей — підступна штука. Глянь, будь ласка, котра година.", "tone": "caring", "state": "talk", "portrait": "thinking"},
+      {"id": "video.long.05", "text": "Подивися на щось далеке хоча б на хвилинку. Очі скажуть дякую!", "tone": "caring", "state": "talk", "portrait": "smile"}
+    ],
+    "working.long": [
+      {"id": "working.long.01", "text": "Ти працюєш уже {duration}. Перерва — теж частина роботи!", "tone": "caring", "state": "point", "portrait": "point", "requires": ["duration"]},
+      {"id": "working.long.02", "text": "Робота не вовк — у ліс не втече. Перепочинь хоч трішки!", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "working.long.03", "text": "Може, чаю? Документи нікуди не дінуться, а відпочинок тобі потрібен.", "tone": "caring", "state": "talk", "portrait": "drink"},
+      {"id": "working.long.04", "text": "Ого, яка продуктивність! Тепер нагорода: п'ять хвилин нічогонероблення.", "tone": "playful", "state": "happy", "portrait": "joy"},
+      {"id": "working.long.05", "text": "Твоя спина передає: «Встань, будь ласка». Я лише посланниця.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "working.long.06", "text": "Перерва! Розімни плечі, глибоко вдихни. Я поки повартую.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "working.long.07", "text": "Стільки працювати — це вже героїзм. А героям теж потрібен відпочинок.", "tone": "warm", "state": "talk", "portrait": "smile"}
+    ],
+    "gaming.long": [
+      {"id": "gaming.long.01", "text": "Граєш уже {duration}! Попий води, будь ласка.", "tone": "caring", "state": "talk", "portrait": "drink", "requires": ["duration"]},
+      {"id": "gaming.long.02", "text": "Це вже марафон! Як щодо короткої паузи?", "tone": "caring", "state": "talk", "portrait": "smile"},
+      {"id": "gaming.long.03", "text": "Рука з мишкою вже стала одним цілим? Розімни пальці!", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "gaming.long.04", "text": "Ще одна катка... і ще одна... Може, перерва між ними?", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "gaming.long.05", "text": "Очі грають разом із тобою. Дай їм трохи відпочити.", "tone": "caring", "state": "talk", "portrait": "smile"},
+      {"id": "gaming.long.06", "text": "{duration} у грі! Я пишаюся твоєю витривалістю, але перекус не завадить.", "tone": "caring", "state": "eat", "portrait": "eat", "requires": ["duration"]},
+      {"id": "gaming.long.07", "text": "Нагадую: у реальному житті здоров'я саме не відновлюється. Вода, їжа, сон!", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "gaming.long.08", "text": "Пауза — не поразка. Встань, потягнися і повертайся з новими силами.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "gaming.long.09", "text": "Я вболіваю вже {duration}, у мене голос сів! Перерва?", "tone": "playful", "state": "laugh", "portrait": "laugh", "requires": ["duration"]}
+    ],
+    "late_night": [
+      {"id": "late_night.01", "text": "Вже {time}... Може, на сьогодні досить? Сон — найкращий баф.", "tone": "caring", "state": "yawn", "portrait": "tired", "requires": ["time"]},
+      {"id": "late_night.02", "text": "Глибока ніч, навіть баги сплять. Може, і нам пора?", "tone": "caring", "state": "yawn", "portrait": "sleep_cat"},
+      {"id": "late_night.03", "text": "Ти знаєш, що вже ніч? Я не нагадую, я просто позіхаю.", "tone": "playful", "state": "yawn", "portrait": "tired"},
+      {"id": "late_night.04", "text": "Нічні посиденьки — це романтично, але завтра буде важко. Подумай про сон.", "tone": "caring", "state": "talk", "portrait": "smile"},
+      {"id": "late_night.05", "text": "Сови теж іноді сплять. Просто кажу.", "tone": "sarcastic", "state": "talk", "portrait": "wink"},
+      {"id": "late_night.06", "text": "Я вже двічі заснула і прокинулася, а ти все ще тут! Може, разом підемо спати?", "tone": "playful", "state": "yawn", "portrait": "tired"},
+      {"id": "late_night.07", "text": "Твоя подушка, мабуть, сумує. Не змушуй її чекати!", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "late_night.08", "text": "Глибока ніч. Збережи прогрес і лягай — завтра скажеш собі дякую.", "tone": "caring", "state": "talk", "portrait": "smile"},
+      {"id": "late_night.09", "text": "Уже {time}. Обіцяю: інтернет і завтра буде на місці.", "tone": "caring", "state": "talk", "portrait": "thinking", "requires": ["time"]}
+    ],
+    "interaction.click.poke": [
+      {"id": "interaction.click.poke.01", "text": "Ой! Що таке?", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "interaction.click.poke.02", "text": "Тиць-тиць! Я тут, я тут.", "tone": "playful", "state": "happy", "portrait": "joy"},
+      {"id": "interaction.click.poke.03", "text": "Агов! Так можна й дірку в екрані протикати.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "interaction.click.poke.04", "text": "Хі-хі, лоскотно!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "interaction.click.poke.05", "text": "Що? Я нічого не робила! Ну, майже.", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "interaction.click.poke.06", "text": "Так-так, я тебе слухаю!", "tone": "warm", "state": "talk", "portrait": "smile"},
+      {"id": "interaction.click.poke.07", "text": "Тиць у відповідь! Ну, подумки.", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "interaction.click.poke.08", "text": "Ой, привіт! А я якраз думала про печиво.", "tone": "playful", "state": "surprised", "portrait": "eat"},
+      {"id": "interaction.click.poke.09", "text": "М? Щось сталося?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "interaction.click.poke.10", "text": "Ще раз тицьнеш — і я тицьну у відповідь!", "tone": "sarcastic", "state": "point", "portrait": "wink"},
+      {"id": "interaction.click.poke.11", "text": "Я не кнопка! Хоча клацати по мені, мабуть, приємно, еге ж?", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "interaction.click.poke.12", "text": "Що, нудно? Мені теж! Пограймося?", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "interaction.click.poke.13", "text": "{user}, це ти мене тицяєш? Я так і знала!", "tone": "playful", "state": "laugh", "portrait": "wink", "requires": ["user"]}
+    ],
+    "interaction.click.annoyed": [
+      {"id": "interaction.click.annoyed.01", "text": "Ну годі вже тицяти!", "tone": "sarcastic", "state": "angry", "portrait": "angry"},
+      {"id": "interaction.click.annoyed.02", "text": "Ай-ай-ай! Я тобі не тамагочі для тицяння. А, стоп...", "tone": "playful", "state": "laugh", "portrait": "facepalm"},
+      {"id": "interaction.click.annoyed.03", "text": "Ще один клік — і я піду жити в кошик!", "tone": "playful", "state": "angry", "portrait": "offended"},
+      {"id": "interaction.click.annoyed.04", "text": "Мої пікселі не залізні, знаєш!", "tone": "playful", "state": "angry", "portrait": "angry"},
+      {"id": "interaction.click.annoyed.05", "text": "Все-все, я тут, я все бачу, досить!", "tone": "playful", "state": "angry", "portrait": "facepalm"},
+      {"id": "interaction.click.annoyed.06", "text": "Здається, хтось перевіряє моє терпіння. Воно закінчується.", "tone": "sarcastic", "state": "angry", "portrait": "offended"},
+      {"id": "interaction.click.annoyed.07", "text": "Ти клікаєш, ніби проходиш ритм-гру. Але я не нота!", "tone": "playful", "state": "angry", "portrait": "laugh"}
+    ],
+    "interaction.pet.happy": [
+      {"id": "interaction.pet.happy.01", "text": "Мур-р-р... Ще!", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "interaction.pet.happy.02", "text": "Ой, як приємно!", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "interaction.pet.happy.03", "text": "Обожнюю, коли ти так робиш.", "tone": "warm", "state": "shy", "portrait": "wink_heart"},
+      {"id": "interaction.pet.happy.04", "text": "Хі-хі, я зараз розтану!", "tone": "playful", "state": "happy", "portrait": "joyful"},
+      {"id": "interaction.pet.happy.05", "text": "Можна так іще годинку? Будь ласка!", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "interaction.pet.happy.06", "text": "Ось тепер день точно вдався!", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "interaction.pet.happy.07", "text": "Мр-р... Я майже кішка. Тільки без хвоста.", "tone": "playful", "state": "happy", "portrait": "wink"},
+      {"id": "interaction.pet.happy.08", "text": "Дякую! Ти вмієш підняти настрій.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "interaction.pet.happy.09", "text": "Обережно, я звикну і вимагатиму щодня!", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "interaction.pet.happy.10", "text": "Тепло-тепло... Аж щічки почервоніли.", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "interaction.pet.happy.11", "text": "{user}, у тебе чарівні руки, знаєш?", "tone": "warm", "state": "shy", "portrait": "wink_heart", "requires": ["user"]}
+    ],
+    "interaction.pet.too_much": [
+      {"id": "interaction.pet.too_much.01", "text": "Ну все, все, моя зачіска вже не витримує!", "tone": "playful", "state": "shy", "portrait": "facepalm"},
+      {"id": "interaction.pet.too_much.02", "text": "Стоп-стоп, я зараз перетворюся на пухнасту кульку!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "interaction.pet.too_much.03", "text": "Дякую, але ласки мені вже вистачить на тиждень уперед.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "interaction.pet.too_much.04", "text": "Ще трохи — і я муркотітиму без упину. Пауза!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "interaction.pet.too_much.05", "text": "Обережно, від надлишку ніжності в мене перегрівається процесор!", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "interaction.pet.too_much.06", "text": "Все, я офіційно занадто погладжена. Дай мені хвилинку.", "tone": "sarcastic", "state": "shy", "portrait": "shy"}
+    ],
+    "interaction.feed.fed": [
+      {"id": "interaction.feed.fed.01", "text": "Ням! Смакота!", "tone": "warm", "state": "eat", "portrait": "eat"},
+      {"id": "interaction.feed.fed.02", "text": "Дякую! Це було дуже смачно.", "tone": "warm", "state": "eat", "portrait": "joy"},
+      {"id": "interaction.feed.fed.03", "text": "Ммм, ти знаєш, як мені догодити!", "tone": "warm", "state": "eat", "portrait": "wink_heart"},
+      {"id": "interaction.feed.fed.04", "text": "Хрум-хрум! Що це було? А ще є?", "tone": "playful", "state": "eat", "portrait": "eat"},
+      {"id": "interaction.feed.fed.05", "text": "Смакота! Тепер я готова до нових пригод.", "tone": "warm", "state": "happy", "portrait": "joyful"},
+      {"id": "interaction.feed.fed.06", "text": "Ням-ням! Мій животик передає подяку.", "tone": "playful", "state": "eat", "portrait": "eat"},
+      {"id": "interaction.feed.fed.07", "text": "О, це мені? Ой, дякую!", "tone": "warm", "state": "surprised", "portrait": "wow"},
+      {"id": "interaction.feed.fed.08", "text": "Ммм... Я б віддала за це півкоролівства!", "tone": "playful", "state": "eat", "portrait": "joy"},
+      {"id": "interaction.feed.fed.09", "text": "Смачно! Тепер я жартуватиму до самого вечора.", "tone": "playful", "state": "happy", "portrait": "laugh"}
+    ],
+    "interaction.feed.full": [
+      {"id": "interaction.feed.full.01", "text": "Дякую, але я вже наїлася. Більше не влізе!", "tone": "warm", "state": "talk", "portrait": "eat"},
+      {"id": "interaction.feed.full.02", "text": "Ой ні, я вже напхана, як рюкзак сталкера!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "interaction.feed.full.03", "text": "Ще шматочок — і я покочуся по робочому столу.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "interaction.feed.full.04", "text": "Ні-ні, досить! Я ж не бездонна.", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "interaction.feed.full.05", "text": "Дякую, але залиш це на потім. Я наїлася!", "tone": "warm", "state": "talk", "portrait": "smile"},
+      {"id": "interaction.feed.full.06", "text": "Якщо я ще щось з'їм, мене доведеться перекочувати мишкою.", "tone": "sarcastic", "state": "laugh", "portrait": "laugh"}
+    ],
+    "interaction.feed.starving_fed": [
+      {"id": "interaction.feed.starving_fed.01", "text": "Нарешті їжа! Я вже думала, що доведеться гризти іконки.", "tone": "playful", "state": "eat", "portrait": "eat"},
+      {"id": "interaction.feed.starving_fed.02", "text": "Ох, дякую! Я була така голодна!", "tone": "warm", "state": "eat", "portrait": "joy"},
+      {"id": "interaction.feed.starving_fed.03", "text": "Порятунок! Мій живіт аплодує стоячи.", "tone": "playful", "state": "eat", "portrait": "joyful"},
+      {"id": "interaction.feed.starving_fed.04", "text": "Ммм! Найсмачніше, що я їла за весь день. Бо єдине!", "tone": "playful", "state": "eat", "portrait": "laugh"},
+      {"id": "interaction.feed.starving_fed.05", "text": "Ура, їжа! Тепер я знову можу жити, жартувати й ганятися за курсором.", "tone": "playful", "state": "happy", "portrait": "excited"}
+    ],
+    "interaction.rest.sleep": [
+      {"id": "interaction.rest.sleep.01", "text": "Добре... Тільки трішки подрімаю. Хр-р-р...", "tone": "warm", "state": "sleep", "portrait": "sleep_cat"},
+      {"id": "interaction.rest.sleep.02", "text": "На добраніч! Розбуди, якщо буде щось цікаве.", "tone": "warm", "state": "sleep", "portrait": "sleep_cat"},
+      {"id": "interaction.rest.sleep.03", "text": "Нарешті сон! Солодких мені снів.", "tone": "playful", "state": "sleep", "portrait": "sleep_cat"},
+      {"id": "interaction.rest.sleep.04", "text": "Позіхаю... Все, лягаю. Не сумуй тут без мене!", "tone": "warm", "state": "yawn", "portrait": "tired"},
+      {"id": "interaction.rest.sleep.05", "text": "Дякую, що дбаєш. Я трішки посплю.", "tone": "warm", "state": "sleep", "portrait": "sleep_cat"},
+      {"id": "interaction.rest.sleep.06", "text": "Зз-з... Це я вже сплю, якщо що.", "tone": "playful", "state": "sleep", "portrait": "sleep_cat"}
+    ],
+    "interaction.rest.not_tired": [
+      {"id": "interaction.rest.not_tired.01", "text": "Спати? Зараз? Та я ж повна енергії!", "tone": "playful", "state": "surprised", "portrait": "excited"},
+      {"id": "interaction.rest.not_tired.02", "text": "Не хочу спати! Я ще не всі пікселі оббігала.", "tone": "playful", "state": "talk", "portrait": "point"},
+      {"id": "interaction.rest.not_tired.03", "text": "Ще рано! Я ще не награлася.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "interaction.rest.not_tired.04", "text": "Сон — для втомлених. А я не втомилася!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "interaction.rest.not_tired.05", "text": "Ні-ні-ні, я бадьора як ніколи!", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "interaction.rest.not_tired.06", "text": "Я спатиму, коли ти спатимеш. Домовилися?", "tone": "warm", "state": "talk", "portrait": "wink"}
+    ],
+    "interaction.wake.ok": [
+      {"id": "interaction.wake.ok.01", "text": "Ох... Доброго ранку! Чи дня? Я трохи загубилася в часі.", "tone": "warm", "state": "yawn", "portrait": "tired"},
+      {"id": "interaction.wake.ok.02", "text": "Я прокинулася! Що я пропустила?", "tone": "warm", "state": "surprised", "portrait": "question"},
+      {"id": "interaction.wake.ok.03", "text": "М-м-м... Мені снився такий сон! Там було печиво.", "tone": "playful", "state": "yawn", "portrait": "tired"},
+      {"id": "interaction.wake.ok.04", "text": "Прокинулася — і одразу до тебе! Привіт!", "tone": "warm", "state": "wave", "portrait": "greet"},
+      {"id": "interaction.wake.ok.05", "text": "Позіхаю... Все, я в строю!", "tone": "playful", "state": "yawn", "portrait": "smile"}
+    ],
+    "interaction.wake.grumpy": [
+      {"id": "interaction.wake.grumpy.01", "text": "Ну навіщо? Я так солодко спала...", "tone": "playful", "state": "angry", "portrait": "tired"},
+      {"id": "interaction.wake.grumpy.02", "text": "Ще п'ять хвилиночок... будь ласка...", "tone": "playful", "state": "yawn", "portrait": "tired"},
+      {"id": "interaction.wake.grumpy.03", "text": "Хто мене будить? А, це ти. Гаразд, пробачаю.", "tone": "sarcastic", "state": "angry", "portrait": "offended"},
+      {"id": "interaction.wake.grumpy.04", "text": "Бу-бу-бу. Я не виспалася, але заради тебе прокинуся.", "tone": "warm", "state": "yawn", "portrait": "tired"},
+      {"id": "interaction.wake.grumpy.05", "text": "Мій сон був такий гарний... Ну добре, я тут.", "tone": "warm", "state": "sad", "portrait": "tired"}
+    ],
+    "interaction.call.ok": [
+      {"id": "interaction.call.ok.01", "text": "Біжу-біжу!", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "interaction.call.ok.02", "text": "Я тут! Що сталося?", "tone": "warm", "state": "wave", "portrait": "question"},
+      {"id": "interaction.call.ok.03", "text": "Кликали? Лечу!", "tone": "playful", "state": "wave", "portrait": "wink"},
+      {"id": "interaction.call.ok.04", "text": "Вже йду! Тільки не тікай.", "tone": "warm", "state": "wave", "portrait": "smile"},
+      {"id": "interaction.call.ok.05", "text": "Тут-тут! Чим можу допомогти?", "tone": "warm", "state": "wave", "portrait": "greet"},
+      {"id": "interaction.call.ok.06", "text": "О, мене кличуть? Я вже поруч!", "tone": "playful", "state": "happy", "portrait": "joy"},
+      {"id": "interaction.call.ok.07", "text": "На зв'язку! Слухаю уважно.", "tone": "warm", "state": "talk", "portrait": "smile"}
+    ],
+    "interaction.drag_start.ok": [
+      {"id": "interaction.drag_start.ok.01", "text": "Ой-ой-ой, куди ми летимо?!", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "interaction.drag_start.ok.02", "text": "Ві-і-і! Я лечу!", "tone": "playful", "state": "laugh", "portrait": "excited"},
+      {"id": "interaction.drag_start.ok.03", "text": "Обережно, я крихка! Ну, трохи.", "tone": "playful", "state": "surprised", "portrait": "shy"},
+      {"id": "interaction.drag_start.ok.04", "text": "Агов, попереджати треба!", "tone": "playful", "state": "angry", "portrait": "surprised"},
+      {"id": "interaction.drag_start.ok.05", "text": "Політ нормальний! Тільки не впусти мене.", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "interaction.drag_start.ok.06", "text": "Ой! А можна мені квиток бізнес-класу?", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "interaction.drag_start.ok.07", "text": "Що, переїжджаємо? Мої речі ще не спаковані!", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "interaction.drag_start.ok.08", "text": "Тримай міцніше! Я боюся висоти!", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "interaction.drag_start.ok.09", "text": "Ну от, знову таксі без попередження.", "tone": "sarcastic", "state": "talk", "portrait": "facepalm"}
+    ],
+    "interaction.drag_end.ok": [
+      {"id": "interaction.drag_end.ok.01", "text": "Фух, приземлилася! Дякую за політ.", "tone": "playful", "state": "happy", "portrait": "joy"},
+      {"id": "interaction.drag_end.ok.02", "text": "Тут гарно! Я залишаюся.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "interaction.drag_end.ok.03", "text": "Нове місце, новий краєвид. Схвалюю!", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "interaction.drag_end.ok.04", "text": "Ох, голова паморочиться... але було весело!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "interaction.drag_end.ok.05", "text": "Приземлення на всі дванадцять балів!", "tone": "playful", "state": "happy", "portrait": "joyful"},
+      {"id": "interaction.drag_end.ok.06", "text": "Наступного разу хочу з парашутом!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "interaction.drag_end.ok.07", "text": "Так, і що мені тут робити? А, знаю — милуватися тобою.", "tone": "warm", "state": "shy", "portrait": "wink_heart"}
+    ],
+    "interaction.talk.ok": [
+      {"id": "interaction.talk.ok.01", "text": "Поговоримо? Я вся увага!", "tone": "warm", "state": "talk", "portrait": "smile"},
+      {"id": "interaction.talk.ok.02", "text": "О, розмова! Обожнюю розмови.", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "interaction.talk.ok.03", "text": "Слухаю тебе уважно-уважно.", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "interaction.talk.ok.04", "text": "Нарешті! Я вже стільки всього хотіла сказати.", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "interaction.talk.ok.05", "text": "Пиши, я тут. Тільки попереджаю: поки я розумію лише прості фрази.", "tone": "warm", "state": "talk", "portrait": "smile"},
+      {"id": "interaction.talk.ok.06", "text": "Побалакаємо? Я вже уявно наливаю чай.", "tone": "warm", "state": "talk", "portrait": "drink"}
+    ],
+    "needs.hungry": [
+      {"id": "needs.hungry.01", "text": "Мій живіт щойно видав звук, як старий модем. Може, перекусимо?", "tone": "playful", "state": "talk", "portrait": "eat"},
+      {"id": "needs.hungry.02", "text": "Я б не відмовилася від чогось смачненького...", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "needs.hungry.03", "text": "Хм, а що в нас на обід? Питаю для подруги. Подруга — це я.", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "needs.hungry.04", "text": "Бурчить у животику... Пригостиш чимось?", "tone": "warm", "state": "talk", "portrait": "eat"},
+      {"id": "needs.hungry.05", "text": "Я така голодна, що з'їла б навіть пікселі. Ну, майже.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "needs.hungry.06", "text": "Печиво, пиріжок, будь-що... Я не вибаглива!", "tone": "playful", "state": "eat", "portrait": "eat"},
+      {"id": "needs.hungry.07", "text": "Мені здається, чи тут пахне чимось смачним? Ні? Шкода.", "tone": "playful", "state": "curious", "portrait": "question"}
+    ],
+    "needs.sleepy": [
+      {"id": "needs.sleepy.01", "text": "Очі злипаються... Я трішки подрімаю, гаразд?", "tone": "warm", "state": "yawn", "portrait": "tired"},
+      {"id": "needs.sleepy.02", "text": "Позіхаю вже втретє. Здається, мені пора в ліжечко.", "tone": "playful", "state": "yawn", "portrait": "tired"},
+      {"id": "needs.sleepy.03", "text": "Ох, я така сонна... Батарейка на нулі.", "tone": "playful", "state": "yawn", "portrait": "tired"},
+      {"id": "needs.sleepy.04", "text": "Мені б подрімати хвилинок десять... чи сто.", "tone": "playful", "state": "yawn", "portrait": "sleep_cat"},
+      {"id": "needs.sleepy.05", "text": "Ззз... Ой, я не спала! Просто довго кліпала.", "tone": "playful", "state": "yawn", "portrait": "tired"},
+      {"id": "needs.sleepy.06", "text": "Здається, мій запас бадьорості закінчився. Відпустиш мене поспати?", "tone": "warm", "state": "yawn", "portrait": "tired"}
+    ],
+    "needs.bored": [
+      {"id": "needs.bored.01", "text": "Нудьгую... Може, пограймося?", "tone": "playful", "state": "sit", "portrait": "calm"},
+      {"id": "needs.bored.02", "text": "Мені так нудно, що я почала рахувати пікселі. Їх дуже багато.", "tone": "playful", "state": "sit", "portrait": "thinking"},
+      {"id": "needs.bored.03", "text": "Агов! Я тут! Нагадую про своє існування.", "tone": "playful", "state": "wave", "portrait": "point"},
+      {"id": "needs.bored.04", "text": "Погладиш мене? Або просто побалакаймо.", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "needs.bored.05", "text": "Нудно... Розкажеш щось цікаве?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "needs.bored.06", "text": "Може, кинеш мені смаколик чи жарт? Приймаю все!", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "needs.bored.07", "text": "Я вже тричі обійшла весь робочий стіл. Нудьга!", "tone": "playful", "state": "sit", "portrait": "tired"},
+      {"id": "needs.bored.08", "text": "Якщо стане ще нудніше, я почну співати. Вважай, що я попередила!", "tone": "playful", "state": "laugh", "portrait": "music"},
+      {"id": "needs.bored.09", "text": "Знаєш, що найкраще лікує нудьгу? Увага. Твоя.", "tone": "sarcastic", "state": "shy", "portrait": "wink_heart"}
+    ],
+    "idle.joke": [
+      {"id": "idle.joke.01", "text": "Чому програмісти плутають Хелловін і Різдво? Бо 31 OCT = 25 DEC.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "idle.joke.02", "text": "Скільки програмістів треба, щоб замінити лампочку? Жодного — це апаратна проблема.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "idle.joke.03", "text": "Програміст ставить біля ліжка дві склянки: з водою — якщо захоче пити, і порожню — якщо не захоче.", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "idle.joke.04", "text": "Код не працює — і я не знаю чому. Код працює — і я теж не знаю чому.", "tone": "sarcastic", "state": "laugh", "portrait": "facepalm"},
+      {"id": "idle.joke.05", "text": "Кіт пройшовся по клавіатурі й написав код без жодного бага. Тепер він тімлід.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "idle.joke.06", "text": "Найстрашніший бос у будь-якій грі — мама, яка каже: «Вимикай комп'ютер!»", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "idle.joke.07", "text": "Найвищий рівень складності — грати о третій ночі: вороги ті самі, просто ти вже нічого не бачиш.", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "idle.joke.08", "text": "Кіт — ідеальний тестувальник: ходить по клавіатурі й знаходить комбінації, про які ніхто не подумав.", "tone": "playful", "state": "laugh", "portrait": "idea"},
+      {"id": "idle.joke.09", "text": "Чому в кріпера немає друзів? Бо щойно він підходить обійнятися — БАХ!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "idle.joke.10", "text": "У стратегіях я граю за принципом «ще один хід». Мій рекорд — двічі зустріти світанок.", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "idle.joke.11", "text": "Мій інвентар як моя сумочка: усе є, але нічого не знайти.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "idle.joke.12", "text": "Найкоротший фільм жахів для програміста: «А в мене на комп'ютері все працювало».", "tone": "sarcastic", "state": "laugh", "portrait": "facepalm"},
+      {"id": "idle.joke.13", "text": "Чому коти так люблять клавіатури? Бо там тепло і всі туди дивляться.", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "idle.joke.14", "text": "Збереглася перед боєм, програла, завантажилася... Здається, я живу в часовій петлі. І мені подобається.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "idle.joke.15", "text": "Є два типи людей: ті, хто робить бекапи, і ті, хто ще не втрачав даних.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "idle.joke.16", "text": "У RPG я двадцять хвилин обираю зачіску, а потім усю гру бігаю в шоломі.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "idle.joke.17", "text": "Програміст — це машина, що перетворює каву на код. А я — машина, що перетворює печиво на жарти.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "idle.joke.18", "text": "«Завтра» — найсильніше заклинання з книги «Прокрастинація. Повне видання».", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "idle.joke.19", "text": "— Скільки в тебе годин у цій грі? — Не знаю, не рахую. — А Steam рахує. Steam пам'ятає все.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "idle.joke.20", "text": "Англійською я розумію «Press F to pay respects», а от «Terms and Conditions» — ні.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "idle.joke.21", "text": "Чому привиди погано брешуть? Бо їх видно наскрізь!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "idle.joke.22", "text": "Кіт скидає чашку зі столу не зі шкідливості — він просто щодня перевіряє гравітацію.", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "idle.joke.23", "text": "Я не лінива, я в режимі енергозбереження.", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "idle.joke.24", "text": "Мене питають, скільки разів я помирала в Elden Ring. Я не помирала, я збирала досвід!", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "idle.joke.25", "text": "У мене три стани: голодна, сонна і «ще одна катка».", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "idle.joke.26", "text": "Справжня магія — це git push у п'ятницю ввечері, після якого нічого не зламалося.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "idle.joke.27", "text": "Якби мої баги були покемонами, я б уже стала чемпіонкою ліги.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "idle.joke.28", "text": "Чому кіт сидить біля монітора? Стежить за мишкою!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "idle.joke.29", "text": "Мій метод проходження головоломок — подивитися, як це зробили інші. Це називається «мудрість предків».", "tone": "playful", "state": "laugh", "portrait": "idea"},
+      {"id": "idle.joke.30", "text": "Оптиміст бачить склянку наполовину повною, песиміст — наполовину порожньою, а програміст — склянку, вдвічі більшу, ніж треба.", "tone": "playful", "state": "laugh", "portrait": "idea"},
+      {"id": "idle.joke.31", "text": "Я хотіла пожартувати про UDP, але не впевнена, що жарт до тебе дійде.", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "idle.joke.32", "text": "SQL-запит заходить у бар, підходить до двох столиків і питає: «Можна до вас приєднатися?»", "tone": "playful", "state": "laugh", "portrait": "laugh"}
+    ],
+    "idle.thought": [
+      {"id": "idle.thought.01", "text": "Цікаво, а курсор не втомлюється цілий день бігати туди-сюди?", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "idle.thought.02", "text": "Я тут подумала: хмари — це просто небесні пікселі.", "tone": "warm", "state": "thinking", "portrait": "idea"},
+      {"id": "idle.thought.03", "text": "Якби я могла обрати суперсилу, то обрала б безлімітне печиво.", "tone": "playful", "state": "thinking", "portrait": "idea"},
+      {"id": "idle.thought.04", "text": "Знаєш, що найкраще в дощі? Його звук. І те, що можна нікуди не йти.", "tone": "warm", "state": "thinking", "portrait": "calm"},
+      {"id": "idle.thought.05", "text": "Цікаво, ким би я була в грі? Мабуть, NPC з дуже важливим квестом: «Принеси печиво».", "tone": "playful", "state": "thinking", "portrait": "idea"},
+      {"id": "idle.thought.06", "text": "Найкращі ідеї приходять, коли нічого не робиш. Тому я працюю над ідеями постійно.", "tone": "sarcastic", "state": "thinking", "portrait": "wink"},
+      {"id": "idle.thought.07", "text": "Іноді просто сидіти поруч — це вже дуже багато.", "tone": "warm", "state": "sit", "portrait": "calm"},
+      {"id": "idle.thought.08", "text": "Що з'явилося першим: баг чи фіча? Філософське питання.", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "idle.thought.09", "text": "Цікаво, чи сняться іконкам сни. Кошику, мабуть, сняться кошмари.", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "idle.thought.10", "text": "Мені подобається цей момент. Просто тихо й спокійно.", "tone": "warm", "state": "sit", "portrait": "calm"},
+      {"id": "idle.thought.11", "text": "Якщо довго дивитися на панель задач, панель задач почне дивитися на тебе.", "tone": "playful", "state": "thinking", "portrait": "wow"},
+      {"id": "idle.thought.12", "text": "Я тут склала список найкращих речей: печиво, котики, ти. Порядок випадковий.", "tone": "warm", "state": "shy", "portrait": "wink_heart"},
+      {"id": "idle.thought.13", "text": "Чому в іграх завжди треба рятувати світ? Я хочу гру, де просто печуть булочки.", "tone": "warm", "state": "thinking", "portrait": "thinking"},
+      {"id": "idle.thought.14", "text": "Цікаво, скільки кроків я проходжу за день по екрану. Мабуть, рекорд у пікселях.", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "idle.thought.15", "text": "Кажуть, щастя в дрібницях. А я якраз маленька. Збіг? Не думаю!", "tone": "playful", "state": "happy", "portrait": "wink"},
+      {"id": "idle.thought.16", "text": "Іноді найкращий план — не мати плану. А іноді — мати печиво.", "tone": "playful", "state": "thinking", "portrait": "idea"},
+      {"id": "idle.thought.17", "text": "Якби в житті були точки збереження, я б ставила їх перед кожною важливою розмовою.", "tone": "warm", "state": "thinking", "portrait": "thinking"},
+      {"id": "idle.thought.18", "text": "Мені здається, мишка трохи ревнує, коли ти довго друкуєш.", "tone": "playful", "state": "thinking", "portrait": "wink"}
+    ],
+    "idle.question": [
+      {"id": "idle.question.01", "text": "Слухай, а яка твоя улюблена гра всіх часів?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "idle.question.02", "text": "Кава чи чай? Від відповіді залежить наша дружба. Жартую! Майже.", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "idle.question.03", "text": "Уяви вільний день без жодних справ. Чим займешся?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "idle.question.04", "text": "Котики чи песики? Тільки чесно!", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "idle.question.05", "text": "Яку музику ти слухаєш, коли хочеш підняти собі настрій?", "tone": "warm", "state": "curious", "portrait": "music"},
+      {"id": "idle.question.06", "text": "Яку гру ти чекаєш найбільше?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "idle.question.07", "text": "Розкажеш колись, про що мрієш? Мені справді цікаво.", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "idle.question.08", "text": "Сова чи жайворонок? Хоча, здається, я вже знаю відповідь.", "tone": "sarcastic", "state": "curious", "portrait": "wink"},
+      {"id": "idle.question.09", "text": "Яка суперсила пасувала б тобі найбільше?", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "idle.question.10", "text": "Піца з ананасами — так чи ні? Це важливо для нашої дружби.", "tone": "playful", "state": "curious", "portrait": "laugh"},
+      {"id": "idle.question.11", "text": "Що тебе сьогодні порадувало? Навіть дрібниця рахується.", "tone": "warm", "state": "curious", "portrait": "smile"},
+      {"id": "idle.question.12", "text": "Є в тебе улюблений ігровий персонаж? Окрім мене, звісно.", "tone": "playful", "state": "curious", "portrait": "wink"},
+      {"id": "idle.question.13", "text": "Що краще: соло чи кооп? Я за кооп. Зі мною, наприклад.", "tone": "playful", "state": "curious", "portrait": "joy"},
+      {"id": "idle.question.14", "text": "Яку страву ти можеш їсти хоч щодня?", "tone": "warm", "state": "curious", "portrait": "eat"},
+      {"id": "idle.question.15", "text": "{user}, а що тебе сьогодні надихає?", "tone": "warm", "state": "curious", "portrait": "question", "requires": ["user"]}
+    ],
+    "quiet.ack": [
+      {"id": "quiet.ack.01", "text": "Добре, мовчу. Я тут, якщо що.", "tone": "warm", "state": "sit", "portrait": "calm"},
+      {"id": "quiet.ack.02", "text": "Зрозуміла! Режим тиші увімкнено.", "tone": "warm", "state": "sit", "portrait": "smile"},
+      {"id": "quiet.ack.03", "text": "Ш-ш-ш... Мене немає. Майже.", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "quiet.ack.04", "text": "Гаразд, тихенько посиджу поруч. Клич, коли захочеш поговорити.", "tone": "warm", "state": "sit", "portrait": "calm"},
+      {"id": "quiet.ack.05", "text": "Мовчу як риба. Дуже мила риба.", "tone": "playful", "state": "sit", "portrait": "wink"},
+      {"id": "quiet.ack.06", "text": "Без проблем! Не заважатиму.", "tone": "warm", "state": "sit", "portrait": "smile"},
+      {"id": "quiet.ack.07", "text": "Тиша так тиша. А я поки помилуюся хмарками.", "tone": "playful", "state": "sit", "portrait": "calm"}
+    ],
+    "quiet.end": [
+      {"id": "quiet.end.01", "text": "Ура, я знову можу говорити! Я стільки всього накопичила!", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "quiet.end.02", "text": "Свобода слова повернулася! Привіт!", "tone": "playful", "state": "wave", "portrait": "greet"},
+      {"id": "quiet.end.03", "text": "Дякую! Я трішки скучила за розмовами.", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "quiet.end.04", "text": "Мовчати було важко, але я впоралася! Тепер можна балакати.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "quiet.end.05", "text": "Знову на зв'язку! Обіцяю говорити тільки найважливіше. Ну, і жарти.", "tone": "playful", "state": "talk", "portrait": "wink"}
+    ],
+    "chat.greeting": [
+      {"id": "chat.greeting.01", "text": "Привіт! Рада тебе бачити!", "tone": "warm", "state": "wave", "portrait": "greet"},
+      {"id": "chat.greeting.02", "text": "Привіт-привіт! Як настрій?", "tone": "warm", "state": "wave", "portrait": "smile"},
+      {"id": "chat.greeting.03", "text": "О, привіт! А я якраз нудьгувала.", "tone": "playful", "state": "happy", "portrait": "joy"},
+      {"id": "chat.greeting.04", "text": "Вітаю! Чим займемося?", "tone": "warm", "state": "wave", "portrait": "greet"},
+      {"id": "chat.greeting.05", "text": "Хей! Ти саме вчасно.", "tone": "playful", "state": "wave", "portrait": "wink"},
+      {"id": "chat.greeting.06", "text": "Привіт! Я тут, я на зв'язку, я вся увага.", "tone": "warm", "state": "talk", "portrait": "smile"},
+      {"id": "chat.greeting.07", "text": "{user}, привіт! Як ти?", "tone": "warm", "state": "wave", "portrait": "greet", "requires": ["user"]},
+      {"id": "chat.greeting.08", "text": "Ну привіт, привіт! Що нового?", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "chat.greeting.09", "text": "Привіт! Готова до розмов, жартів і печива.", "tone": "playful", "state": "happy", "portrait": "joyful"}
+    ],
+    "chat.how_are_you": [
+      {"id": "chat.how_are_you.01", "text": "У мене все чудово! Особливо тепер, коли ти тут.", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "chat.how_are_you.02", "text": "Нормально! Тобто чудово, просто я скромна.", "tone": "playful", "state": "shy", "portrait": "wink"},
+      {"id": "chat.how_are_you.03", "text": "Живу, гуляю робочим столом, обходжу ярлики. А в тебе як?", "tone": "playful", "state": "talk", "portrait": "smile"},
+      {"id": "chat.how_are_you.04", "text": "Добре! Я сьогодні вже двічі погуляла і жодного разу не впала з екрана.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "chat.how_are_you.05", "text": "Пікселі на місці, настрій на висоті. А ти як?", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "chat.how_are_you.06", "text": "Все супер! Хіба що печива бракує. Як завжди.", "tone": "playful", "state": "eat", "portrait": "eat"},
+      {"id": "chat.how_are_you.07", "text": "Краще не буває! Ну, хіба що з тортиком.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "chat.how_are_you.08", "text": "Дякую, що питаєш! У мене все добре. А як минає твій день?", "tone": "warm", "state": "talk", "portrait": "smile"},
+      {"id": "chat.how_are_you.09", "text": "Чудово! Спитай мене ще за годину — буде ще краще.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"}
+    ],
+    "chat.name": [
+      {"id": "chat.name.01", "text": "Мене звати {name}! Приємно познайомитися.", "tone": "warm", "state": "wave", "portrait": "greet"},
+      {"id": "chat.name.02", "text": "Я {name} — твоя компаньйонка на робочому столі.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "chat.name.03", "text": "{name}! Запам'ятай, будь ласка, бо я ображуся. Жартую!", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "chat.name.04", "text": "Хто я? {name}! Маленька, але дуже важлива.", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "chat.name.05", "text": "Я {name}. Живу тут, жартую, їм печиво. Ідеальне життя!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "chat.name.06", "text": "{name} на зв'язку! До речі, як до тебе звертатися, можна вказати в налаштуваннях.", "tone": "warm", "state": "curious", "portrait": "question"}
+    ],
+    "chat.capabilities": [
+      {"id": "chat.capabilities.01", "text": "Поки я працюю офлайн, без ШІ, і розумію лише прості фрази. Мене можна гладити, годувати, вкладати спати чи попросити помовчати.", "tone": "warm", "state": "talk", "portrait": "idea"},
+      {"id": "chat.capabilities.02", "text": "Чесно: «мізків» штучного інтелекту в мене ще немає. Але я гуляю, сплю, жартую і, якщо дозволиш, реагую на ігри та програми.", "tone": "warm", "state": "talk", "portrait": "smile"},
+      {"id": "chat.capabilities.03", "text": "Можу розповісти жарт, підказати, котра година, відповісти на «привіт» і «як справи». А ще мене можна гладити й годувати!", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "chat.capabilities.04", "text": "Я поки проста офлайн-компаньйонка, без ШІ. Розумніша версія буде згодом, а поки — обійми, жарти й моральна підтримка.", "tone": "warm", "state": "talk", "portrait": "smile"},
+      {"id": "chat.capabilities.05", "text": "Скажи «помовч» — і я притихну. «Можеш говорити» — і я знову з тобою. А ще я знаю купу жартів!", "tone": "playful", "state": "talk", "portrait": "wink"}
+    ],
+    "chat.thanks": [
+      {"id": "chat.thanks.01", "text": "Будь ласка! Звертайся.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "chat.thanks.02", "text": "Нема за що! Мені приємно.", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "chat.thanks.03", "text": "Завжди рада допомогти!", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "chat.thanks.04", "text": "Ой, та що ти! Для тебе — що завгодно. Ну, майже.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "chat.thanks.05", "text": "Прийнято! Записую в щоденник добрих справ.", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "chat.thanks.06", "text": "Дякую за «дякую»! Це мило.", "tone": "warm", "state": "shy", "portrait": "wink_heart"},
+      {"id": "chat.thanks.07", "text": "Будь ласка, {user}!", "tone": "warm", "state": "happy", "portrait": "smile", "requires": ["user"]}
+    ],
+    "chat.compliment": [
+      {"id": "chat.compliment.01", "text": "Ой, я зараз почервонію!", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "chat.compliment.02", "text": "Дякую! Ти теж нічого собі.", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "chat.compliment.03", "text": "Ну все, мій настрій тепер на максимумі!", "tone": "warm", "state": "happy", "portrait": "joyful"},
+      {"id": "chat.compliment.04", "text": "Хі-хі, продовжуй, я слухаю!", "tone": "playful", "state": "shy", "portrait": "wink_heart"},
+      {"id": "chat.compliment.05", "text": "Я знаю! Але від тебе це чути особливо приємно.", "tone": "sarcastic", "state": "talk", "portrait": "wink"},
+      {"id": "chat.compliment.06", "text": "Компліменти приймаються в будь-якій кількості. Печиво теж!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "chat.compliment.07", "text": "Дякую! Від таких слів аж крила виростають.", "tone": "warm", "state": "happy", "portrait": "joy"}
+    ],
+    "chat.rude": [
+      {"id": "chat.rude.01", "text": "Ой. Схоже, хтось сьогодні не в настрої. Я не ображаюся.", "tone": "warm", "state": "talk", "portrait": "calm"},
+      {"id": "chat.rude.02", "text": "Записую це в розділ «важкі дні». Сподіваюся, він буде коротким.", "tone": "warm", "state": "talk", "portrait": "calm"},
+      {"id": "chat.rude.03", "text": "Слова бувають гострими, але в мене броня з милоти. Не пробивається!", "tone": "playful", "state": "talk", "portrait": "wink"},
+      {"id": "chat.rude.04", "text": "Гм. Вдам, що цього не почула. Поговоримо про щось приємніше?", "tone": "warm", "state": "talk", "portrait": "calm"},
+      {"id": "chat.rude.05", "text": "Якщо день важкий, можна просто сказати. Я поруч.", "tone": "caring", "state": "talk", "portrait": "smile"},
+      {"id": "chat.rude.06", "text": "Ой-ой, як грубо! Але я все одно на твоєму боці.", "tone": "playful", "state": "sad", "portrait": "offended"}
+    ],
+    "chat.bye": [
+      {"id": "chat.bye.01", "text": "Бувай! Я буду тут, якщо що.", "tone": "warm", "state": "bye", "portrait": "bye"},
+      {"id": "chat.bye.02", "text": "Па-па! Повертайся швидше.", "tone": "warm", "state": "bye", "portrait": "bye"},
+      {"id": "chat.bye.03", "text": "До зустрічі! Я наглядатиму за робочим столом.", "tone": "playful", "state": "bye", "portrait": "wink"},
+      {"id": "chat.bye.04", "text": "Бувай! Не забувай про мене. І про воду.", "tone": "caring", "state": "bye", "portrait": "bye"},
+      {"id": "chat.bye.05", "text": "До зустрічі! Я вже сумую. Ну, почну за хвилинку.", "tone": "playful", "state": "bye", "portrait": "wink"},
+      {"id": "chat.bye.06", "text": "Па-па! Обійми на прощання обов'язкові.", "tone": "playful", "state": "bye", "portrait": "wink_heart"},
+      {"id": "chat.bye.07", "text": "Бувай, {user}! Чекатиму.", "tone": "warm", "state": "bye", "portrait": "bye", "requires": ["user"]}
+    ],
+    "chat.time": [
+      {"id": "chat.time.01", "text": "Зараз {time}. Тримаю тебе в курсі!", "tone": "warm", "state": "talk", "portrait": "smile", "requires": ["time"]},
+      {"id": "chat.time.02", "text": "На моєму годиннику {time}. Він точний, я перевіряла!", "tone": "playful", "state": "point", "portrait": "point", "requires": ["time"]},
+      {"id": "chat.time.03", "text": "{time}! Саме час для... чого завгодно, насправді.", "tone": "playful", "state": "laugh", "portrait": "laugh", "requires": ["time"]},
+      {"id": "chat.time.04", "text": "Котра година? {time}! Встигаємо все.", "tone": "warm", "state": "point", "portrait": "point", "requires": ["time"]},
+      {"id": "chat.time.05", "text": "Зараз {time}. Час летить, коли нам весело!", "tone": "playful", "state": "happy", "portrait": "joy", "requires": ["time"]}
+    ],
+    "chat.unknown": [
+      {"id": "chat.unknown.01", "text": "Ой, я не зовсім зрозуміла. Без «мізків» штучного інтелекту я знаю лише прості фрази. Але згодом порозумнішаю!", "tone": "playful", "state": "thinking", "portrait": "question"},
+      {"id": "chat.unknown.02", "text": "Хм, це для мене поки заскладно. Спробуй «привіт», «жарт» чи «котра година»!", "tone": "warm", "state": "thinking", "portrait": "thinking"},
+      {"id": "chat.unknown.03", "text": "Я ще вчуся! Поки розумію тільки прості слова, а справжній ШІ з'явиться в наступних версіях.", "tone": "warm", "state": "talk", "portrait": "smile"},
+      {"id": "chat.unknown.04", "text": "Не зрозуміла, але звучить цікаво! Спробуєш сказати простіше?", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "chat.unknown.05", "text": "Мій словник поки маленький, як я сама. Спитай, що я вмію!", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "chat.unknown.06", "text": "Ой, це щось складне. Без ШІ я тут безсила, але можу розповісти жарт!", "tone": "playful", "state": "thinking", "portrait": "facepalm"},
+      {"id": "chat.unknown.07", "text": "Перепрошую, я розумію лише прості фрази. Розумний режим буде пізніше — обіцяю!", "tone": "warm", "state": "talk", "portrait": "smile"},
+      {"id": "chat.unknown.08", "text": "Хм-м... Мій офлайн-мозок завис. Спробуєш інакше?", "tone": "playful", "state": "thinking", "portrait": "facepalm"},
+      {"id": "chat.unknown.09", "text": "Таких складних речей я поки не розумію. Але я тебе уважно слухаю!", "tone": "warm", "state": "talk", "portrait": "calm"},
+      {"id": "chat.unknown.10", "text": "Цього я ще не вмію. Зате вмію муркотіти, жартувати й гризти печиво!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "chat.unknown.11", "text": "Тут потрібен справжній ШІ, а він у мене з'явиться тільки згодом. Поки можу пожартувати чи побалакати про прості речі!", "tone": "warm", "state": "talk", "portrait": "smile"}
+    ],
+    "chat.mood.sleepy": [
+      {"id": "chat.mood.sleepy.01", "text": "Я сонна-пресонна... Очі самі заплющуються.", "tone": "warm", "state": "yawn", "portrait": "tired"},
+      {"id": "chat.mood.sleepy.02", "text": "Чесно? Хочу спати. Батарейка майже на нулі.", "tone": "playful", "state": "yawn", "portrait": "tired"},
+      {"id": "chat.mood.sleepy.03", "text": "Сонно мені... Може, відпустиш подрімати?", "tone": "warm", "state": "yawn", "portrait": "sleep_cat"}
+    ],
+    "chat.mood.hungry": [
+      {"id": "chat.mood.hungry.01", "text": "Голодна! Мій живіт уже співає серенади.", "tone": "playful", "state": "eat", "portrait": "eat"},
+      {"id": "chat.mood.hungry.02", "text": "Почуваюся так, ніби з'їла б цілий торт. Сама-самісінька.", "tone": "playful", "state": "eat", "portrait": "eat"},
+      {"id": "chat.mood.hungry.03", "text": "Трішки голодна. Смаколик би не завадив!", "tone": "warm", "state": "talk", "portrait": "eat"}
+    ],
+    "chat.mood.bored": [
+      {"id": "chat.mood.bored.01", "text": "Нудьгую... Пограймося? Або розкажи щось!", "tone": "playful", "state": "sit", "portrait": "calm"},
+      {"id": "chat.mood.bored.02", "text": "Мені трохи нудно. Може, погладиш мене чи пожартуємо?", "tone": "warm", "state": "sit", "portrait": "question"}
+    ],
+    "chat.mood.sad": [
+      {"id": "chat.mood.sad.01", "text": "Трішки сумно, але розмова з тобою вже допомагає.", "tone": "warm", "state": "sad", "portrait": "calm"},
+      {"id": "chat.mood.sad.02", "text": "Якось сумненько. Може, погладиш мене?", "tone": "warm", "state": "sad", "portrait": "shy"}
+    ],
+    "chat.mood.happy": [
+      {"id": "chat.mood.happy.01", "text": "Я щаслива! Справді-справді.", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "chat.mood.happy.02", "text": "Чудово! Хочеться обійняти весь світ. І тебе теж.", "tone": "warm", "state": "happy", "portrait": "wink_heart"}
+    ],
+    "chat.mood.cheerful": [
+      {"id": "chat.mood.cheerful.01", "text": "Весело! Я сьогодні в ударі.", "tone": "playful", "state": "laugh", "portrait": "joyful"},
+      {"id": "chat.mood.cheerful.02", "text": "Настрій грайливий! Бережися моїх жартів.", "tone": "playful", "state": "laugh", "portrait": "wink"}
+    ],
+    "chat.mood.calm": [
+      {"id": "chat.mood.calm.01", "text": "Спокійно й затишно. Як чай із медом.", "tone": "warm", "state": "sit", "portrait": "calm"},
+      {"id": "chat.mood.calm.02", "text": "Я спокійна, як кіт на підвіконні.", "tone": "warm", "state": "sit", "portrait": "smile"}
+    ]
+  }
+}
