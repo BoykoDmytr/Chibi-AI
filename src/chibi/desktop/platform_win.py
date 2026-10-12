@@ -198,13 +198,26 @@ def apply_no_activate(hwnd: int) -> bool:
         return False
     try:  # pragma: no cover - Windows only
         get_long, set_long = _USER32["GetWindowLongPtr"], _USER32["SetWindowLongPtr"]
+        # Get/SetWindowLongPtr return 0 both for "style is 0" and for failure;
+        # only GetLastError tells them apart.  Verify by reading the style back
+        # rather than trusting the call (an invalid handle - e.g. the fake ids
+        # of Qt's offscreen platform - would otherwise "succeed").
+        ctypes.set_last_error(0)
         style = int(get_long(hwnd, GWL_EXSTYLE))
+        if style == 0 and ctypes.get_last_error() != 0:
+            _warn_once("no_activate", "could not read window style (error %d)", ctypes.get_last_error())
+            return False
         wanted = (style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW
         if wanted != style:
             set_long(hwnd, GWL_EXSTYLE, wanted)
             # Extended styles are cached by the window manager until the frame is refreshed.
             flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED
             _USER32["SetWindowPos"](hwnd, None, 0, 0, 0, 0, flags)
+        applied = int(get_long(hwnd, GWL_EXSTYLE))
+        needed = WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+        if applied & needed != needed:
+            _warn_once("no_activate", "window style not applied (error %d)", ctypes.get_last_error())
+            return False
         return True
     except Exception as exc:  # pragma: no cover - never break the window over a style bit
         _warn_once("no_activate", "could not make window non-activating: %s", exc)

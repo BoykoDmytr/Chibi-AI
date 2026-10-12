@@ -30,3 +30,9 @@ jobs:
         # On windows-latest this also runs the Windows-only tests (ctypes
         # signatures, foreground/idle queries) against the real Win32 API.
         run: python -m pytest -q
+      - name: Native-window tests (Windows)
+        # Real HWNDs need Qt's "windows" platform instead of "offscreen".
+        if: runner.os == 'Windows'
+        env:
+          QT_QPA_PLATFORM: windows
+        run: python -m pytest -q tests/desktop/test_platform_win.py

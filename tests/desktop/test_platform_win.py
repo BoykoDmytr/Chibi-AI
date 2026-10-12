@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import os
 import sys
 
 import pytest
@@ -90,6 +91,12 @@ def test_apply_no_activate_ignores_null_handle():
 # -- real Win32 (only meaningful on Windows) ------------------------------------------------------
 
 windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Win32 API")
+#: Needs a real HWND: Qt's offscreen platform hands out fake window ids.  CI
+#: runs these in a separate step with QT_QPA_PLATFORM=windows.
+native_windows_only = pytest.mark.skipif(
+    sys.platform != "win32" or os.environ.get("QT_QPA_PLATFORM", "") == "offscreen",
+    reason="needs native Windows windows (QT_QPA_PLATFORM=windows)",
+)
 
 
 @windows_only
@@ -105,7 +112,7 @@ def test_ctypes_prototypes_are_pointer_sized():
         assert u["SetWindowLongPtr"].argtypes[2] is ctypes.c_ssize_t
 
 
-@windows_only
+@native_windows_only
 def test_apply_no_activate_sets_the_extended_style(qapp):
     from PySide6.QtWidgets import QWidget
 
@@ -130,3 +137,9 @@ def test_foreground_fullscreen_runs_on_windows():
     hwnd = api.foreground_window()
     if hwnd:
         assert api.monitor_rect(hwnd) is not None
+
+
+@windows_only
+def test_apply_no_activate_reports_failure_for_an_invalid_window():
+    # A handle that is not a window must not be reported as "applied".
+    assert platform_win.apply_no_activate(0x7FFF_FFF0) is False
