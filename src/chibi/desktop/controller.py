@@ -19,7 +19,13 @@ timer keeps the state machine and behavior ticking at no visible cost.
 Speech: a line gets ``clamp(2.2 + 0.055 * len, 3, 12)`` seconds.  Lines
 the user asked for (``solicited``) replace whatever is showing; unsolicited
 lines wait in a short queue (2, oldest dropped) and are dropped entirely
-while she is hidden.
+while she is hidden - and when the user asks for quiet or turns on Do Not
+Disturb (they were chosen before that).
+
+Activity events (games, user idle/returned) only change her while app
+observation is permitted: one queued just before the kill switch is
+dropped, and the kill switch or a revoke forgets running games (the monitor
+sends no ``GameEnded`` then) and the queued lines.
 
 Positions are global logical px; the window's bottom-centre region holds
 her feet anchor (a few px of margin below for art that reaches under the
@@ -37,7 +43,7 @@ import random
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from PySide6.QtCore import QObject, QPoint, QPointF, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QCursor, QGuiApplication, QPainter, QPixmap, QScreen
@@ -57,6 +63,8 @@ from chibi.core.config import Settings
 from chibi.core.event_bus import EventBus
 from chibi.core.events import (
     CharacterInteraction,
+    DoNotDisturbChanged,
+    ForegroundAppChanged,
     FullscreenChanged,
     GameEnded,
     GameStarted,
@@ -65,6 +73,7 @@ from chibi.core.events import (
     ObservationStopped,
     Permission,
     PermissionChanged,
+    QuietModeChanged,
     SettingsChanged,
     SpeechRequested,
     SystemLoadChanged,
@@ -261,6 +270,10 @@ def default_position(screens: list[ScreenArea], half_width: float) -> tuple[floa
     return x, a.bottom, screen
 
 
+class PermissionChecker(Protocol):
+    def is_granted(self, permission: Permission) -> bool: ...
+
+
 @dataclass(frozen=True)
 class _Line:
     text: str
@@ -290,7 +303,11 @@ class CharacterController(QObject):
         *,
         cursor_pos: Callable[[], QPointF] | None = None,
         screens: Callable[[], list[ScreenArea]] | None = None,
+        permissions: PermissionChecker | None = None,
     ) -> None:
+        """*permissions* (optional) lets her ignore activity events dispatched
+        after ``APP_METADATA`` was revoked (queued just before the kill switch):
+        those must not change her any more."""
         super().__init__(parent)
         self._bus = bus
         self._settings_fn = settings
@@ -301,6 +318,8 @@ class CharacterController(QObject):
         self._rng = rng or random.Random()
         self._cursor_fn = cursor_pos or (lambda: QPointF(QCursor.pos()))
         self._screens_fn = screens or qt_screens
+        self._permissions = permissions
+        self._permission_check_failed = False
         self._cfg = Settings()
         self._cfg = self._read_settings()
 
@@ -347,7 +366,11 @@ class CharacterController(QObject):
         self._next_cursor_poll = now
         self._next_decide = now + DECIDE_INTERVAL
         self._games: set[str] = set()
+        #: GAMING was rejected (a higher-priority action is showing): retried each behavior tick.
         self._gaming_pending = False
+        #: Likewise for leaving GAMING once no game runs: without the retry the
+        #: action would end back in GAMING and she would hold the gamepad for good.
+        self._ungaming_pending = False
         self._walk_priority = P.AMBIENT
         self._call_walk = False
         self._last_visual_key: tuple | None = None
@@ -478,6 +501,9 @@ class CharacterController(QObject):
             bus.subscribe(SettingsChanged, self._on_settings_changed),
             bus.subscribe(PermissionChanged, self._on_permission_changed),
             bus.subscribe(ObservationStopped, self._on_observation_stopped),
+            bus.subscribe(ForegroundAppChanged, self._on_foreground),
+            bus.subscribe(QuietModeChanged, self._on_quiet_requested),
+            bus.subscribe(DoNotDisturbChanged, self._on_quiet_requested),
         ]
         self._hook_screens()
         self.apply_settings()
@@ -537,6 +563,8 @@ class CharacterController(QObject):
             self._queue.clear()
             self._speech_until = None
             self.bubble.hide_now()
+        elif cfg.behavior.do_not_disturb:
+            self._queue.clear()  # queued before DND: she must not say them after it
         mv = self._movement
         if mv.walking and (c.lock_position or (not c.walking_enabled and not self._call_walk)):
             self._end_walk()
@@ -614,6 +642,23 @@ class CharacterController(QObject):
         self._hidden_by_user = bool(hidden)
         self._update_visibility()
 
+    def set_input_monitoring(self, active: bool) -> None:
+        """Whether the activity monitor is running (it reads input idle time).
+
+        While it runs, "no ``UserIdle``" means the user is at the computer: the
+        monitor only speaks up once they have been idle for minutes.  Without
+        this she would judge an active user by clicks on her alone, fall asleep
+        on them and never wake.  If the user is already idle, the monitor's
+        first cycle sends ``UserIdle`` and corrects it.  Repeating ``True``
+        while known keeps the current idle state (a redundant call must not
+        mark an idle user present: no second ``UserIdle`` would follow).
+        """
+        if not active:
+            self._forget_user_input()
+        elif not self._input_known:
+            self._input_known = True
+            self._user_idle_since = None
+
     def portrait_pixmap(self, name: str) -> QPixmap | None:
         """Portrait *name* from the pack (cached); None without a pack or portrait."""
         if not name or self._pack is None:
@@ -687,6 +732,9 @@ class CharacterController(QObject):
         self._cfg = self._read_settings()
         if self._games and self._gaming_pending and self._request(S.GAMING, P.REACTION, GAMING_HOLD):
             self._gaming_pending = False
+        if self._ungaming_pending and (self._games or self._sm.posture is not S.GAMING
+                                       or self._request(S.IDLE, P.REACTION, GAMING_HOLD)):
+            self._ungaming_pending = False
         ctx = self._behavior_context(now)
         try:
             decision = self._behavior.decide(ctx)
@@ -861,6 +909,10 @@ class CharacterController(QObject):
     def _start_line(self, line: _Line, solicited: bool, show: bool) -> None:
         priority = P.USER if solicited else P.REACTION
         target = line.state
+        if target is S.GAMING and not self._games:
+            # A game-start line spoken after its game ended or was forgotten:
+            # nothing would ever take the gamepad from her again.
+            target = S.TALK
         mv = self._movement
         # While she walks over because she was called, the reply's gesture would
         # stop the walk (actions end walks); she waves on arrival instead.
@@ -910,15 +962,31 @@ class CharacterController(QObject):
         self._update_eco()
 
     def _on_user_idle(self, event: UserIdle) -> None:
+        if not self._observing():
+            return
         self._input_known = True
         idle = event.idle_seconds if math.isfinite(event.idle_seconds) else 0.0
         self._user_idle_since = self._clock.monotonic() - max(0.0, idle)
 
     def _on_user_returned(self, _event: UserReturned) -> None:
+        if not self._observing():
+            return
         self._input_known = True
         self._user_idle_since = None
         # REACTION is enough to wake her (an action at >= REACTION wakes a sleeper).
         self._request(S.WAVE, P.REACTION, variant="greet")
+
+    def _on_foreground(self, _event: ForegroundAppChanged) -> None:
+        # The monitor sends this on its first cycle (before any UserIdle of that
+        # cycle): proof that it watches input, even if the app never said so.
+        if self._observing():
+            self.set_input_monitoring(True)
+
+    def _on_quiet_requested(self, event: QuietModeChanged | DoNotDisturbChanged) -> None:
+        # Queued unsolicited lines were chosen before "помовч" / DND; saying
+        # them right after her "I'll be quiet" would break the promise.
+        if event.enabled:
+            self._queue.clear()
 
     def _on_outcome(self, event: InteractionOutcome) -> None:
         self._mark_interaction()
@@ -928,26 +996,67 @@ class CharacterController(QObject):
             self._request(S.IDLE, P.USER, WAKE_HOLD)
 
     def _on_game_started(self, event: GameStarted) -> None:
+        if not self._observing():
+            return  # queued before the kill switch: no GameEnded would ever follow
         self._games.add(event.game_id)
+        self._ungaming_pending = False
         self._gaming_pending = not self._request(S.GAMING, P.REACTION, GAMING_HOLD)
 
     def _on_game_ended(self, event: GameEnded) -> None:
+        # Never permission-gated: an end only removes state.  A *forgotten* end
+        # (the game was made private while running) ends GAMING the same way.
         self._games.discard(event.game_id)
         if self._games:
             return
         self._gaming_pending = False
-        if self._sm.posture is S.GAMING:
-            self._request(S.IDLE, P.REACTION, GAMING_HOLD)
+        self._leave_gaming()
+
+    def _leave_gaming(self) -> None:
+        """No game runs any more: back to IDLE.  A higher-priority action (a chat
+        reply, a pat, a drag) rejects the request and would end back in GAMING,
+        so a rejected request is retried by the behavior tick."""
+        self._ungaming_pending = (self._sm.posture is S.GAMING
+                                  and not self._request(S.IDLE, P.REACTION, GAMING_HOLD))
+
+    def _forget_games(self) -> None:
+        """Observation stopped or was revoked: the monitor drops its state without
+        a ``GameEnded``, so the running games are forgotten here.  A stale id
+        would keep her in GAMING and swallow every later game's end."""
+        self._games.clear()
+        self._gaming_pending = False
+        self._leave_gaming()
 
     def _on_settings_changed(self, _event: SettingsChanged) -> None:
         self.apply_settings()
 
     def _on_permission_changed(self, event: PermissionChanged) -> None:
         if event.permission is Permission.APP_METADATA and not event.granted:
-            self._forget_user_input()
+            self._forget_observation()
 
     def _on_observation_stopped(self, _event: ObservationStopped) -> None:
+        self._forget_observation()
+
+    def _forget_observation(self) -> None:
+        """The kill switch or an ``APP_METADATA`` revoke: forget what the monitor
+        told her.  Queued unsolicited lines go too - they may be about the game
+        she just saw, and "stop watching" means she stops mentioning it."""
         self._forget_user_input()
+        self._forget_games()
+        self._queue.clear()
+
+    def _observing(self) -> bool:
+        """``APP_METADATA`` is granted *now* (dispatch happens after an in-memory
+        revoke, so this also catches events queued just before it)."""
+        if self._permissions is None:
+            return True
+        try:
+            return bool(self._permissions.is_granted(Permission.APP_METADATA))
+        except Exception:
+            # Foreground changes arrive on every app switch: log a broken checker once.
+            if not self._permission_check_failed:
+                self._permission_check_failed = True
+                log.exception("permission check failed; ignoring activity events")
+            return False
 
     def _forget_user_input(self) -> None:
         """Monitoring stopped: no UserReturned will come, so stop assuming the

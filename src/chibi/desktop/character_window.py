@@ -13,7 +13,8 @@ Window rules:
   honoured everywhere;
 * left press + move beyond the start-drag distance is a drag, a left click
   without moving is a click, right click asks for the context menu and
-  Ctrl+wheel asks for a different scale;
+  Ctrl+wheel asks for a different scale - one step per wheel notch, asked
+  for once the gesture pauses (each request is a settings save);
 * lock mode disables dragging only; click-through makes the window
   transparent for input altogether (re-enabled from the tray menu).
 """
@@ -24,8 +25,17 @@ import logging
 import sys
 from collections.abc import Callable
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, Signal
-from PySide6.QtGui import QHideEvent, QMouseEvent, QPainter, QPaintEvent, QShowEvent, QWheelEvent, QWindow
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QCloseEvent,
+    QHideEvent,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QShowEvent,
+    QWheelEvent,
+    QWindow,
+)
 from PySide6.QtWidgets import QApplication, QWidget
 
 from chibi.desktop import platform_win
@@ -36,6 +46,13 @@ MIN_SCALE = 0.5
 MAX_SCALE = 2.5
 #: Ctrl+wheel changes the scale by this factor per notch.
 SCALE_STEP = 1.1
+#: ``angleDelta`` of one wheel notch (1/8 degree units).  Touchpads, pinch
+#: gestures (Ctrl+wheel on Windows) and high-resolution wheels send many
+#: smaller deltas: they are summed, so a whole notch is still one step.
+WHEEL_NOTCH = 120
+#: The scale is requested this long after the last Ctrl+wheel event: one
+#: gesture is one settings save and one sprite-cache rebuild, not ten.
+SCALE_REQUEST_DELAY_MS = 250
 #: Floor for the drag threshold.  Qt takes QApplication.startDragDistance() from
 #: the system: 4 px on Windows (SM_CXDRAG), often 10 elsewhere.
 MIN_DRAG_DISTANCE = 4
@@ -75,6 +92,13 @@ class CharacterWindow(QWidget):
         self._dragging = False
         self._no_activate_hwnd = 0
         self._hooked_handle: QWindow | None = None
+        self._wheel_acc = 0
+        #: Scale chosen by a Ctrl+wheel gesture still in progress (None: none).
+        self._pending_scale: float | None = None
+        self._scale_timer = QTimer(self)
+        self._scale_timer.setSingleShot(True)
+        self._scale_timer.setInterval(SCALE_REQUEST_DELAY_MS)
+        self._scale_timer.timeout.connect(self.commit_pending_scale)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
@@ -97,8 +121,26 @@ class CharacterWindow(QWidget):
         return QPointF(self._anchor)
 
     def set_scale(self, scale: float) -> None:
-        """Current display scale, the base for Ctrl+wheel steps."""
+        """Current display scale, the base for Ctrl+wheel steps.
+
+        A Ctrl+wheel gesture in progress keeps its own scale: settings applied
+        meanwhile (any section) re-send the old scale and must not undo it.
+        """
         self._scale = min(max(float(scale), MIN_SCALE), MAX_SCALE)
+
+    @property
+    def scale_request_pending(self) -> bool:
+        return self._pending_scale is not None
+
+    def commit_pending_scale(self) -> None:
+        """End the Ctrl+wheel gesture: request its scale (if it differs from the
+        current one).  The debounce timer calls this; tests may too."""
+        self._scale_timer.stop()
+        self._wheel_acc = 0
+        scale, self._pending_scale = self._pending_scale, None
+        if scale is not None and scale != self._scale:
+            self._scale = scale
+            self.scale_requested.emit(scale)
 
     @property
     def locked(self) -> bool:
@@ -166,6 +208,14 @@ class CharacterWindow(QWidget):
 
     def _on_screen_changed(self, _screen: object) -> None:
         self.display_changed.emit()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        # Closed at shutdown: a gesture still waiting must not save settings
+        # into an app that is going away.
+        self._scale_timer.stop()
+        self._pending_scale = None
+        self._wheel_acc = 0
+        super().closeEvent(event)
 
     def hideEvent(self, event: QHideEvent) -> None:
         # Hidden mid-drag (fullscreen app appeared, flags changed): the release
@@ -244,11 +294,16 @@ class CharacterWindow(QWidget):
             event.ignore()
             return
         event.accept()
-        factor = SCALE_STEP if delta > 0 else 1.0 / SCALE_STEP
-        new_scale = round(min(max(self._scale * factor, MIN_SCALE), MAX_SCALE), 3)
-        if new_scale != self._scale:
-            self._scale = new_scale
-            self.scale_requested.emit(new_scale)
+        if (delta > 0) != (self._wheel_acc > 0):
+            self._wheel_acc = 0  # turned the other way: a leftover part-notch does not count
+        self._wheel_acc += delta
+        steps = int(self._wheel_acc / WHEEL_NOTCH)  # toward zero: whole notches only
+        self._wheel_acc -= steps * WHEEL_NOTCH
+        self._scale_timer.start()  # (re)start: the gesture ends when the events stop
+        if not steps:
+            return
+        base = self._pending_scale if self._pending_scale is not None else self._scale
+        self._pending_scale = round(min(max(base * SCALE_STEP ** steps, MIN_SCALE), MAX_SCALE), 3)
 
     def _finish_drag(self) -> None:
         self._dragging = False

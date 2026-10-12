@@ -23,12 +23,22 @@ Each cycle (every ``poll_interval_seconds``):
    arbitrary processes, never for private ones - and ``GameStarted``/
    ``GameEnded`` for games.  A game recognised only in the foreground (by
    heuristics or title) also starts a session, which ends once its process is
-   gone.
+   gone.  A game the user makes private while it runs is forgotten like any
+   private app: ``GameEnded(forgotten=True)`` with no title and no duration,
+   so consumers drop it without a word and nothing is stored.
 5. **Milestones.**  ``ActivityMilestone`` after 1/2/3 hours of the same
    category, once per streak.  An idle period ends the streak; so does a
    switch to another category that lasts longer than a short grace period
    (alt-tabbing to a messenger for half a minute does not reset two hours of
    gaming).
+
+**Freezes.**  A gap between two cycles much longer than the poll interval
+means nothing was observed in it - the PC slept, or the process was
+suspended.  Gaming is exempt from idle detection, so without this a game left
+open over night would resume as "three hours of play" and a 40-minute session
+would end as 9 hours.  So a freeze ends the streak, and open game sessions
+(and running apps) do not count it: their start moves forward by the gap
+(less the one poll interval a normal cycle would have waited anyway).
 
 Worker-thread rules (see ARCHITECTURE.md): no Qt, no SQLite; only
 ``EventBus.publish`` and ``is_granted``.  Waiting uses ``Event.wait`` so
@@ -91,6 +101,9 @@ IDLE_EXEMPT_CATEGORIES: frozenset[ActivityCategory] = frozenset(
     {ActivityCategory.GAMING, ActivityCategory.WATCHING_VIDEO}
 )
 ERROR_LOG_INTERVAL_SECONDS = 60.0
+#: A gap between cycles longer than both of these (seconds / poll intervals) is a freeze.
+FREEZE_MIN_SECONDS = 60.0
+FREEZE_POLL_INTERVALS = 5.0
 #: Floor for the wait between cycles, so a broken setting can never spin the CPU.
 MIN_POLL_SECONDS = 0.05
 DEFAULT_SETTINGS = ActivitySettings()
@@ -137,6 +150,9 @@ class _State:
     idle_longest: float = 0.0
     last_idle: float | None = None
     last_scan: float | None = None
+    #: monotonic and wall-clock time of the previous cycle (freeze detection)
+    last_cycle: float | None = None
+    last_cycle_wall: float | None = None
     baseline_done: bool = False
     #: (display name, category) -> app: several processes of one app count once
     running_apps: dict[tuple[str, ActivityCategory], _RunningApp] = field(default_factory=dict)
@@ -250,6 +266,8 @@ class ActivityMonitor:
             classifier, privacy = self._classifier, self._privacy
         now = self._clock.monotonic()
         events: list[Event] = []
+        self._skip_freeze(settings, now)
+        self._forget_private_sessions(privacy, events)
 
         # The permission is re-checked after every backend call: once revoked,
         # nothing more is read and what was read is dropped.
@@ -294,6 +312,51 @@ class ActivityMonitor:
             if self._revoked():
                 return  # revoked mid-publish: the rest is discarded with the state
             self._bus.publish(event)
+
+    def _skip_freeze(self, settings: ActivitySettings, now: float) -> None:
+        """Leave a freeze (system sleep, suspended process) out of streaks and durations.
+
+        Both clocks are compared: Windows' monotonic clock keeps running in
+        sleep, other platforms' does not (then only the wall clock shows the
+        gap, and the monotonic durations need no correction).
+        """
+        state = self._state
+        wall = self._clock.now()
+        last, last_wall = state.last_cycle, state.last_cycle_wall
+        state.last_cycle, state.last_cycle_wall = now, wall
+        if last is None or last_wall is None:
+            return
+        interval = self._interval(settings)
+        limit = max(FREEZE_MIN_SECONDS, FREEZE_POLL_INTERVALS * interval)
+        if max(now - last, wall - last_wall) <= limit:
+            return
+        state.streak = None  # the next foreground observation starts a new one
+        if now - last <= limit:
+            return  # only the wall clock jumped: monotonic durations hold no sleep to remove
+        # One poll interval of the gap is the normal wait (observed time); the rest was not observed.
+        unobserved = now - last - interval
+        for session in state.sessions.values():
+            session.started = min(now, session.started + unobserved)
+        for running in state.running_apps.values():
+            running.since = min(now, running.since + unobserved)
+
+    def _forget_private_sessions(self, privacy: PrivacyFilter, events: list[Event]) -> None:
+        """Drop game sessions the user made private (by excluding the game) since they started.
+
+        Like a running app that becomes private, the game is forgotten rather
+        than "closed": the end carries neither its title nor its duration, and
+        tells consumers to keep nothing.  Checked every cycle and regardless of
+        whether the game still runs, so an exclusion made just as the game was
+        closed is honoured too.
+        """
+        state = self._state
+        for game_id in sorted(state.sessions):
+            if all(self._is_private_process(privacy, p) for p in state.sessions[game_id].processes):
+                del state.sessions[game_id]
+                events.append(GameEnded(
+                    game_id=game_id, title="", duration_seconds=0.0, forgotten=True,
+                    timestamp=self._clock.now(),
+                ))
 
     # -- foreground -----------------------------------------------------------------------
 
@@ -394,7 +457,8 @@ class ActivityMonitor:
         crossed = [m for m in MILESTONE_SECONDS if elapsed >= m and m not in streak.reached]
         if not crossed:
             return
-        # After a gap (e.g. the PC slept) report only the highest milestone, never a burst.
+        # Never a burst: if several were crossed at once, report only the highest.  (A long gap
+        # between cycles is a freeze and ends the streak, so this is only a safety net.)
         top = max(crossed)
         streak.reached.update(m for m in MILESTONE_SECONDS if m <= top)
         events.append(ActivityMilestone(
@@ -434,7 +498,8 @@ class ActivityMonitor:
                 key, display = (known.display_name, known.category), known.display_name
             apps_now.setdefault(key, _RunningApp(AppInfo(name, display), now, set())).processes.add(name)
 
-        # Game sessions: end those whose processes are all gone (or became private), start new ones.
+        # Game sessions: end those whose processes are all gone, start new ones.  (Those whose
+        # processes all became private were already forgotten this cycle.)
         # The foreground process is running by definition, even if the scan missed it - otherwise a
         # name mismatch would start and end its session on every cycle.
         alive = set(visible)
@@ -519,8 +584,12 @@ class ActivityMonitor:
         return settings
 
     def _poll_interval(self) -> float:
+        return self._interval(self._read_settings())
+
+    @staticmethod
+    def _interval(settings: ActivitySettings) -> float:
         try:
-            interval = float(self._read_settings().poll_interval_seconds)
+            interval = float(settings.poll_interval_seconds)
         except (TypeError, ValueError):
             interval = DEFAULT_SETTINGS.poll_interval_seconds
         if interval != interval:  # NaN

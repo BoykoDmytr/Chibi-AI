@@ -10,7 +10,15 @@ word-boundary regexes, checked in a fixed priority order (being asked to be
 quiet beats everything; an action like feeding beats a greeting in the same
 message).  Cheap typo tolerance: letters stretched for emphasis are squeezed
 ("привіііт"), and single words within one edit of a known trigger word
-("пирвіт" -> "привіт", "дякую" -> "дкяую") still match.
+("пирвіт" -> "привіт", "дякую" -> "дкяую") are corrected before the intent's
+patterns run again, so a typo never bypasses the context rules below.
+
+Who a message is about matters more than which words it contains: "не мовчи"
+asks her to talk, "я хочу їсти" is about the user's lunch, "цей бос тупий" is
+not an insult to her and "у мене поганий настрій" is not a question about hers.
+So insults and compliments need to be addressed to her ("ти ...", or the whole
+message is the word), actions skip first-person statements, and the user's
+own feelings get their own small, supportive replies.
 
 Privacy: the user's text is never logged - not even at debug level.  Only the
 detected intent name is.
@@ -53,6 +61,15 @@ ACTIONS: dict[str, tuple[str, str]] = {
     "rest": ("rest", "rest"),
 }
 
+#: perform() outcomes that mean the action really happened.  Only these set
+#: ``ChatReply.action``: the chat prints "she ate / went to rest" from it, and a
+#: refusal ("full", "too_much", "not_tired") must not claim that.
+SUCCESS_OUTCOMES: dict[str, frozenset[str]] = {
+    "feed": frozenset({"fed", "starving_fed"}),
+    "pet": frozenset({"happy"}),
+    "rest": frozenset({"sleep"}),
+}
+
 #: intent -> phrase keys (first usable wins)
 INTENT_KEYS: dict[str, tuple[str, ...]] = {
     "greeting": ("chat.greeting",),
@@ -65,6 +82,8 @@ INTENT_KEYS: dict[str, tuple[str, ...]] = {
     "thanks": ("chat.thanks",),
     "compliment": ("chat.compliment",),
     "rude": ("chat.rude",),
+    "sad": ("chat.user_sad",),
+    "good": ("chat.user_good",),
     "bye": ("chat.bye",),
     "time": ("chat.time",),
     "quiet_on": ("quiet.ack",),
@@ -88,6 +107,8 @@ FALLBACKS: dict[str, str] = {
     "thanks": "Будь ласка!",
     "compliment": "Дякую, мені дуже приємно!",
     "rude": "Гаразд, я не ображаюся. Поговорімо про щось приємніше?",
+    "sad": "Мені шкода. Я поруч.",
+    "good": "Рада це чути!",
     "bye": "Бувай! Я буду тут.",
     "time": "Зараз {time}.",
     "quiet_on": "Добре, мовчу.",
@@ -95,6 +116,10 @@ FALLBACKS: dict[str, str] = {
     "feed": "Ням! Дякую!",
     "pet": "Мур-р! Дякую!",
     "rest": "Добре, трішки відпочину.",
+    # "<intent>.<outcome>" for refusals: the success line would claim she ate.
+    "feed.full": "Дякую, але я вже наїлася!",
+    "pet.too_much": "Дякую, але мені поки досить ласки.",
+    "rest.not_tired": "Я ще зовсім не хочу спати!",
     "action_unavailable": "Ой, звідси я поки не можу цього зробити. Спробуй через меню!",
     "unknown": "Вибач, я поки розумію лише прості фрази: без ШІ я ще не дуже кмітлива.",
 }
@@ -110,40 +135,132 @@ class Intent:
     patterns: tuple[re.Pattern[str], ...]
     #: Single trigger words (>= 5 letters) matched with one typo allowed.
     fuzzy_words: tuple[str, ...] = ()
+    #: The intent does not apply when one of these matches: "я хочу їсти" is
+    #: about the user's lunch, not a request to feed her.
+    exclude: tuple[re.Pattern[str], ...] = ()
+
+    def matches(self, text: str) -> bool:
+        if not any(pattern.search(text) for pattern in self.patterns):
+            return False
+        return not any(pattern.search(text) for pattern in self.exclude)
+
+
+# Building blocks.  Input is normalize()-d: lower case, no punctuation, so a
+# question mark cannot be checked and "$" means "end of the message".
+
+# Words that may sit between "ти" and an adjective without changing whom it is
+# about ("ти така мила", "ти в мене найкраща").  "не" is deliberately absent:
+# "ти не тупа" is neither an insult nor a compliment.
+_TY = (r"\bти( (така|такий|таке|просто|реально|дуже|ж|ну|справжня|справжній|повна|повний|ще|й|і|вже"
+       r"|якась|якийсь|сьогодні|теж|також|завжди|моя|мій|моє|в мене|у мене|у нас|в нас))*")
+# The same for the user speaking about themselves ("мені сьогодні якось сумно").
+_ME = (r"\b(мені|мене|я|у мене|в мене)( (дуже|так|трохи|трішки|якось|сьогодні|зараз|зовсім|щось|аж|вже"
+       r"|теж|також|просто|реально|настільки|геть|ну|ж|страшенно|жахливо|така|такий|якийсь|якась|знову"
+       r"|постійно|все|усе))*")
+_INSULTS = (r"дурепа|дурень|дурна|дурний|тупа|тупий|тупиця|ідіот|ідіотка|дебіл|дебілка|кретин|кретинка"
+            r"|придурок|придурка|бовдур|нікчема|потвора|лох|лошара|відстій")
+# Alone, only feminine or neutral forms are about her ("Ідіот!" is the teammate).
+_INSULTS_HER = r"дурепа|дурна|тупа|тупиця|ідіотка|дебілка|кретинка|придурка|нікчема|потвора|лошара"
+_SELF_INSULTS = (r"дурень|дурна|дурепа|дурний|тупий|тупа|тупиця|ідіот|ідіотка|бовдур|нікчема|невдаха|лох"
+                 r"|лошара")
+_COMPLIMENTS = (r"класна|класний|класно|мила|миленька|милий|гарна|гарненька|гарний|красива|красивий|красуня"
+                r"|найкраща|найкращий|чудова|чудовий|чудово|крута|крутий|круто|розумна|розумний|розумниця"
+                r"|розумничка|молодець|молодчинка|прекрасна|прекрасний|симпатична|сонечко|зайчик|котик|кицю"
+                r"|киця|лапочка|няшка|няша|супер|золото|золотце|чарівна|неймовірна|найрідніша|солоденька")
+# Alone, a compliment must be a feminine adjective or a pet name: "Класно!" or
+# "Супер" answers "як справи?", "Гарна погода" is about the weather.
+_COMPLIMENTS_ALONE = (r"класна|мила|миленька|гарна|гарненька|красива|красуня|найкраща|чудова|крута|розумна"
+                      r"|розумниця|розумничка|молодець|молодчинка|прекрасна|симпатична|сонечко|зайчик|котик"
+                      r"|кицю|киця|лапочка|няшка|няша|золото|золотце|чарівна|неймовірна|найрідніша|солоденька")
+_SAD = (r"сумно|сумненько|погано|кепсько|паршиво|самотньо|зле|тоскно|тужно|важко|тяжко|боляче|страшно"
+        r"|тривожно|гірко|прикро|сумна|сумний|самотня|самотній|засмучена|засмучений|пригнічена|пригнічений"
+        r"|втомилася|втомився|втомлена|втомлений|виснажена|виснажений|депресія|стрес"
+        r"|(поганий|кепський|паршивий|жахливий|сумний|зіпсований) настрій")
+# "Все добре" is good news, a bare "Добре" is just "OK": weak words need a subject.
+_GOOD_STRONG = r"чудово|класно|супер|круто|відмінно|прекрасно|чудесно|файно|кайф|кайфово|ідеально|топ"
+_GOOD_WEAK = r"добре|нормально|норм|непогано|весело|окей|ок|гарно"
+_NOT_ABOUT_HER = r"(?!.*\b(ти|тобі|тебе|тобою|твій|твоя|твоє|хочеш|будеш)\b)"
+# An offer of food to her: "Поїж, а я теж поїм" is still feeding her.
+_NO_FOOD_FOR_HER = r"(?!.*\b(ти|тобі|тебе|тобою|хочеш|будеш|поїж|їж|підкріпись|пригощайся|тримай|скуштуй)\b)"
+_EATING = (r"їсти|поїсти|їм|з'їм|поїм|їв|їла|поїв|поїла|з'їв|з'їла|голодн\w*|зголодні\w*|перекушу|обідаю"
+           r"|вечеряю|снідаю|пообідати|повечеряти|поснідати")
+_DEATH = r"помер|померла|померли|загинув|загинула|загинули"
+_MY = r"мій|моя|моє|мої|наш|наша|наше|наші"
 
 
 # Priority order: the first intent with a matching pattern wins.
 INTENTS: tuple[Intent, ...] = (
     Intent("quiet_off", _rx(
-        r"(?<!не )\b(можеш|можна|можете)( вже| знову| тепер)? (говорити|розмовляти|балакати)\b",
-        r"(?<!не )\bговори\b(?! тихіше)",
-        r"\bвже можна\b",
+        # Whole-message requests only: "Ти можеш говорити українською?" is a question.
+        r"^((ну|все|усе|добре|гаразд|окей|тепер) )*(ти )?(вже |знову |тепер )?(можеш|можна|можете)"
+        r"( вже| знову| тепер)? (говорити|розмовляти|балакати)( (вже|знову|тепер|будь ласка|зі мною))*$",
+        r"(?<!не )\b(по)?говори\b(?! (тихіше|тихо|тихенько|менше|поменше))",
+        r"^вже можна$",
         r"\bповертайся\b",
-        r"\bкінець тиші\b",
-        r"\b(досить|годі) мовчати\b",
-        r"\bвимкни (тишу|режим тиші)\b",
+        r"\bкінець (тиші|мовчанки)\b",
+        r"\b(досить|годі|хватить) (мовчати|мовчанки)\b",
+        r"\b(не|не треба|не потрібно|не варто) (мовчи|мовчати|мовчіть)\b",
+        # Cancelling quiet mode ("скасуй режим тиші", "тиша набридла", "мені тиша не
+        # потрібна"), with the words next to each other: "досить говорити, тиша!" and
+        # "тиша, не треба нічого казати" ask for quiet.
+        r"\b(вимкн\w*|скасу\w*|прибер\w*|зніми|зняти|відключ\w*)( (будь ласка|вже|нарешті|цей|цю|свій|свою"
+        r"|мені|режим))* (тиш\w*|мовчанк\w*)",
+        r"\b(не треба|не потрібно|досить|годі|хватить|кінець) (тиш\w*|мовчанк\w*)\b",
+        r"\b(тиш\w*|мовчанк\w*)( \w+){0,2} набридл\w*",
+        r"\b(тиш\w*|мовчанк\w*)( (мені|вже|зараз|більше))* (не треба|не потрібн\w*)$",
     )),
     Intent("quiet_on", _rx(
         r"\bпомовч\w*",
         r"\bзамовкн\w*",
         r"\bзамовч\w*",
-        r"\bмовчи\b",
-        r"\bтих(о|іше|енько)\b",
+        r"(?<!не )\bмовч(и|іть)\b",
+        r"^мовчати$",
+        r"\bтих(іше|енько)\b",
+        # A bare "тихо" is a command only at the start: "Чому так тихо?" is not.
+        r"^((а )?ну |будь ласка |ану |а тепер |все )?тихо\b(?! (тут|якось|сьогодні|стало|чомусь|як))",
+        r"\b(сиди|посидь|поводься|побудь) (тихо|тихенько|тихіше)\b",
+        r"\b(говори|розмовляй) (тихо|менше|поменше)\b",
+        r"\b(досить|годі|хватить|перестань|припини) (говорити|балакати|базікати|теревенити|розмовляти|балачок"
+        r"|базікання|теревенів)\b",
+        r"^(тс+|ш( ш)*|ша)\b",
+        r"\bтс+\b",
+        r"\bш( ш)+\b",
         r"\bне заважай\w*",
+        r"\bне відволікай\w*",
         r"\bтиш[аіу]\b",
         r"\bдай(те)? (мені )?спок(ій|ою)\b",
+        r"\bдай(те)? (мені )?(поспати|попрацювати|зосередитися|зосередитись|подумати)\b",
+        # "відстань" is also the noun "distance": only the imperative counts.
+        r"^((ну|та|ой|будь ласка) )?відстан(ь|ьте)\b(?! (до|між|\d))",
+        r"\bвідстан(ь|ьте) від мене\b",
         r"\bцить(те)?\b",
-        r"\bне (говори|говорити|балакай|балакати|розмовляй|розмовляти|базікай)\b",
+        # "Не говори так" / "не говори дурниць" is about what she says, not whether.
+        r"\bне (говори|говорити|балакай|балакати|розмовляй|розмовляти|базікай)\b"
+        r"(?! (так|такого|таке|дурниць)\b)",
         r"\bзаткни\w*",
         r"\bстули (пельку|писок|рота)\b",
         r"\bвідчепи\w*",
     ), ("помовч", "помовчи", "замовкни", "тихіше")),
+    Intent("sad", _rx(
+        _ME + rf" ({_SAD}|{_SELF_INSULTS})\b",
+        rf"^{_NOT_ABOUT_HER}.*\b(поганий|кепський|паршивий|жахливий|зіпсований|сумний) настрій\b",
+        rf"^{_NOT_ABOUT_HER}.*\bнастрій( (в мене|у мене|сьогодні|якийсь|зовсім))*"
+        r" (поганий|кепський|паршивий|жахливий|на нулі|ніякий|зіпсований|сумний)\b",
+        r"^((все|усе|якось|щось|ну) )*(погано|кепсько|паршиво|жахливо|сумно|сумненько|тоскно|так собі|зле"
+        r"|не дуже)( а (ти|в тебе|у тебе)( як)?)?$",
+        rf"\b(у|в) мене ({_DEATH})\b",
+        rf"\b({_DEATH}) ({_MY})\b",
+        rf"\b({_MY}) \w+ ({_DEATH})\b",
+        r"\bне стало\b",
+        r"\bплач(у|еться)\b",
+        r"\bхочеться плакати\b",
+    )),
     Intent("rude", _rx(
-        r"(?<!не )\b(дурепа|дурень|дурна|тупа|тупий|тупиця|ідіот|ідіотка|дебіл|дебілка|кретин|кретинка"
-        r"|придурок|придурка|бовдур|нікчема|потвора|лох|лошара)\b",
-        r"\bти (погана|жахлива|огидна|бридка|нікчемна|бісиш|дратуєш|набридла)\b",
+        _TY + rf" ({_INSULTS})\b",
+        r"\bти (мене |мені )?(погана|жахлива|огидна|бридка|нікчемна|бісиш|дратуєш|набридла|дістала)\b",
+        rf"^((ну|ох|ой|та) )?({_INSULTS_HER})( ти)?$",
         r"\bненавиджу тебе\b",
-        r"\bвідстій\w*",
+        r"\bтебе ненавиджу\b",
     )),
     Intent("feed", _rx(
         r"\b(поїж|поїсти|їсти|їж|їжа|їжу|годую|погодую|підкріпись|пригощаю|пригощайся)\b",
@@ -151,7 +268,10 @@ INTENTS: tuple[Intent, ...] = (
         r"\bсмаколик\w*",
         r"\bперекус\w*",
         r"\b(печиво|печивко|печеньк\w*|цукерк\w*|тортик\w*)\b",
-    ), ("нагодую", "смаколик", "печиво", "поїсти")),
+    ), ("нагодую", "смаколик", "печиво", "поїсти"),
+        # "Я хочу їсти", "мені треба поїсти", "вже можна їсти?": the user eats, not her.
+        exclude=_rx(rf"^{_NO_FOOD_FOR_HER}.*\b(я|мені|ми|нам|можна)\b.*\b({_EATING})\b"),
+    ),
     Intent("pet", _rx(
         r"\bпоглад\w*",
         r"\bгладж\w*",
@@ -169,7 +289,10 @@ INTENTS: tuple[Intent, ...] = (
         r"\bпоспи\b",
         r"\b(спатки|баїньки)\b",
         r"\bхочеш спати\b",
-    ), ("відпочинь",)),
+    ), ("відпочинь",),
+        # "Мені пора спати" is the user going to bed (a goodbye), not an order to her.
+        exclude=_rx(r"\b(мені|нам) (вже |теж |також |саме )?(пора|час)\b"),
+    ),
     Intent("time", _rx(
         r"\bкотр(а|ій) (зараз )?годин\w*",
         r"\bскільки (зараз )?(часу|годин)\b",
@@ -178,11 +301,15 @@ INTENTS: tuple[Intent, ...] = (
         r"\bчас зараз\b",
     )),
     Intent("mood", _rx(
+        # Her mood only: "у мене поганий настрій" is the user's (see "sad").
         r"\bпочуваєш\w*",
-        r"\bнастр(ій|ою|оєчок)\b",
-        r"\bсамопочуття\b",
+        r"\b(твій|який|як|який у тебе|який в тебе) настр\w*",
+        r"\b(у|в) тебе( \w+)? настр\w*",
+        r"\bнастр\w* (у тебе|в тебе|твій)\b",
+        r"\b(як|яке) (твоє |у тебе |в тебе )?самопочуття\b",
+        r"\bтвоє самопочуття\b",
         r"\bщо (ти )?відчуваєш\b",
-    ), ("почуваєшся", "настрій")),
+    ), ("почуваєшся",)),
     Intent("name", _rx(
         r"\bяк (тебе )?(звати|звуть|кличуть|називати)\b",
         r"\bхто ти\b",
@@ -192,14 +319,17 @@ INTENTS: tuple[Intent, ...] = (
     )),
     Intent("capabilities", _rx(
         r"\b(що|шо) (ти )?(вмієш|умієш|можеш|знаєш)\b",
-        r"\bдопомог\w*",
-        r"\bдопоможи\b",
+        # "допомога", not "дякую за допомогу" (thanks) or "ти мені допомогла".
+        r"\bдопомог(а|и)\b",
+        r"\bдопоможи\w*",
         r"\bhelp\b",
-        r"\bкоманд\w*",
+        # "Моя команда знову злила катку" is about a game.
+        r"\b(які|твої|список|всі|усі)( (в|у) тебе| є)? команд\w*",
+        r"^команди$",
         r"\bможливост\w*",
         r"\bщо з тобою (робити|можна)\b",
         r"\bінструкці\w*",
-    ), ("допомога", "допоможи", "команди")),
+    ), ("допомога", "допоможи")),
     Intent("joke", _rx(
         r"\bжарт\w*",
         r"\bпожартуй\w*",
@@ -217,9 +347,22 @@ INTENTS: tuple[Intent, ...] = (
         r"\b(запитай|спитай|задай|постав) (мене|мені|питання|запитання|щось)\b",
     )),
     Intent("how_are_you", _rx(
-        r"\bяк (у тебе |в тебе )?(справи|справа|справці|ся маєш|поживаєш|життя|ти|воно|день)\b",
+        r"\bяк (у тебе |в тебе )?(справи|справа|справці|ся маєш|поживаєш|життя|воно|день)\b",
+        # "як ти?" - but not "як ти думаєш, ...".
+        r"\bяк ти( там| сьогодні| взагалі| поживаєш| загалом)?$",
+        r"^(а |ну )?ти як( там| сьогодні)?$",
+        # "Чудово, а в тебе?" answers her "як настрій?" and asks back.
+        rf"\b({_GOOD_STRONG}|{_GOOD_WEAK})\b.*\bа (ти|в тебе|у тебе)( як)?$",
         r"\bщо нового\b",
         r"\bшо (як|нового)\b",
+    )),
+    Intent("good", _rx(
+        # The user is fine ("Все супер", "У мене все добре"): the whole message, so
+        # "все добре з тобою?" or "добре, помовч" never land here.
+        rf"^(дякую )?(((у|в) мене|мені) )?((теж|також|все|усе|дуже|просто|сьогодні|цілком|загалом|ну|та) )*"
+        rf"({_GOOD_STRONG})( (дякую|все|усе|у мене|в мене))*$",
+        rf"^(дякую )?((((у|в) мене|мені) ((теж|також|все|усе|дуже|просто|сьогодні|цілком|загалом) )*)"
+        rf"|(((теж|також|ну|та) )*(все|усе) ((теж|також|дуже|просто|цілком) )*))({_GOOD_WEAK})( дякую)?$",
     )),
     Intent("thanks", _rx(
         r"\b(дякую|дякс|дяк|дяки|дякуємо|спасибі|спасибо|спс|сенкс|мерсі|thanks|thx)\b",
@@ -227,15 +370,24 @@ INTENTS: tuple[Intent, ...] = (
         r"\bвдячн\w*",
     ), ("дякую", "спасибі")),
     Intent("compliment", _rx(
-        r"(?<!не )\b(класна|класний|класно|мила|миленька|милота|мило|гарна|гарненька|красива|красуня"
-        r"|найкраща|найкращий|чудова|чудовий|чудово|крута|крутий|круто|розумна|розумниця|розумничка|молодець"
-        r"|молодчинка|прекрасна|прекрасний|симпатична|сонечко|зайчик|котик|кицю|киця|лапочка|няшка|няша|супер)\b",
-        r"\b(люблю|обожнюю) тебе\b",
+        _TY + rf" ({_COMPLIMENTS})\b",
+        rf"^((ну|яка|ох|ой|о|моя|ти ж|ти моя|ти в мене) )*({_COMPLIMENTS_ALONE})"
+        r"( (ти|моя|ти моя|ти в мене|в мене|у мене))*$",
+        r"^((як|яка|ну|ой|ох) )*(ж )?(мило|милота|миленько)$",
+        r"\b(люблю|обожнюю|кохаю) тебе\b",
+        r"\bтебе (люблю|обожнюю|кохаю)\b",
         r"\bподобаєшся\b",
     ), ("молодець", "красива", "чудова", "найкраща", "розумниця")),
     Intent("bye", _rx(
         r"\b(бувай|бувайте|бувайчики|па па|пока|бай|bye|чао|прощавай|до зустрічі|до побачення|до завтра"
-        r"|до скорого|на добраніч|добраніч|доброї ночі|на все добре|йду спати|я пішов|я пішла|мені пора)\b",
+        r"|до скорого|на добраніч|добраніч|на все добре|йду спати|піду спати|я пішов|я пішла)\b",
+        r"\b(мені|нам) (вже |теж |також |саме )?пора\b",
+        r"\b(мені|нам) (вже |теж |також |саме )?час (йти|іти|спати|бігти)\b",
+        r"\b(спокійної|доброї|гарної|солодкої|тихої) ночі\b",
+        # Wishes for the rest of the day; "доброго дня/вечора" stays a greeting.
+        r"\b(гарного|хорошого|чудового|вдалого|приємного|гарних|хороших|вдалих)"
+        r" (дня|вечора|вихідних|тижня)\b",
+        r"\bсолодких снів\b",
         r"^па$",
         r"^(ну )?поки( поки)?$",
     ), ("бувайте", "добраніч")),
@@ -279,20 +431,36 @@ def _within_one_edit(a: str, b: str) -> bool:
 MIN_FUZZY_LENGTH = 5
 
 
+def _corrected(words: list[str], triggers: tuple[str, ...]) -> str | None:
+    """The message with every word that is one typo away from a trigger replaced by
+    that trigger, or None when nothing was corrected."""
+    changed = False
+    out: list[str] = []
+    for word in words:
+        if len(word) >= MIN_FUZZY_LENGTH and word not in triggers:
+            fix = next((t for t in triggers if _within_one_edit(word, t)), None)
+            if fix is not None:
+                word, changed = fix, True
+        out.append(word)
+    return " ".join(out) if changed else None
+
+
 def detect_intent(text: str) -> str:
     """The intent name for a chat message ("unknown" if nothing matched)."""
     prepared = _prepare(text)
     if not prepared:
         return "unknown"
     for intent in INTENTS:
-        if any(pattern.search(prepared) for pattern in intent.patterns):
+        if intent.matches(prepared):
             return intent.name
-    words = [w for w in prepared.split() if len(w) >= MIN_FUZZY_LENGTH]
-    if words:
-        for intent in INTENTS:
-            for trigger in intent.fuzzy_words:
-                if any(_within_one_edit(word, trigger) for word in words):
-                    return intent.name
+    # Typos: correct towards an intent's trigger words, then apply that intent's
+    # own patterns, so "ця гра чудвоа" is still not a compliment to her.
+    words = prepared.split()
+    for intent in INTENTS:
+        if intent.fuzzy_words:
+            corrected = _corrected(words, intent.fuzzy_words)
+            if corrected is not None and intent.matches(corrected):
+                return intent.name
     return "unknown"
 
 
@@ -358,17 +526,23 @@ class OfflineChatResponder:
             log.exception("chat action %s failed", perform_name)
             return ChatReply(text=FALLBACKS["action_unavailable"])
         keys: tuple[str, ...] = ()
+        fallback = intent
         if isinstance(outcome, str) and outcome:
             keys = (f"interaction.{perform_name}.{outcome}",)
-        return self._reply(intent, keys, action=reply_action)
+            if f"{intent}.{outcome}" in FALLBACKS:
+                fallback = f"{intent}.{outcome}"
+        # A refusal (or an outcome we do not know) did not feed / pet / rest her.
+        succeeded = isinstance(outcome, str) and outcome in SUCCESS_OUTCOMES[perform_name]
+        return self._reply(intent, keys, action=reply_action if succeeded else "", fallback=fallback)
 
-    def _reply(self, intent: str, keys: tuple[str, ...], action: str = "", **variables: Any) -> ChatReply:
+    def _reply(self, intent: str, keys: tuple[str, ...], action: str = "", fallback: str | None = None,
+               **variables: Any) -> ChatReply:
         speech = self._selector.say(*keys, solicited=True, **variables) if keys else None
         if speech is not None:
             return ChatReply(text=speech.text, state=speech.state, portrait=speech.portrait, action=action)
-        fallback = FALLBACKS.get(intent, FALLBACKS["unknown"])
+        template = FALLBACKS.get(fallback or intent, FALLBACKS["unknown"])
         values = {"name": self._settings().character.name, "time": variables.get("time") or self._time()}
-        return ChatReply(text=fallback.format_map(values), action=action)
+        return ChatReply(text=template.format_map(values), action=action)
 
     def _time(self) -> str:
         return format_clock(datetime.fromtimestamp(self._clock.now()))

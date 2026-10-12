@@ -3,8 +3,8 @@
 * :func:`apply_no_activate` makes a window that never takes focus: clicking
   her must not steal the keyboard from the game or editor the user is in.
 * :func:`foreground_fullscreen` answers "does the foreground window cover
-  its whole monitor?" (a game, a video, a presentation) from geometry only -
-  no title, no process name, so it needs no permission.
+  its whole monitor?" (a game, a video, a presentation) from geometry and
+  style bits only - no title, no process name, so it needs no permission.
 
 Signatures are declared explicitly (``argtypes``/``restype``) on a private
 ``WinDLL`` instance: with ctypes' default ``int`` return type a 64-bit HWND
@@ -29,6 +29,10 @@ log = logging.getLogger(__name__)
 IS_WINDOWS = sys.platform == "win32"
 
 GWL_EXSTYLE = -20
+GWL_STYLE = -16
+#: WS_BORDER | WS_DLGFRAME: a title bar.  Fullscreen windows (borderless or
+#: exclusive games, F11 browsers, video players, slideshows) drop it.
+WS_CAPTION = 0x00C00000
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_APPWINDOW = 0x00040000
 WS_EX_NOACTIVATE = 0x08000000
@@ -86,6 +90,12 @@ class WinApi(Protocol):
 
     def monitor_rect(self, hwnd: int) -> Box | None: ...
 
+    def is_maximized(self, hwnd: int) -> bool: ...
+
+    def style(self, hwnd: int) -> int:
+        """``GWL_STYLE`` as an unsigned 32-bit value (0 if it cannot be read)."""
+        ...
+
 
 if IS_WINDOWS:  # pragma: no cover - exercised by the Windows CI job
     from ctypes import wintypes
@@ -115,6 +125,7 @@ if IS_WINDOWS:  # pragma: no cover - exercised by the Windows CI job
             "GetForegroundWindow": proto("GetForegroundWindow", _HWND),
             "IsWindowVisible": proto("IsWindowVisible", wintypes.BOOL, _HWND),
             "IsIconic": proto("IsIconic", wintypes.BOOL, _HWND),
+            "IsZoomed": proto("IsZoomed", wintypes.BOOL, _HWND),
             "GetClassNameW": proto("GetClassNameW", ctypes.c_int, _HWND, wintypes.LPWSTR, ctypes.c_int),
             "GetWindowRect": proto("GetWindowRect", wintypes.BOOL, _HWND, ctypes.POINTER(wintypes.RECT)),
             "MonitorFromWindow": proto("MonitorFromWindow", wintypes.HMONITOR, _HWND, wintypes.DWORD),
@@ -171,6 +182,13 @@ if IS_WINDOWS:  # pragma: no cover - exercised by the Windows CI job
                 return None
             r = info.rcMonitor
             return Box(r.left, r.top, r.right, r.bottom)
+
+        def is_maximized(self, hwnd: int) -> bool:
+            return bool(self._u["IsZoomed"](hwnd))
+
+        def style(self, hwnd: int) -> int:
+            # LONG on 32-bit: WS_POPUP (the top bit) would read as negative.
+            return int(self._u["GetWindowLongPtr"](hwnd, GWL_STYLE)) & 0xFFFFFFFF
 
     _API: WinApi | None = _RealWinApi(_USER32) if _USER32 is not None else None
 else:
@@ -230,6 +248,14 @@ def foreground_fullscreen(own_hwnds: Iterable[int] = (), api: WinApi | None = No
     Ignored (False): no foreground window, our own windows, invisible or
     minimized windows and the desktop / taskbar shell windows (they are
     monitor-sized but nobody is "watching" them).  *api* is for tests.
+
+    Also not fullscreen: an ordinary *maximized* window that keeps its title
+    bar.  Windows pushes its resize border off-screen, so its rect is the work
+    area grown by ~8 px on every side - which covers the whole monitor when
+    that monitor has no taskbar (auto-hide, or a second display).  Real
+    fullscreen windows drop ``WS_CAPTION``; the zoom check keeps old
+    "windowed fullscreen" games (a captioned window moved so its frame is
+    off-screen, never maximized) counting as fullscreen.
     """
     api = api if api is not None else _API
     if api is None:
@@ -244,9 +270,9 @@ def foreground_fullscreen(own_hwnds: Iterable[int] = (), api: WinApi | None = No
             return False
         window = api.window_rect(hwnd)
         monitor = api.monitor_rect(hwnd)
-        if window is None or monitor is None:
+        if window is None or monitor is None or not covers(window, monitor):
             return False
-        return covers(window, monitor)
+        return not (api.is_maximized(hwnd) and (api.style(hwnd) & WS_CAPTION) == WS_CAPTION)
     except Exception as exc:
         _warn_once("fullscreen", "fullscreen check failed: %s", exc)
         return False

@@ -89,10 +89,16 @@ class AppFacade(Protocol):
 
     def data_dir(self) -> Path: ...
 
+    def has_tray(self) -> bool:
+        """Whether the tray icon exists.  Without it click-through is refused: her own
+        menu would be the only way to turn it off again, and click-through blocks it."""
+        ...
+
     def stop_all_observation(self) -> None: ...
 
     def wipe_history(self) -> None: ...
 
     def wipe_all(self) -> None:
-        """Delete all data and return to first-run state (the app restarts its state)."""
+        """Delete all data (database, log files, the open chat) and return to
+        first-run state (the app restarts its state)."""
         ...

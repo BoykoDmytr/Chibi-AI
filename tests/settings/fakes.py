@@ -29,6 +29,7 @@ class FakeFacade:
         self.chat_error: Exception | None = None
         self.totals: list[GameTotals] = []
         self.known_games = 152
+        self.tray = True
         self.portraits: dict[str, QPixmap] = {}
         self.portrait_requests: list[str] = []
         self.needs_view = NeedsView(
@@ -79,6 +80,9 @@ class FakeFacade:
 
     def known_games_count(self) -> int:
         return self.known_games
+
+    def has_tray(self) -> bool:
+        return self.tray
 
     def portrait(self, name: str) -> QPixmap | None:
         self.portrait_requests.append(name)

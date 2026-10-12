@@ -8,7 +8,8 @@ where an entry is ``{"id", "text", "tone", "state", "portrait", "requires"?}``.
   tone or state, duplicate id, empty text, unknown placeholder) is skipped
   with a warning instead of crashing the app: a typo in one line must not
   silence the character.  A missing or unreadable file gives an empty bank
-  (logged as an error) - she then simply has nothing to say offline.
+  (logged as an error) - she then simply has nothing to say offline.  Lines
+  of a key in :data:`REQUIRED_STATES` always get that key's posture state.
 * :class:`PhraseSelector` picks a line for one of several keys:
 
   - personality sliders weight the tones (no sarcasm at all below 10%);
@@ -56,6 +57,11 @@ STATES: frozenset[str] = frozenset(s.value for s in CharacterState)
 PLACEHOLDERS: frozenset[str] = frozenset({"name", "user", "game", "app", "duration", "time"})
 #: Values for ``requires``: every placeholder except ``name``, which is always filled.
 REQUIREMENTS: frozenset[str] = PLACEHOLDERS - {"name"}
+#: Keys whose lines accompany a posture change and must carry that posture.
+#: "Go to sleep" puts her to sleep at user priority; a line with an action state
+#: such as "yawn" would then wake her straight away (the state machine turns any
+#: action while asleep into idle), so she would say "лягаю" and stay awake.
+REQUIRED_STATES: dict[str, str] = {"interaction.rest.sleep": CharacterState.SLEEP.value}
 
 #: Anti-repeat window cap (uses of the same key).
 MAX_REPEAT_WINDOW = 30
@@ -198,6 +204,12 @@ def _parse_entry(key: str, entry: Any, seen_ids: set[str]) -> tuple[Phrase | Non
     state = entry.get("state", "talk")
     if not isinstance(state, str) or state not in STATES:
         return None, f"{phrase_id}: unknown state {state!r}"
+    required_state = REQUIRED_STATES.get(key)
+    if required_state is not None and state != required_state:
+        # Keep the line (its text is fine) but never let it undo the posture.
+        log.warning("phrase %s: state %r replaced by %r, required for %s",
+                    phrase_id, state, required_state, key)
+        state = required_state
     portrait = entry.get("portrait", "")
     if not isinstance(portrait, str):
         return None, f"{phrase_id}: portrait is not a string"

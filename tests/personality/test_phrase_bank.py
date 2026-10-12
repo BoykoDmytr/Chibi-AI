@@ -10,7 +10,7 @@ import pytest
 
 from chibi.character.states import CharacterState
 from chibi.core.paths import character_pack_dir
-from chibi.personality.phrases import DEFAULT_PATH, PhraseBank, template_fields
+from chibi.personality.phrases import DEFAULT_PATH, REQUIRED_STATES, PhraseBank, template_fields
 
 TONES = {"warm", "playful", "sarcastic", "caring"}
 PORTRAITS = {
@@ -50,6 +50,7 @@ MIN_COUNTS: dict[str, int] = {
     "quiet.ack": 6, "quiet.end": 4,
     "chat.greeting": 8, "chat.how_are_you": 8, "chat.name": 5, "chat.capabilities": 4, "chat.thanks": 5,
     "chat.compliment": 6, "chat.rude": 5, "chat.bye": 5, "chat.time": 4, "chat.unknown": 10,
+    "chat.user_sad": 5, "chat.user_good": 5,
     **{f"chat.mood.{mood}": 2 for mood in MOODS},
 }
 #: Keys whose every phrase must use a placeholder (the rule always passes it).
@@ -72,6 +73,14 @@ GENDERED_BARE = re.compile(
 # Letters that exist in Russian but not in Ukrainian: a cheap guard against russisms / wrong layout.
 RUSSIAN_ONLY = re.compile(r"[ыэъёЫЭЪЁ]")
 FANCY_APOSTROPHES = re.compile("[’‘ʼ`´]")
+# Russisms / calques found in review: "панель задач" (Windows says "панель завдань"),
+# "рахується" for "counts" (Russian "считается"), "нічогонероблення".
+RUSSISMS = re.compile(r"панел\w* задач|рахуєт\w*|рахуюся|нічогонероблен\w*", re.IGNORECASE)
+# {duration} is an accusative ("1 годину"): never a subject or bare exclamation,
+# never after "цілих".
+DURATION_AS_SUBJECT = re.compile(r"(?:^|[.!?…—]\s*)\{duration\}|цілих\s+\{duration\}", re.IGNORECASE)
+# A quoted title after a bare preposition needs declension ("у «Відьмак 3»"): say "у грі «...»".
+PREPOSITION_BEFORE_TITLE = re.compile(r"\b(?:у|в|для|до|на|про|за|від|з|із)\s+«\{game\}»", re.IGNORECASE)
 MIXED_SCRIPT_WORD = re.compile(r"\b(?=\w*[a-zA-Z])(?=\w*[Ѐ-ӿ])\w+\b")
 
 
@@ -165,6 +174,55 @@ def test_texts_are_clean(entries):
         assert text.count("«") == text.count("»"), entry["id"]
         assert text.count("{") == text.count("}"), entry["id"]
         assert text[-1] in ".!?…»)", entry["id"]
+        assert not RUSSISMS.search(text), entry["id"]
+
+
+# Reproaches for being away: the companion never punishes absence.
+GUILT_TRIP = re.compile(r"нарешті згадали|покинули|проміняли|без жодної звісточки|не ображаюся",
+                        re.IGNORECASE)
+
+
+def test_welcome_back_lines_do_not_guilt_trip(bank):
+    keys = [k for k in sorted(bank.keys()) if k.startswith(("greet.", "user_returned."))]
+    offenders = [p.id for k in keys for p in bank.phrases(k) if GUILT_TRIP.search(p.text)]
+    assert offenders == []
+
+
+def test_unknown_replies_are_neutral(bank):
+    # The unrecognised message may be sad news ("у мене помер кіт").
+    assert not any("цікаво" in p.text.lower() for p in bank.phrases("chat.unknown"))
+
+
+def test_duration_is_never_a_subject(entries):
+    offenders = [entry["id"] for _key, entry in entries if DURATION_AS_SUBJECT.search(entry["text"])]
+    assert offenders == []
+    assert DURATION_AS_SUBJECT.search("{duration} коду!")
+    assert DURATION_AS_SUBJECT.search("Ой! {duration} без тебе.")
+    assert DURATION_AS_SUBJECT.search("Цілих {duration}!")
+    assert not DURATION_AS_SUBJECT.search("Ти кодиш уже {duration}!")
+
+
+def test_quoted_titles_follow_a_generic_noun(entries):
+    offenders = [entry["id"] for _key, entry in entries if PREPOSITION_BEFORE_TITLE.search(entry["text"])]
+    assert offenders == []
+    assert PREPOSITION_BEFORE_TITLE.search("Час для «{game}»!")
+    assert not PREPOSITION_BEFORE_TITLE.search("Час для гри «{game}»!")
+
+
+def test_lines_that_accompany_a_posture_carry_it(raw):
+    # "Йди спати" puts her to sleep; a "yawn" line would wake her straight away.
+    assert REQUIRED_STATES == {"interaction.rest.sleep": "sleep"}
+    for key, state in REQUIRED_STATES.items():
+        assert raw["phrases"][key], key
+        for item in raw["phrases"][key]:
+            assert item["state"] == state, item["id"]
+
+
+def test_loader_enforces_the_posture_state(caplog):
+    data = {"version": 1, "phrases": {"interaction.rest.sleep": [entry("a", state="yawn"), entry("b")]}}
+    bank = PhraseBank.from_dict(data)
+    assert [p.state for p in bank.phrases("interaction.rest.sleep")] == ["sleep", "sleep"]
+    assert "required for interaction.rest.sleep" in caplog.text
 
 
 def test_no_gendered_forms_about_the_user(entries):

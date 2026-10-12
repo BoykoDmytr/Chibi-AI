@@ -36,6 +36,7 @@ from chibi.personality.reactions import (
     budget_limit,
     idle_chatter_rates,
     min_gap_seconds,
+    speakable_title,
 )
 
 MIN = 60.0
@@ -94,18 +95,29 @@ def local(hour, minute=0, day=10):
 
 
 class Harness:
-    def __init__(self, bus, db, clock, rng=None, genre=None, bank=BANK, settings=None, sleeping=None):
+    def __init__(self, bus, db, clock, rng=None, genre=None, bank=BANK, settings=None, sleeping=None,
+                 permissions=None, started=True):
         self.bus, self.db, self.clock = bus, db, clock
         self.settings = settings or Settings()
         self.selector = PhraseSelector(bank, PhraseHistoryRepository(db), lambda: self.settings, clock,
                                        random.Random(3))
         self.engine = ReactionEngine(bus, self.selector, lambda: self.settings, clock,
                                      rng if rng is not None else FixedRandom(0.99), game_genre=genre,
-                                     sleeping=sleeping)
+                                     sleeping=sleeping, permissions=permissions)
         self.speech: list[SpeechRequested] = []
         self.quiet: list[QuietModeChanged] = []
         bus.subscribe(SpeechRequested, self.speech.append)
         bus.subscribe(QuietModeChanged, self.quiet.append)
+        if started:
+            self.start_silently()
+
+    def start_silently(self):
+        """Deliver AppStarted as the app does (autonomous rules wait for it), without
+        the greeting, so a test starts with an unused budget and no min gap."""
+        dnd = self.settings.behavior.do_not_disturb
+        self.settings.behavior.do_not_disturb = True
+        assert self.fire(AppStarted()) == []
+        self.settings.behavior.do_not_disturb = dnd
 
     def fire(self, *events):
         for event in events:
@@ -183,10 +195,17 @@ def test_first_run_greeting(h):
 
 
 def test_return_after_a_long_absence(h):
-    (speech,) = h.fire(AppStarted(away_seconds=9 * HOUR))
+    (speech,) = h.fire(AppStarted(away_seconds=21 * HOUR))
     assert speech.source == "greet.return_long"
-    assert speech.text == "<greet.return_long> 9 годин"
+    assert speech.text == "<greet.return_long> 21 годину"
     assert not speech.solicited
+
+
+@pytest.mark.parametrize("away", [9 * HOUR, 12 * HOUR, 20 * HOUR])
+def test_a_night_away_gets_the_morning_greeting(h, clock, away):
+    # Shut down at 23:00, started at 08:00: a normal morning, not "where have you been".
+    clock.set_now(local(8))
+    assert sources(h.fire(AppStarted(away_seconds=away))) == ["greet.morning"]
 
 
 @pytest.mark.parametrize(
@@ -797,3 +816,137 @@ def test_tick_tolerates_long_gaps(h, clock):
     h.tick()
     clock.advance(timedelta(days=2).total_seconds())
     h.tick()  # no exception, dt is clamped
+
+
+# -- review regressions ------------------------------------------------------------------------
+
+
+def test_no_needs_hint_before_the_greeting(bus, db, clock):
+    # integ-9: the app restores needs (NeedsChanged) before it publishes AppStarted.
+    clock.set_now(local(14))
+    h = Harness(bus, db, clock, started=False)
+    assert h.fire(needs(hunger=90)) == []
+    assert h.tick() == []  # nothing autonomous before the greeting either
+    assert sources(h.fire(needs(hunger=90), AppStarted(away_seconds=2 * HOUR))) == ["greet.day"]
+    clock.advance(10)
+    assert h.tick() == []  # the greeting's min gap still applies to the hint
+    clock.advance(2 * MIN)
+    assert sources(h.tick()) == ["needs.hungry"]
+
+
+class Permissions:
+    def __init__(self, granted=True):
+        self.granted = granted
+
+    def is_granted(self, permission):
+        assert permission is Permission.APP_METADATA
+        return self.granted
+
+
+def test_activity_events_after_the_kill_switch_are_ignored(bus, db, clock):
+    # privsec-2: events enqueued before the revocation are dispatched after it.
+    clock.set_now(local(8))
+    permissions = Permissions(granted=False)
+    h = Harness(bus, db, clock, rng=random.Random(11), permissions=permissions)
+    stale = [
+        game(),
+        app(ActivityCategory.PROGRAMMING),
+        app(ActivityCategory.GAMING),
+        milestone(ActivityCategory.GAMING, 3 * HOUR, AppInfo("cs2.exe", "CS2")),
+        UserIdle(idle_seconds=10 * MIN),
+        UserReturned(away_seconds=3 * HOUR),
+    ]
+    for event in stale:
+        assert h.fire(event) == [], event
+    # Nothing was remembered: no game title in memory, idle chatter is not suppressed.
+    assert idle_count(simulate(h, 3)) > 0
+    assert sources(h.fire(needs(hunger=95))) == ["needs.hungry"]  # not "away" either
+
+
+def test_game_end_after_revocation_forgets_silently(bus, db, clock):
+    clock.set_now(local(8))
+    permissions = Permissions()
+    h = Harness(bus, db, clock, rng=random.Random(11), permissions=permissions)
+    h.settings.activity.comment_on_games = False
+    h.fire(game())
+    permissions.granted = False  # revoked; the monitor's GameEnded is still in the queue
+    h.settings.activity.comment_on_games = True
+    assert h.fire(GameEnded(game_id="cs2", title="CS2", duration_seconds=HOUR)) == []
+    assert idle_count(simulate(h, 3)) > 0  # the game is gone
+
+
+def test_permission_check_failure_ignores_the_event(bus, db, clock, caplog):
+    class Broken:
+        def is_granted(self, _permission):
+            raise RuntimeError("db gone")
+
+    h = Harness(bus, db, clock, permissions=Broken())
+    assert h.fire(game()) == []
+    assert "permission check failed" in caplog.text
+
+
+def test_granted_permission_changes_nothing(bus, db, clock):
+    h = Harness(bus, db, clock, permissions=Permissions())
+    assert sources(h.fire(game())) == ["game_start.cs2"]
+
+
+def test_forgotten_game_end_is_silent(bus, db, clock):
+    # The user made the game private while it ran: drop it, say nothing.
+    clock.set_now(local(8))
+    h = Harness(bus, db, clock, rng=random.Random(11), permissions=Permissions())
+    h.settings.activity.comment_on_games = False
+    h.fire(game())
+    h.settings.activity.comment_on_games = True
+    clock.advance(30 * MIN)
+    # (The monitor sends an empty title; a non-empty one proves the flag alone silences it.)
+    assert h.fire(GameEnded(game_id="cs2", title="CS2", duration_seconds=3 * HOUR, forgotten=True)) == []
+    assert idle_count(simulate(h, 3)) > 0
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [("osu!", "osu"), ("Why?!", "Why"), ("Dota 2", "Dota 2"), ("!!!", "!!!"), ("Hades II ", "Hades II")],
+)
+def test_speakable_title(title, expected):
+    assert speakable_title(title) == expected
+
+
+def test_titles_lose_trailing_marks_in_lines(h, clock):
+    # UK-11: "{game}! Не збийся з ритму" with "osu!" must not read "osu!!".
+    assert h.fire(game("osu", "osu!"))[0].text == "<game_start.generic> osu"
+    clock.advance(10 * MIN)
+    assert h.fire(GameEnded(game_id="osu", title="osu!", duration_seconds=HOUR))[0].text == (
+        "<game_end.generic> osu 1 годину"
+    )
+
+
+def test_real_bank_never_doubles_the_title_punctuation(bus, db, clock):
+    h = Harness(bus, db, clock, rng=random.Random(4), bank=PhraseBank.load(), genre=lambda _gid: "rhythm")
+    h.settings.behavior.max_unsolicited_per_hour = 100
+    said = []
+    for _ in range(40):
+        clock.advance(25 * MIN)
+        said.extend(s.text for s in h.fire(game("osu", "osu!")))
+    assert len(said) == 40
+    assert any("osu" in text for text in said)
+    assert not any("osu!!" in text or "osu!?" in text or "«osu!»" in text for text in said)
+
+
+def test_quiet_rest_gesture_keeps_her_asleep(bus, db, clock):
+    # integ-3: the gesture state for "go to sleep" must be the sleep posture.
+    h = Harness(bus, db, clock, bank=PhraseBank.load())
+    h.engine.set_quiet(60)
+    states = set()
+    for _ in range(20):
+        (gesture,) = h.fire(InteractionOutcome(kind=InteractionKind.REST, outcome="sleep"))
+        assert gesture.text == ""
+        states.add(gesture.state)
+        clock.advance(MIN)
+    assert states == {"sleep"}
+
+
+def test_spoken_rest_lines_keep_her_asleep(bus, db, clock):
+    h = Harness(bus, db, clock, bank=PhraseBank.load())
+    rest = InteractionOutcome(kind=InteractionKind.REST, outcome="sleep")
+    states = {h.fire(rest)[0].state for _ in range(20)}
+    assert states == {"sleep"}

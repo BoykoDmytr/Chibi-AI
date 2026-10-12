@@ -32,10 +32,18 @@ Solicited lines (``InteractionOutcome`` - the user clicked, petted, fed her)
 bypass the gate entirely.  In quiet mode they become *state-only* speech
 (empty text): she still reacts with a gesture, silently.
 
+Nothing self-initiated (needs hints, late-night care, idle chatter) is said
+before ``AppStarted``: the needs restored at launch are published before it,
+and a "я голодна" must not open the session ahead of the greeting.
+
 Privacy: rules only ever see what the monitor already filtered - private apps
 arrive as ``AppInfo.private_app()`` / category ``PRIVATE`` and are ignored.
-Nothing here logs rendered text, app names or game titles; debug logs name
-the rule key only.
+Given a permission checker, activity events (games, apps, milestones, idle /
+return) are only acted on while ``APP_METADATA`` is granted *when they are
+dispatched*: the monitor may enqueue one just before the kill switch and the
+bus delivers it after.  A ``GameEnded(forgotten=True)`` (the game was made
+private while running) is forgotten silently.  Nothing here logs rendered
+text, app names or game titles; debug logs name the rule key only.
 
 Main (Qt) thread only: handlers run from the bus dispatch, ``tick`` from a
 main-thread timer.
@@ -49,7 +57,7 @@ import random
 from collections import deque
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 from chibi.core.clock import Clock
 from chibi.core.config import PersonalitySettings, Settings
@@ -88,7 +96,9 @@ BUDGET_WINDOW_SECONDS = HOUR
 SOLICITED_GRACE_SECONDS = 15.0
 
 #: App start: "welcome back" instead of a time-of-day greeting after this long.
-RETURN_LONG_AWAY_SECONDS = 8 * HOUR
+#: Longer than a night (23:00 -> 08:00 is a normal morning, not a comeback) and
+#: than a working day away from the PC.
+RETURN_LONG_AWAY_SECONDS = 20 * HOUR
 
 GAME_COOLDOWN_SECONDS = 20 * MINUTE  # per game id
 GAME_GLOBAL_COOLDOWN_SECONDS = 3 * MINUTE  # any game start
@@ -142,6 +152,21 @@ MAX_TICK_SECONDS = 60.0
 IDLE_KEYS: tuple[str, ...] = ("idle.joke", "idle.thought", "idle.question")
 
 
+class PermissionChecker(Protocol):
+    def is_granted(self, permission: Permission) -> bool: ...
+
+
+def speakable_title(title: str) -> str:
+    """A game title as it reads inside a sentence.
+
+    Lines put punctuation right after ``{game}`` ("{game}! Не збийся з ритму"),
+    so a title that already ends in "!" or "?" ("osu!") would render "osu!!".
+    Only trailing marks go, and never the whole title.
+    """
+    stripped = title.rstrip().rstrip("!?").rstrip()
+    return stripped or title
+
+
 def budget_limit(settings: Settings) -> int:
     """Unsolicited lines allowed per rolling hour."""
     scale = 0.4 + 1.2 * settings.personality.commentary_frequency / 100
@@ -178,11 +203,15 @@ class ReactionEngine:
         rng: random.Random,
         game_genre: Callable[[str], str | None] | None = None,
         sleeping: Callable[[], bool] | None = None,
+        *,
+        permissions: PermissionChecker | None = None,
     ) -> None:
         """``game_genre`` maps a game id to its genre (``"shooter"``) for
         ``game_start.genre.<genre>`` lines; without it only game-specific and
         generic lines are used.  ``sleeping`` tells whether she is asleep, so
-        she does not wake herself up to tell a joke."""
+        she does not wake herself up to tell a joke.  ``permissions`` is
+        checked for ``APP_METADATA`` whenever an activity event is dispatched
+        (None: trust the events, as in tests)."""
         self._bus = bus
         self._selector = selector
         self._settings = settings
@@ -190,6 +219,8 @@ class ReactionEngine:
         self._rng = rng
         self._game_genre = game_genre
         self._sleeping = sleeping
+        self._permissions = permissions
+        self._started = False  # AppStarted seen: autonomous lines may follow the greeting
 
         self._quiet = False
         self._quiet_until: float | None = None  # epoch seconds, for display
@@ -379,12 +410,27 @@ class ReactionEngine:
         self._foreground = None
         self._user_away = False
 
+    def _observing(self) -> bool:
+        """May activity events be acted on now?  Checked at dispatch time, because an
+        event enqueued just before the kill switch is delivered after it, and acting
+        on it would keep a game title in memory and idle chatter off for good."""
+        if self._permissions is None:
+            return True
+        try:
+            return bool(self._permissions.is_granted(Permission.APP_METADATA))
+        except Exception:
+            log.exception("permission check failed; ignoring the activity event")
+            return False
+
     def _on_user_idle(self, _event: UserIdle) -> None:
+        if not self._observing():
+            return
         self._user_away = True
 
     def _autonomy_paused(self) -> bool:
-        """She is asleep or nobody is at the computer: no self-initiated chatter."""
-        if self._user_away:
+        """She is asleep, nobody is at the computer, or the app has not greeted yet:
+        no self-initiated chatter."""
+        if not self._started or self._user_away:
             return True
         if self._sleeping is None:
             return False
@@ -400,6 +446,7 @@ class ReactionEngine:
         return datetime.fromtimestamp(self._clock.now())
 
     def _on_app_started(self, event: AppStarted) -> None:
+        self._started = True
         settings = self._settings()
         greeting = f"greet.{time_of_day(self._local_now())}"
         away = event.away_seconds
@@ -415,6 +462,8 @@ class ReactionEngine:
         self._speak(settings, keys, ignore_gap=True, **variables)
 
     def _on_game_started(self, event: GameStarted) -> None:
+        if not self._observing():
+            return
         self._games[event.game_id] = event.title
         settings = self._settings()
         if not settings.activity.comment_on_games:
@@ -427,7 +476,8 @@ class ReactionEngine:
         # A game launch is rare and salient and has its own cooldowns, so it
         # skips the minimum gap (a greeting a minute ago must not swallow it);
         # the hourly budget, DND, quiet mode and fullscreen still apply.
-        if self._speak(settings, self._game_start_keys(event.game_id), ignore_gap=True, game=event.title):
+        if self._speak(settings, self._game_start_keys(event.game_id), ignore_gap=True,
+                       game=speakable_title(event.title)):
             self._start_cooldown(per_game, "game")
 
     def _game_start_keys(self, game_id: str) -> list[str]:
@@ -445,7 +495,11 @@ class ReactionEngine:
         return [specific, *fallbacks]
 
     def _on_game_ended(self, event: GameEnded) -> None:
+        # Always forget the game (idle chatter waits while one runs), but say
+        # nothing about one the user made private or that ended after revocation.
         self._games.pop(event.game_id, None)
+        if event.forgotten or not self._observing():
+            return
         duration = event.duration_seconds
         if not math.isfinite(duration) or duration < GAME_END_MIN_SECONDS:
             return
@@ -458,11 +512,13 @@ class ReactionEngine:
             key = "game_end.long"
         else:
             key = "game_end.generic"
-        if self._speak(settings, [key, "game_end.generic"], game=event.title,
+        if self._speak(settings, [key, "game_end.generic"], game=speakable_title(event.title),
                        duration=format_duration(duration)):
             self._start_cooldown("game_end")
 
     def _on_foreground(self, event: ForegroundAppChanged) -> None:
+        if not self._observing():
+            return
         self._foreground = event.category
         self._user_away = False  # switching apps is a sign of life
         if event.app.private or event.category in (ActivityCategory.PRIVATE, ActivityCategory.UNKNOWN):
@@ -480,6 +536,8 @@ class ReactionEngine:
             self._start_cooldown(key)
 
     def _on_milestone(self, event: ActivityMilestone) -> None:
+        if not self._observing():
+            return
         rule = MILESTONE_RULES.get(event.category)
         if rule is None or event.app.private:
             return
@@ -498,11 +556,14 @@ class ReactionEngine:
             return
         variables: dict[str, Any] = {"duration": format_duration(seconds), "app": event.app.display_name}
         if event.category is ActivityCategory.GAMING:
-            variables["game"] = event.app.display_name or next(reversed(self._games.values()), None)
+            title = event.app.display_name or next(reversed(self._games.values()), None)
+            variables["game"] = speakable_title(title) if title else None
         if self._speak(settings, [key], **variables):
             self._start_cooldown(cooldown)
 
     def _on_user_returned(self, event: UserReturned) -> None:
+        if not self._observing():
+            return
         self._user_away = False
         away = event.away_seconds
         settings = self._settings()

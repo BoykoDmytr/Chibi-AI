@@ -481,12 +481,76 @@ def test_a_brief_switch_keeps_the_streak(h):
     assert milestone.seconds == 3600
 
 
-def test_a_gap_reports_only_the_highest_milestone(h):
+def test_a_freeze_ends_the_streak(h):
+    # The PC slept for two hours with the editor in front: that is not two hours of coding.
     h.grant()
     h.backend.fg = fg("code.exe")
     h.poll(0)
-    assert [m.seconds for m in of(h.poll(7300), ActivityMilestone)] == [7200]
-    assert [m.seconds for m in of(h.run_for(3600), ActivityMilestone)] == [10800]
+    h.run_for(1800)
+    assert of(h.poll(7300), ActivityMilestone) == []
+    assert of(h.run_for(3540), ActivityMilestone) == []  # the new streak began at the resume
+    assert [m.seconds for m in of(h.poll(60), ActivityMilestone)] == [3600]
+
+
+def test_sleeping_with_a_game_open_is_not_play(h):
+    """perf-2: 30 minutes of play, 8 hours of sleep with the game open, 10 more minutes."""
+    h.grant()
+    h.backend.fg = fg("cs2.exe")
+    h.backend.processes |= {"cs2.exe"}
+    h.poll(0)
+    h.run_for(1800)
+    h.backend.idle = 1.0  # a key press woke the PC
+    assert of(h.poll(8 * 3600), ActivityMilestone) == []
+    assert of(h.run_for(600), ActivityMilestone) == []
+    h.backend.processes -= {"cs2.exe"}
+    h.backend.fg = fg("explorer.exe")
+    (ended,) = of(h.poll(15), GameEnded)
+    # 1800 + 600 + 15 s observed, plus the normal 3 s poll wait before the freeze
+    assert ended.duration_seconds == 1800 + 600 + 15 + 3
+    assert not ended.forgotten
+
+
+def test_a_freeze_does_not_count_for_running_apps(h):
+    h.grant()
+    h.backend.processes |= {"code.exe"}
+    h.poll(0)
+    h.poll(8 * 3600)
+    h.backend.processes -= {"code.exe"}
+    (closed,) = of(h.poll(15), AppClosed)
+    assert closed.ran_seconds == 15 + 3
+
+
+def test_a_wall_clock_jump_alone_ends_the_streak_but_keeps_durations(h):
+    # Where the monotonic clock stops during sleep only the wall clock shows the gap;
+    # durations are monotonic, so they already leave the sleep out.
+    h.grant()
+    h.backend.fg = fg("cs2.exe")
+    h.backend.processes |= {"cs2.exe"}
+    h.poll(0)
+    h.run_for(3000)
+    h.clock.set_now(h.clock.now() + 8 * 3600)
+    assert of(h.run_for(600), ActivityMilestone) == []  # 3600 s of play, but not continuous
+    h.backend.processes -= {"cs2.exe"}
+    h.backend.fg = fg("explorer.exe")
+    (ended,) = of(h.poll(15), GameEnded)
+    assert ended.duration_seconds == 3000 + 600 + 15
+
+
+@pytest.mark.parametrize("interval", [3.0, 30.0])
+def test_regular_cycles_are_not_a_freeze(h, interval):
+    # Up to max(60 s, 5 poll intervals) between cycles is just a slow cycle.
+    h.settings.poll_interval_seconds = interval
+    h.grant()
+    h.backend.fg = fg("cs2.exe")
+    h.backend.processes |= {"cs2.exe"}
+    h.poll(0)
+    step = max(60.0, 5 * interval)
+    milestones = of(h.run_for(3600, step=step), ActivityMilestone)
+    assert [m.seconds for m in milestones] == [3600]
+    h.backend.processes -= {"cs2.exe"}
+    h.backend.fg = fg("explorer.exe")
+    (ended,) = of(h.poll(15), GameEnded)
+    assert ended.duration_seconds == 3600 + 15
 
 
 def test_no_milestones_for_unknown_apps(h):
@@ -749,6 +813,76 @@ def test_app_that_becomes_private_is_forgotten_silently(h):
     h.poll(0)
     h.monitor.reconfigure(ActivityClassifier(GameDatabase.load()), PrivacyFilter(["code.exe"]))
     assert h.poll(15) == []  # no "VS Code closed"
+
+
+def ends(events: list[Event]) -> list[tuple[str, str, float, bool]]:
+    return [(e.game_id, e.title, e.duration_seconds, e.forgotten) for e in of(events, GameEnded)]
+
+
+def test_game_that_becomes_private_while_running_is_forgotten(h):
+    """privsec-1: excluding a running game must not end it by name (or with a duration)."""
+    h.grant()
+    h.backend.fg = fg("cs2.exe")
+    h.backend.processes |= {"cs2.exe"}
+    h.poll(0)
+    h.run_for(40 * 60)
+    h.monitor.reconfigure(ActivityClassifier(GameDatabase.load()), PrivacyFilter(["cs2.exe"]))
+    events = h.poll()  # not even a scan is needed
+    assert ends(events) == [("cs2", "", 0.0, True)]
+    assert [e.category for e in of(events, ForegroundAppChanged)] == [C.PRIVATE]
+    assert "Counter-Strike" not in repr(events)
+    # It stays forgotten: no new start, and no "closed" when the scan sees it or when it exits.
+    assert h.run_for(600) == []
+    h.backend.processes -= {"cs2.exe"}
+    h.backend.fg = fg("explorer.exe")
+    assert [type(e) for e in h.poll(15)] == [ForegroundAppChanged]
+    assert "Counter-Strike" not in repr(h.events[-1])
+
+
+def test_game_excluded_just_as_it_closes_is_forgotten(h):
+    h.grant()
+    h.backend.processes |= {"eldenring.exe"}
+    h.poll(0)
+    h.run_for(600)
+    h.monitor.reconfigure(ActivityClassifier(GameDatabase.load()), PrivacyFilter(["eldenring.exe"]))
+    h.backend.processes -= {"eldenring.exe"}
+    events = h.poll(15)
+    assert ends(events) == [("eldenring", "", 0.0, True)]
+    assert of(events, AppClosed) == []
+
+
+def test_foreground_only_game_that_becomes_private_is_forgotten(h):
+    h.grant()
+    h.backend.fg = fg("coolgame.exe", exe=STEAM_GAME)  # the scan never lists it
+    h.poll(0)
+    h.monitor.reconfigure(ActivityClassifier(GameDatabase.load()), PrivacyFilter(["coolgame.exe"]))
+    events = h.poll(15)
+    assert ends(events) == [("exe:coolgame.exe", "", 0.0, True)]
+    assert "Cool Game" not in repr(events)
+    assert h.poll(15) == []
+
+
+def test_excluding_one_process_of_a_game_keeps_its_session(h):
+    h.grant()
+    h.poll(0)
+    h.backend.processes |= {"stalker2.exe", "stalker2-win64-shipping.exe"}
+    h.poll(15)
+    h.monitor.reconfigure(ActivityClassifier(GameDatabase.load()), PrivacyFilter(["stalker2.exe"]))
+    assert of(h.poll(15), GameEnded) == []
+    # The game stays visible through its other process; once that exits, it ends as usual.
+    h.backend.processes -= {"stalker2-win64-shipping.exe"}
+    assert ends(h.poll(15)) == [("stalker2", "S.T.A.L.K.E.R. 2: Серце Чорнобиля", 30.0, False)]
+
+
+def test_a_game_made_visible_again_starts_a_new_session(h):
+    h.grant()
+    h.backend.processes |= {"cs2.exe"}
+    h.poll(0)
+    h.monitor.reconfigure(ActivityClassifier(GameDatabase.load()), PrivacyFilter(["cs2.exe"]))
+    assert ends(h.poll(15)) == [("cs2", "", 0.0, True)]
+    h.monitor.reconfigure(ActivityClassifier(GameDatabase.load()), PrivacyFilter())
+    events = h.poll(15)
+    assert [e.game_id for e in of(events, GameStarted)] == ["cs2"]
 
 
 def test_reconfigure_while_running(h):

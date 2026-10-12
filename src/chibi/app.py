@@ -7,15 +7,20 @@ Startup order matters:
 3. ``controller.start()`` before the event loop runs, so the greeting that
    ``AppStarted`` triggers is not missed.
 
-Shutdown (``aboutToQuit``) stops producers first (monitor thread, screen
-polling), then persists state (game sessions, needs, position) and closes
-the database last.
+Shutdown has two steps.  ``shutdown()`` runs on ``aboutToQuit``: it stops
+producers first (monitor thread, screen polling), then persists state (game
+sessions, needs, position).  ``close()`` runs after ``exec()`` has returned and
+closes the bus and the database: aboutToQuit can fire while a nested event loop
+(a message box) is still on the stack, and the slot that opened it continues
+afterwards, so the database must outlive aboutToQuit.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
+import logging.handlers
 import random
 import signal
 import sys
@@ -25,7 +30,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QLockFile, QObject, QPoint, Qt, QTimer
 from PySide6.QtGui import QAction, QGuiApplication, QPixmap
-from PySide6.QtWidgets import QApplication, QMenu, QMessageBox
+from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QWidget
 
 from chibi import __version__
 from chibi.activity.backend import ActivityBackend, default_backend
@@ -34,7 +39,7 @@ from chibi.activity.monitor import ActivityMonitor
 from chibi.character.animation import CharacterPack, PackError
 from chibi.character.states import CharacterState, StatePriority
 from chibi.core import paths
-from chibi.core.clock import SystemClock
+from chibi.core.clock import Clock, SystemClock
 from chibi.core.config import Settings
 from chibi.core.event_bus import EventBus
 from chibi.core.events import (
@@ -76,7 +81,8 @@ from chibi.settings.first_run import FirstRunDialog
 from chibi.settings.settings_dialog import SettingsDialog
 from chibi.settings.status_window import StatusWindow
 from chibi.settings.theme import apply_dark_theme
-from chibi.tamagotchi.service import TamagotchiService
+from chibi.tamagotchi.needs import finite_number
+from chibi.tamagotchi.service import KEY_LAST_SEEN, TamagotchiService
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +90,8 @@ TAMAGOTCHI_TICK_MS = 30_000
 REACTIONS_TICK_MS = 10_000
 QUIET_STATE_KEY = "quiet_until"
 LAST_SHUTDOWN_KEY = "last_shutdown"
+#: Shown by a second launch.  No name: hers is in the database the running instance owns.
+ALREADY_RUNNING_TEXT = "Chibi Companion уже запущено — вона чекає на тебе на робочому столі 🙂"
 
 
 class ChibiApp(QObject):
@@ -91,12 +99,13 @@ class ChibiApp(QObject):
     for the settings, status, chat and first-run windows."""
 
     def __init__(self, qt_app: QApplication, *, backend: ActivityBackend | None = None,
-                 rng: random.Random | None = None) -> None:
+                 rng: random.Random | None = None, clock: Clock | None = None) -> None:
         super().__init__()
         self._qt = qt_app
-        self._clock = SystemClock()
+        self._clock: Clock = clock or SystemClock()
         self._rng = rng or random.Random()
         self._shut_down = False
+        self._closed = False
 
         # -- storage & settings ------------------------------------------------
         self._db = Database(paths.database_path())
@@ -134,7 +143,7 @@ class ChibiApp(QObject):
         )
         self._reactions = ReactionEngine(
             self.bus, self._selector, lambda: self._settings, self._clock, self._rng,
-            game_genre=self._game_genre, sleeping=self._is_sleeping,
+            game_genre=self._game_genre, sleeping=self._is_sleeping, permissions=self.permissions,
         )
         self._responder = OfflineChatResponder(
             self._selector, self._reactions, lambda: self._settings, self._clock,
@@ -144,12 +153,21 @@ class ChibiApp(QObject):
         # -- desktop ------------------------------------------------------------------
         self._controller = CharacterController(
             self.bus, lambda: self._settings, self._clock, self._state, self._pack,
-            self._needs_tuple, self._rng, self,
+            self._needs_tuple, self._rng, self, permissions=self.permissions,
         )
         self._screen = ScreenService(self.bus, lambda: self._settings, self._controller.own_window_ids,
                                      parent=self)
         self._context_menu = self._build_context_menu()
         self._tray = self._build_tray()
+        if self._tray is None and self._settings.character.click_through:
+            # Persisted from a session that had a tray: applied now, it would lock
+            # the user out (see apply_settings).  The controller applies it in start().
+            log.info("no tray: click-through turned off")
+            self._settings.character.click_through = False
+            try:
+                self._settings_repo.save(self._settings)
+            except Exception:  # memory is what counts; any later apply saves it again
+                log.exception("could not save the click-through change")
 
         # -- windows (created lazily) ---------------------------------------------------
         self._chat: ChatWindow | None = None
@@ -195,11 +213,18 @@ class ChibiApp(QObject):
                  self._backend.is_supported())
 
     def shutdown(self) -> None:
+        """Stop producers and save state (``aboutToQuit``).  Idempotent.
+
+        The bus and the database stay open: Qt emits aboutToQuit from inside
+        ``quit()``, possibly while a nested ``exec()`` (a consent box) is still
+        running, and the slot that opened it goes on to read the database once
+        it returns.  :meth:`close` releases them after the event loop is gone.
+        """
         if self._shut_down:
             return
         self._shut_down = True
         log.info("shutting down")
-        for step in (
+        self._run_steps("shutdown", (
             lambda: self.bus.publish(AppShuttingDown()),
             lambda: self._monitor.stop(timeout=2.0),
             self._screen.stop,
@@ -211,13 +236,25 @@ class ChibiApp(QObject):
             lambda: self._state.set(LAST_SHUTDOWN_KEY, self._clock.now()),
             lambda: self._tray.hide() if self._tray else None,
             self._pump.detach,
-            self.bus.close,
-            self._db.close,
-        ):
+        ))
+
+    def close(self) -> None:
+        """Final teardown once ``exec()`` has returned: shut down (if aboutToQuit
+        did not), then close the bus and the database.  Idempotent."""
+        self.shutdown()
+        if self._closed:
+            return
+        self._closed = True
+        self._run_steps("close", (self.bus.close, self._db.close))
+
+    @staticmethod
+    def _run_steps(what: str, steps: tuple[Callable[[], object], ...]) -> None:
+        # One failing step (a full disk, a dead thread) must not skip the rest.
+        for step in steps:
             try:
                 step()
             except Exception:
-                log.exception("shutdown step failed")
+                log.exception("%s step failed", what)
 
     # ---------------------------------------------------------------- AppFacade
 
@@ -226,6 +263,10 @@ class ChibiApp(QObject):
 
     def apply_settings(self, settings: Settings) -> None:
         new = Settings.from_dict(settings.to_dict())  # validate + clamp
+        if self._tray is None and new.character.click_through:
+            # Her own menu would be the only way back, and click-through blocks it.
+            log.info("no tray: click-through refused")
+            new.character.click_through = False
         old = self._settings
         if new.character.pack != old.character.pack:
             # Switching packs at runtime would need a new renderer; apply on restart.
@@ -235,9 +276,10 @@ class ChibiApp(QObject):
         changed = [name for name in ("character", "behavior", "personality", "activity")
                    if getattr(new, name) != getattr(old, name)]
         if new.activity != old.activity:
-            self._monitor.reconfigure(
-                ActivityClassifier(self._reload_games(new)), PrivacyFilter(new.activity.excluded_processes)
-            )
+            privacy = PrivacyFilter(new.activity.excluded_processes)
+            if new.activity.excluded_processes != old.activity.excluded_processes:
+                self._discard_private_sessions(privacy)
+            self._monitor.reconfigure(ActivityClassifier(self._reload_games(new)), privacy)
         if new.behavior.do_not_disturb != old.behavior.do_not_disturb:
             self.bus.publish(DoNotDisturbChanged(enabled=new.behavior.do_not_disturb))
         for section in changed:
@@ -298,12 +340,17 @@ class ChibiApp(QObject):
     def data_dir(self) -> Path:
         return paths.data_dir()
 
+    def has_tray(self) -> bool:
+        return self._tray is not None
+
     def stop_all_observation(self) -> None:
         self.permissions.stop_all_observation()
 
     def wipe_history(self) -> None:
-        self._sessions.flush()
         self._db.wipe_history()
+        # Games still running stay tracked, from now on: the monitor won't announce
+        # them again, so dropping them would lose the rest of the session too.
+        self._sessions.restart_open()
         self._selector.reload_history()
         log.info("history deleted by the user")
 
@@ -319,6 +366,17 @@ class ChibiApp(QObject):
         self._first_run = True
         self.apply_settings(Settings())
         self.bus.publish(SettingsChanged(section=""))
+        # The chat lives only in its window and the status window shows the old
+        # needs: drop both, the next open starts afresh.
+        for window in (self._chat, self._status):
+            if window is not None:
+                window.close()
+                window.deleteLater()
+        self._chat = None
+        self._status = None
+        failed = _delete_log_files()  # they hold timestamped permission changes too
+        if failed:
+            log.warning("%d log file(s) could not be deleted", failed)
         log.info("all data deleted by the user")
         # The settings dialog closes itself after this returns; show onboarding again.
         QTimer.singleShot(0, self.show_first_run)
@@ -341,6 +399,8 @@ class ChibiApp(QObject):
             if self._settings_dialog is not None:
                 self._settings_dialog.deleteLater()
             self._settings_dialog = SettingsDialog(self)
+        else:
+            self._settings_dialog.refresh()  # show what changed from the tray meanwhile
         if page:
             self._settings_dialog.show_page(page)
         self._raise(self._settings_dialog)
@@ -361,7 +421,12 @@ class ChibiApp(QObject):
         self._first_run = False
 
     @staticmethod
-    def _raise(widget) -> None:
+    def _raise(widget: QWidget) -> None:
+        if widget.isMinimized():
+            # show() keeps a visible window minimised and activateWindow() only
+            # flashes its taskbar button: restore it explicitly.
+            state = widget.windowState() & ~Qt.WindowState.WindowMinimized
+            widget.setWindowState(state | Qt.WindowState.WindowActive)
         widget.show()
         widget.raise_()
         widget.activateWindow()
@@ -474,6 +539,8 @@ class ChibiApp(QObject):
             self._monitor.start()
         elif not wanted and self._monitor.is_running():
             self._monitor.stop(timeout=2.0)
+        # While the monitor runs she can tell an active user from an idle one.
+        self._controller.set_input_monitoring(self._monitor.is_running())
         if self._tray is not None:
             self._tray.set_observing(self.permissions.any_observation_active())
         self._refresh_menus()
@@ -498,11 +565,27 @@ class ChibiApp(QObject):
         elif stored is not None:
             self._state.delete(QUIET_STATE_KEY)
 
+    def _discard_private_sessions(self, privacy: PrivacyFilter) -> None:
+        """Drop open game sessions whose game the user has just excluded, right
+        away (the monitor would only report it on its next cycle)."""
+        for session in self._sessions.open_sessions():
+            info = self._games.get(session.game_id)
+            processes = info.processes if info is not None else ()
+            if not processes and session.game_id.startswith(("exe:", "custom:")):
+                processes = (session.game_id.split(":", 1)[1],)
+            if processes and all(privacy.is_private_process(p) for p in processes):
+                self._sessions.discard(session.game_id)
+                log.info("discarded a running game session the user made private")
+
     def _away_seconds(self) -> float | None:
-        last = self._state.get(LAST_SHUTDOWN_KEY)
-        if isinstance(last, (int, float)) and last > 0:
-            return max(0.0, self._clock.now() - last)
-        return None
+        """Seconds since she last ran.  The clean-exit stamp alone is stale after a
+        crash or power loss (no aboutToQuit), so the tamagotchi's heartbeat, saved
+        every minute or so, counts too: whichever is newer."""
+        stamps = (finite_number(self._state.get(key)) for key in (LAST_SHUTDOWN_KEY, KEY_LAST_SEEN))
+        last = max((stamp for stamp in stamps if stamp is not None and stamp > 0), default=None)
+        if last is None:
+            return None
+        return max(0.0, self._clock.now() - last)
 
     def _perform(self, action: str) -> str:
         """Chat side effects ("поїж", "йди спати"): apply them without a second line."""
@@ -545,6 +628,45 @@ class ChibiApp(QObject):
     @property
     def controller(self) -> CharacterController:
         return self._controller
+
+
+def _delete_log_files() -> int:
+    """Delete our log files (current and rotated) for "delete all data".  Returns
+    how many could not be deleted.
+
+    Each file handler's lock is held meanwhile, so no record is written half-way;
+    with its stream set to None the handler opens a fresh file on the next record.
+    Only handlers writing into our own log directory are touched.
+    """
+    try:
+        own_dir = paths.log_dir().resolve()
+    except OSError:
+        return 1
+    failed = 0
+    for handler in logging.getLogger().handlers:
+        if not isinstance(handler, logging.handlers.RotatingFileHandler):
+            continue
+        base = Path(handler.baseFilename)
+        if base.parent.resolve() != own_dir:
+            continue
+        handler.acquire()
+        try:
+            stream, handler.stream = handler.stream, None
+            if stream is not None:
+                with contextlib.suppress(OSError, ValueError):  # a failed flush: delete it anyway
+                    stream.close()
+            try:
+                backups = [p for p in base.parent.glob(base.name + ".*") if p.suffix[1:].isdigit()]
+            except OSError:
+                backups, failed = [], failed + 1
+            for path in (base, *backups):
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:  # e.g. opened by an editor on Windows
+                    failed += 1
+        finally:
+            handler.release()  # log nothing before this: it would need this handler
+    return failed
 
 
 # ---------------------------------------------------------------------- entry point
@@ -595,7 +717,7 @@ def main(argv: list[str] | None = None) -> int:
     lock.setStaleLockTime(0)
     if not lock.tryLock(200):
         log.info("another instance is already running")
-        QMessageBox.information(None, "Chibi Companion", "Мія вже живе на твоєму робочому столі 🙂")
+        QMessageBox.information(None, "Chibi Companion", ALREADY_RUNNING_TEXT)
         return 0
 
     apply_dark_theme(qt_app)
@@ -620,7 +742,7 @@ def main(argv: list[str] | None = None) -> int:
 
     started = time.monotonic()
     code = qt_app.exec()
-    chibi.shutdown()
+    chibi.close()  # shutdown() already ran on aboutToQuit; now nothing else can use the database
     lock.unlock()
     log.info("exited after %.0f s", time.monotonic() - started)
     return code

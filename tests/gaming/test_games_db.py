@@ -162,7 +162,7 @@ def test_game_library_folders(db, path, title):
     match = db.match("mycoolgame.exe", path)
     assert match is not None, path
     assert match.game_id == "exe:mycoolgame.exe"
-    assert match.genre == "action"
+    assert match.genre is None  # a guess from the folder says nothing about the genre
     assert match.source == "heuristic"
     assert match.confidence == 0.75
     assert match.title == title
@@ -248,12 +248,31 @@ def test_custom_games():
     match = db.match("myindie.exe")
     assert match.game_id == "custom:myindie.exe"
     assert match.title == "Моя інді-гра"
-    assert match.genre == "action"
+    assert match.genre is None
     assert match.confidence == 1.0
     assert match.source == "custom"
     tiny = db.match("tinygame.exe")
     assert tiny.game_id == "custom:tinygame.exe" and tiny.title == "Tinygame"
     assert len(db) == len(GameDatabase.load()) + 2
+
+
+def test_user_games_have_no_genre_unless_a_valid_one_is_given():
+    """UK-15: a user game is not an action game by default - reactions then use the generic lines."""
+    db = GameDatabase.load([
+        {"process": "kozaky3.exe", "title": "Козаки 3"},
+        {"process": "farm.exe", "title": "Ферма", "genre": "cozy"},
+        {"process": "odd.exe", "genre": "nope"},
+        {"process": "list.exe", "genre": ["rpg"]},  # type: ignore[dict-item]
+        {"process": "num.exe", "genre": 5},  # type: ignore[dict-item]
+    ])
+    assert db.get("custom:kozaky3.exe").genre is None
+    assert db.match("kozaky3.exe").genre is None
+    assert db.match("farm.exe").genre == "cozy"
+    assert db.get("custom:farm.exe").genre == "cozy"
+    assert [db.match(p).genre for p in ("odd.exe", "list.exe", "num.exe")] == [None, None, None]
+    # built-in games keep their genre
+    assert db.match("cs2.exe").genre == "shooter"
+    assert all(info.genre in GENRES for info in GameDatabase.load().games())
 
 
 def test_custom_games_ignore_garbage():

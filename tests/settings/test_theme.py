@@ -34,10 +34,17 @@ def themed_app(qapp):
     old_style = qapp.style().name() or "fusion"
     old_flag = qapp.property("chibi_dark_theme")
     yield qapp
+    # setStyle(name) installs a plain style, never the ChibiStyle proxy: keeping
+    # the "already themed" flag after it would stop every later apply_dark_theme
+    # from installing the proxy again (test_app themes the app before this module
+    # when run first).
+    qapp.setProperty("chibi_dark_theme", None)
+    if old_flag:
+        theme.apply_dark_theme(qapp)
+    else:
+        qapp.setStyle(old_style)
     qapp.setStyleSheet(old_sheet)
-    qapp.setStyle(old_style)
     qapp.setPalette(old_palette)
-    qapp.setProperty("chibi_dark_theme", old_flag)
 
 
 def _showcase() -> QWidget:

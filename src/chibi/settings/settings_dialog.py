@@ -13,6 +13,11 @@ Design notes:
   but disabled - the manager would refuse them anyway.
 * ``confirm`` is injectable so tests (and future automation) don't need modal
   message boxes.
+* The dialog is not modal: while it is open the tray, the character's menu and
+  Ctrl+wheel keep changing settings (DND, lock, scale...).  Applying therefore
+  writes only the fields the user edited *in the dialog* (widget value differs
+  from what the widget was last loaded with) onto the app's current settings,
+  so a stale widget never undoes a change made elsewhere.
 """
 
 from __future__ import annotations
@@ -185,6 +190,26 @@ COMMENT_TOGGLES: tuple[tuple[str, str], ...] = (
 
 RENDERERS: tuple[tuple[str, str], ...] = (("sprite", "Спрайти"), ("vector", "Векторний (запасний)"))
 
+CLICK_THROUGH_HINT = (
+    "Увага: поки це ввімкнено, її не можна клацнути чи перетягнути. Вимкнути можна з меню в треї "
+    "(значок біля годинника)."
+)
+#: Without a tray her own menu is the only way back, and click-through would block it.
+CLICK_THROUGH_NO_TRAY_HINT = (
+    "Недоступно: на цьому робочому столі немає системного трею, а без нього цей режим потім не "
+    "було б чим вимкнути."
+)
+
+WIPE_HISTORY_TEXT = (
+    "Буде видалено збережену історію: ігрові сесії та сказані репліки. Налаштування, дозволи та "
+    "історія їхніх змін, а також стан персонажа залишаться.\n\nЦю дію не можна скасувати."
+)
+WIPE_ALL_TEXT = (
+    "Буде видалено все: налаштування, дозволи та історію їхніх змін, історію ігор і реплік, стан "
+    "персонажа, журнали роботи програми й поточну розмову в чаті. Програма повернеться до стану "
+    "першого запуску.\n\nЦю дію не можна скасувати."
+)
+
 _BAD_PROCESS_CHARS = re.compile(r'[<>:"|?*\x00-\x1f]')
 MAX_PROCESS_NAME = 128
 MAX_GAME_TITLE = 64
@@ -211,6 +236,16 @@ def open_folder(path: Path) -> bool:
     return QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
 
+@dataclass(frozen=True)
+class _Field:
+    """One settings field edited by a widget: ``Settings.<section>.<name>``."""
+
+    section: str
+    name: str
+    read: Callable[[], object]  # the widget's value, as it would be stored
+    write: Callable[[object], None]  # show a stored value in the widget
+
+
 class SettingsDialog(QDialog):
     def __init__(self, facade: AppFacade, parent: QWidget | None = None,
                  confirm: ConfirmFn | None = None) -> None:
@@ -218,12 +253,10 @@ class SettingsDialog(QDialog):
         self._facade = facade
         self._confirm: ConfirmFn = confirm or self._ask
         self._settings: Settings = facade.settings().copy()
+        self._has_tray = self._read_has_tray()
         self._exclusions: list[str] = list(self._settings.activity.excluded_processes)
-        self._custom_games: list[dict[str, str]] = [
-            {"process": g.get("process", ""), "title": g.get("title", "")}
-            for g in self._settings.activity.custom_games
-            if g.get("process")
-        ]
+        self._custom_games: list[dict[str, str]] = self._custom_games_from(
+            self._settings.activity.custom_games)
         name = self._settings.character.name
         self.setWindowTitle(f"Налаштування — {name}")
         self.setModal(False)
@@ -277,6 +310,10 @@ class SettingsDialog(QDialog):
         root.addLayout(body, 1)
         root.addLayout(buttons)
 
+        self._fields: tuple[_Field, ...] = self._bind_fields()
+        #: What each widget showed when it was last loaded from the app's settings;
+        #: a widget whose value differs from this was edited by the user.
+        self._loaded: dict[tuple[str, str], object] = self._read_fields()
         self.refresh()
 
     # --- public API ------------------------------------------------------------------------
@@ -290,7 +327,9 @@ class SettingsDialog(QDialog):
         return self._page_keys[self.stack.currentIndex()]
 
     def refresh(self) -> None:
-        """Re-read state that can change outside the dialog (permissions, history, games)."""
+        """Re-read state that can change outside the dialog: permissions, history,
+        games, and the settings fields the user has not edited here."""
+        self._sync_from_app(edited_too=False)
         self._refresh_permissions()
         self._refresh_history()
         self._refresh_games()
@@ -306,15 +345,19 @@ class SettingsDialog(QDialog):
             self._set_status("Ім'я не може бути порожнім.", error=True)
             return False
         self.name_error.hide()
-        settings = self._collect(name)
+        settings = self._collect()
         try:
             self._facade.apply_settings(settings)
         except Exception:
             log.exception("applying settings failed")
             self._set_status("Не вдалося зберегти налаштування.", error=True)
             return False
-        self._settings = settings
-        self.setWindowTitle(f"Налаштування — {settings.character.name}")
+        # From now on the widgets show what the app holds (validated, plus what
+        # changed elsewhere) and count as unedited, so the next Apply can't revert it.
+        if not self._sync_from_app(edited_too=True):
+            self._settings = settings
+            self._loaded = self._read_fields()
+            self.setWindowTitle(f"Налаштування — {settings.character.name}")
         self._set_status("Збережено ✓")
         return True
 
@@ -353,12 +396,12 @@ class SettingsDialog(QDialog):
         form.addRow("Ім'я", name_box)
         self.nickname_edit = QLineEdit(ch.user_nickname)
         self.nickname_edit.setMaxLength(32)
-        self.nickname_edit.setPlaceholderText("наприклад, Сашко")
+        self.nickname_edit.setPlaceholderText("наприклад, Сашку")
         nick_box = QVBoxLayout()
         nick_box.setSpacing(4)
         nick_box.addWidget(self.nickname_edit)
         nick_box.addWidget(InfoLabel(
-            "Напиши так, як хочеш, щоб вона до тебе зверталася, — у кличному відмінку: «Сашко», «Олю», "
+            "Напиши так, як хочеш, щоб вона до тебе зверталася, — у кличному відмінку: «Сашку», «Олю», "
             "«пане капітане». Якщо залишити порожнім, вона просто звертатиметься на «ти»."
         ))
         nick_label = make_label("Як вона звертається до тебе", wrap=True)
@@ -398,8 +441,8 @@ class SettingsDialog(QDialog):
             "Якщо відпустити її в повітрі, вона повернеться на панель завдань.", ch.gravity)
         self.click_through_check = self._check_row(
             desk, "Пропускати кліки крізь неї",
-            "Увага: поки це ввімкнено, її не можна клацнути чи перетягнути. Вимкнути можна з меню "
-            "в треї (значок біля годинника).", ch.click_through)
+            CLICK_THROUGH_HINT if self._has_tray else CLICK_THROUGH_NO_TRAY_HINT, ch.click_through)
+        self.click_through_check.setEnabled(self._has_tray)
         self.bubbles_check = self._check_row(
             desk, "Показувати бульбашки з репліками", "", ch.show_bubbles)
         layout.addWidget(desk)
@@ -818,22 +861,14 @@ class SettingsDialog(QDialog):
             self._set_status("Не вдалося відкрити теку.", error=True)
 
     def _wipe_history(self) -> None:
-        if not self._confirm(
-            "Видалити історію?",
-            "Буде видалено збережену історію: ігрові сесії та сказані репліки. Налаштування, дозволи "
-            "й стан персонажа залишаться.\n\nЦю дію не можна скасувати.",
-        ):
+        if not self._confirm("Видалити історію?", WIPE_HISTORY_TEXT):
             return
         self._facade.wipe_history()
         self.refresh()
         self._set_status("Історію видалено.")
 
     def _wipe_all(self) -> None:
-        if not self._confirm(
-            "Видалити всі дані?",
-            "Буде видалено все: налаштування, дозволи, історію ігор і стан персонажа. Програма "
-            "повернеться до стану першого запуску.\n\nЦю дію не можна скасувати.",
-        ):
+        if not self._confirm("Видалити всі дані?", WIPE_ALL_TEXT):
             return
         self._facade.wipe_all()
         # Our working copy describes data that no longer exists: never apply it.
@@ -926,37 +961,102 @@ class SettingsDialog(QDialog):
 
     # --- applying ---------------------------------------------------------------------------
 
-    def _collect(self, name: str) -> Settings:
+    def _collect(self) -> Settings:
         # Start from the app's current settings so fields this dialog doesn't edit
-        # (first_run_completed, pack, poll intervals...) are never clobbered.
+        # (first_run_completed, pack, poll intervals...) are never clobbered, and
+        # copy over only the fields edited here: the others may have been changed
+        # from the tray, her menu or Ctrl+wheel since the widgets were loaded.
         s = self._facade.settings().copy()
-        ch = s.character
-        ch.name = name[:24]
-        ch.user_nickname = self.nickname_edit.text().strip()[:32]
-        ch.scale = self.scale_row.value() / 100
-        ch.renderer = str(self.renderer_combo.currentData() or "sprite")
-        ch.always_on_top = self.always_on_top_check.isChecked()
-        ch.lock_position = self.lock_position_check.isChecked()
-        ch.walking_enabled = self.walking_check.isChecked()
-        ch.gravity = self.gravity_check.isChecked()
-        ch.click_through = self.click_through_check.isChecked()
-        ch.show_bubbles = self.bubbles_check.isChecked()
-        for field_name, row in self.personality_rows.items():
-            setattr(s.personality, field_name, row.value())
-        b = s.behavior
-        b.do_not_disturb = self.dnd_check.isChecked()
-        b.max_unsolicited_per_hour = self.max_per_hour_spin.value()
-        b.min_seconds_between_unsolicited = self.min_gap_spin.value()
-        b.quiet_minutes = self.quiet_minutes_spin.value()
-        b.hide_on_fullscreen = self.hide_fullscreen_check.isChecked()
-        b.auto_eco_mode = self.eco_check.isChecked()
-        b.sleep_after_idle_minutes = self.sleep_after_spin.value()
-        a = s.activity
-        for field_name, box in self.comment_checks.items():
-            setattr(a, field_name, box.isChecked())
-        a.excluded_processes = list(self._exclusions)
-        a.custom_games = [dict(g) for g in self._custom_games]
+        for field in self._fields:
+            value = field.read()
+            if value != self._loaded[(field.section, field.name)]:
+                setattr(getattr(s, field.section), field.name, value)
         return s
+
+    def _bind_fields(self) -> tuple[_Field, ...]:
+        """Every settings field this dialog edits, with how to read and show it."""
+
+        def text(section: str, name: str, edit: QLineEdit, limit: int) -> _Field:
+            return _Field(section, name, lambda: edit.text().strip()[:limit], lambda v: edit.setText(str(v)))
+
+        def check(section: str, name: str, box: QCheckBox) -> _Field:
+            return _Field(section, name, box.isChecked, lambda v: box.setChecked(bool(v)))
+
+        def number(section: str, name: str, widget: QSpinBox | SliderRow) -> _Field:
+            return _Field(section, name, widget.value, lambda v: widget.setValue(int(v)))
+
+        fields = [
+            text("character", "name", self.name_edit, 24),
+            text("character", "user_nickname", self.nickname_edit, 32),
+            _Field("character", "scale", lambda: self.scale_row.value() / 100,
+                   lambda v: self.scale_row.setValue(round(float(v) * 100))),
+            _Field("character", "renderer", lambda: str(self.renderer_combo.currentData() or "sprite"),
+                   lambda v: self.renderer_combo.setCurrentIndex(max(0, self.renderer_combo.findData(v)))),
+            check("character", "always_on_top", self.always_on_top_check),
+            check("character", "lock_position", self.lock_position_check),
+            check("character", "walking_enabled", self.walking_check),
+            check("character", "gravity", self.gravity_check),
+            check("character", "click_through", self.click_through_check),
+            check("character", "show_bubbles", self.bubbles_check),
+            check("behavior", "do_not_disturb", self.dnd_check),
+            number("behavior", "max_unsolicited_per_hour", self.max_per_hour_spin),
+            number("behavior", "min_seconds_between_unsolicited", self.min_gap_spin),
+            number("behavior", "quiet_minutes", self.quiet_minutes_spin),
+            check("behavior", "hide_on_fullscreen", self.hide_fullscreen_check),
+            check("behavior", "auto_eco_mode", self.eco_check),
+            number("behavior", "sleep_after_idle_minutes", self.sleep_after_spin),
+            _Field("activity", "excluded_processes", lambda: list(self._exclusions), self._show_exclusions),
+            _Field("activity", "custom_games", lambda: [dict(g) for g in self._custom_games],
+                   self._show_custom_games),
+        ]
+        fields += [number("personality", name, row) for name, row in self.personality_rows.items()]
+        fields += [check("activity", name, box) for name, box in self.comment_checks.items()]
+        return tuple(fields)
+
+    def _read_fields(self) -> dict[tuple[str, str], object]:
+        return {(field.section, field.name): field.read() for field in self._fields}
+
+    def _sync_from_app(self, *, edited_too: bool) -> bool:
+        """Show the app's current settings in the widgets: every field after an
+        apply, otherwise only those the user has not edited here (their edits
+        win until applied or cancelled).  Returns False if the settings could not be read."""
+        try:
+            current = self._facade.settings().copy()
+        except Exception:
+            log.exception("reading the current settings failed")
+            return False
+        for field in self._fields:
+            key = (field.section, field.name)
+            if edited_too or field.read() == self._loaded[key]:
+                field.write(getattr(getattr(current, field.section), field.name))
+                self._loaded[key] = field.read()
+        self._settings = current
+        self.setWindowTitle(f"Налаштування — {current.character.name}")
+        return True
+
+    def _show_exclusions(self, value: object) -> None:
+        self._exclusions = [str(name) for name in value] if isinstance(value, list) else []
+        self._render_exclusions()
+
+    def _show_custom_games(self, value: object) -> None:
+        self._custom_games = self._custom_games_from(value if isinstance(value, list) else [])
+        self._render_custom_games()
+
+    @staticmethod
+    def _custom_games_from(games: list) -> list[dict[str, str]]:
+        """The editable part (process, title) of the stored custom games."""
+        return [
+            {"process": g.get("process", ""), "title": g.get("title", "")}
+            for g in games
+            if isinstance(g, dict) and g.get("process")
+        ]
+
+    def _read_has_tray(self) -> bool:
+        try:
+            return bool(self._facade.has_tray())
+        except Exception:
+            log.exception("asking the app about the tray failed")
+            return True  # the app itself never applies click-through without a tray
 
     def _on_ok(self) -> None:
         if self.apply():

@@ -75,7 +75,7 @@ def test_buttons_are_ukrainian(make_dialog):
 def test_apply_passes_edited_copy_to_facade(make_dialog, facade):
     dialog = make_dialog()
     dialog.name_edit.setText("  Ліна  ")
-    dialog.nickname_edit.setText(" Сашко ")
+    dialog.nickname_edit.setText(" Сашку ")
     dialog.scale_row.setValue(150)
     dialog.renderer_combo.setCurrentIndex(dialog.renderer_combo.findData("vector"))
     dialog.always_on_top_check.setChecked(False)
@@ -101,7 +101,7 @@ def test_apply_passes_edited_copy_to_facade(make_dialog, facade):
     assert len(facade.applied) == 1
     s = facade.applied[0]
     ch = s.character
-    assert (ch.name, ch.user_nickname, ch.scale, ch.renderer) == ("Ліна", "Сашко", 1.5, "vector")
+    assert (ch.name, ch.user_nickname, ch.scale, ch.renderer) == ("Ліна", "Сашку", 1.5, "vector")
     assert (ch.always_on_top, ch.lock_position, ch.walking_enabled, ch.gravity, ch.click_through,
             ch.show_bubbles) == (False, True, False, False, True, False)
     assert s.personality.humor == 10 and s.personality.commentary_frequency == 95
@@ -171,6 +171,84 @@ def test_apply_keeps_fields_the_dialog_does_not_edit(make_dialog, facade):
     dialog.apply_button.click()
     assert facade.applied[0].first_run_completed is True
     assert facade.applied[0].activity.poll_interval_seconds == 7.0
+
+
+def change_elsewhere(facade, **changes) -> None:
+    """What the tray, her context menu, Ctrl+wheel or the first-run dialog do
+    while the (non-modal) settings dialog stays open."""
+    s = facade.settings()
+    for path, value in changes.items():
+        section, name = path.split("__")
+        setattr(getattr(s, section), name, value)
+    facade.apply_settings(s)
+    facade.applied.clear()
+
+
+def test_ok_keeps_changes_made_elsewhere_while_open(make_dialog, facade):
+    dialog = make_dialog()
+    change_elsewhere(facade, behavior__do_not_disturb=True, character__lock_position=True,
+                     character__click_through=True, character__scale=1.37, character__name="Кіра")
+    dialog.nickname_edit.setText("Сашку")  # the only edit in the dialog
+    dialog.ok_button.click()
+    s = facade.applied[0]
+    assert s.character.user_nickname == "Сашку"
+    assert (s.behavior.do_not_disturb, s.character.lock_position, s.character.click_through,
+            s.character.scale, s.character.name) == (True, True, True, 1.37, "Кіра")
+
+
+def test_a_second_apply_does_not_revert_changes_made_elsewhere(make_dialog, facade):
+    dialog = make_dialog()
+    change_elsewhere(facade, behavior__do_not_disturb=True)
+    dialog.apply_button.click()
+    assert facade.settings().behavior.do_not_disturb is True
+    assert dialog.dnd_check.isChecked()  # after Apply the widgets show what the app holds
+    change_elsewhere(facade, behavior__do_not_disturb=False, character__lock_position=True)
+    dialog.apply_button.click()
+    assert facade.settings().behavior.do_not_disturb is False
+    assert facade.settings().character.lock_position is True
+
+
+def test_edits_made_in_the_dialog_still_win(make_dialog, facade):
+    dialog = make_dialog()
+    dialog.dnd_check.setChecked(True)
+    dialog.scale_row.setValue(150)
+    change_elsewhere(facade, character__scale=1.2, character__lock_position=True)
+    dialog.apply_button.click()
+    s = facade.applied[0]
+    assert (s.behavior.do_not_disturb, s.character.scale, s.character.lock_position) == (True, 1.5, True)
+
+
+def test_refresh_shows_changes_made_elsewhere_but_keeps_unsaved_edits(make_dialog, facade):
+    dialog = make_dialog()
+    dialog.nickname_edit.setText("Олю")  # typed, not applied yet
+    change_elsewhere(facade, character__name="Кіра", character__user_nickname="Сашку",
+                     behavior__do_not_disturb=True)
+    dialog.hide()
+    dialog.show()  # showEvent -> refresh()
+    assert dialog.name_edit.text() == "Кіра" and dialog.dnd_check.isChecked()
+    assert dialog.nickname_edit.text() == "Олю"
+    assert "Кіра" in dialog.windowTitle()
+    dialog.apply_button.click()
+    s = facade.applied[0]
+    assert (s.character.name, s.character.user_nickname, s.behavior.do_not_disturb) == ("Кіра", "Олю", True)
+
+
+def test_click_through_needs_a_tray(make_dialog, facade):
+    with_tray = make_dialog()
+    assert with_tray.click_through_check.isEnabled()
+    assert "треї" in labels_text(with_tray)
+    facade.tray = False
+    without = make_dialog()
+    assert not without.click_through_check.isEnabled()
+    assert "немає системного трею" in labels_text(without)
+
+
+def test_nickname_examples_are_in_the_vocative(make_dialog):
+    dialog = make_dialog()
+    assert dialog.nickname_edit.placeholderText() == "наприклад, Сашку"
+    text = labels_text(dialog)
+    assert "«Сашку», «Олю», «пане капітане»" in text
+    assert "Сашко" not in text
 
 
 def test_failing_apply_reports_error_and_keeps_dialog_open(make_dialog, facade):
@@ -325,6 +403,19 @@ def test_wipe_all_only_when_confirmed_then_closes_without_applying(make_dialog, 
     assert "Видалити всі дані" in confirm.asked[0][0]
     assert not dialog.isVisible()
     assert facade.applied == []
+
+
+def test_wipe_texts_say_what_goes_and_what_stays(make_dialog, facade):
+    confirm = Confirm(False)
+    dialog = make_dialog(confirm)
+    dialog.wipe_history_button.click()
+    dialog.wipe_all_button.click()
+    (_, history), (_, everything) = confirm.asked
+    # "delete history" keeps the permission audit log; only "delete all" clears it
+    assert "ігрові сесії та сказані репліки" in history
+    assert "дозволи та історія їхніх змін" in history and "залишаться" in history
+    for item in ("дозволи та історію їхніх змін", "журнали", "розмову в чаті"):
+        assert item in everything
 
 
 def test_data_folder_is_shown_and_opened(make_dialog, facade, monkeypatch):

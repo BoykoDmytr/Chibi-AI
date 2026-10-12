@@ -7,7 +7,7 @@ from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QMouseEvent, QPainter, QWheelEvent
 from PySide6.QtWidgets import QApplication
 
-from chibi.desktop.character_window import MAX_SCALE, CharacterWindow
+from chibi.desktop.character_window import MAX_SCALE, SCALE_REQUEST_DELAY_MS, CharacterWindow
 
 L = Qt.MouseButton.LeftButton
 R = Qt.MouseButton.RightButton
@@ -131,13 +131,83 @@ def test_ctrl_wheel_scales(window):
     rec = Recorder(window)
     window.set_scale(1.0)
     wheel(window, 120, ctrl=False)
-    assert rec.events == []
+    assert rec.events == [] and not window.scale_request_pending
     wheel(window, 120, ctrl=True)
+    window.commit_pending_scale()
     wheel(window, -120, ctrl=True)
+    window.commit_pending_scale()
     assert [e[1] for e in rec.events] == pytest.approx([1.1, 1.0])
     window.set_scale(MAX_SCALE)
     wheel(window, 120, ctrl=True)
+    window.commit_pending_scale()
     assert len(rec.events) == 2  # already at the maximum: nothing to request
+
+
+def test_small_wheel_deltas_add_up_to_one_step_per_notch(window):
+    # Regression (perf-4): a precision touchpad / pinch sends many small
+    # deltas; each used to be a whole 10 % step (12 events: 1.0 -> 2.5).
+    rec = Recorder(window)
+    window.set_scale(1.0)
+    for _ in range(12):
+        wheel(window, 10, ctrl=True)  # 120 in total: one notch
+    window.commit_pending_scale()
+    assert [e[1] for e in rec.events] == pytest.approx([1.1])
+    for _ in range(11):
+        wheel(window, 10, ctrl=True)  # not quite a notch: nothing
+    window.commit_pending_scale()
+    wheel(window, 10, ctrl=True)  # the leftover ended with the gesture
+    window.commit_pending_scale()
+    assert len(rec.events) == 1
+
+
+def test_wheel_direction_change_drops_the_partial_notch(window):
+    rec = Recorder(window)
+    window.set_scale(1.0)
+    wheel(window, 100, ctrl=True)
+    wheel(window, -120, ctrl=True)  # a whole notch down, not 100 - 120 = -20
+    window.commit_pending_scale()
+    assert [e[1] for e in rec.events] == pytest.approx([round(1.0 / 1.1, 3)])
+
+
+def test_one_gesture_is_one_request(window):
+    rec = Recorder(window)
+    window.set_scale(1.0)
+    for _ in range(3):
+        wheel(window, 120, ctrl=True)
+    assert rec.events == [] and window.scale_request_pending  # nothing saved mid-gesture
+    window.set_scale(1.0)  # an unrelated settings change re-sends the old scale meanwhile
+    wheel(window, 120, ctrl=True)
+    window.commit_pending_scale()
+    assert [e[1] for e in rec.events] == pytest.approx([round(1.1 ** 4, 3)])
+    # up and back down within one gesture: nothing changed, nothing to save
+    wheel(window, 120, ctrl=True)
+    wheel(window, -120, ctrl=True)
+    window.commit_pending_scale()
+    assert len(rec.events) == 1
+
+
+def test_scale_is_requested_when_the_gesture_pauses(window):
+    from PySide6.QtTest import QTest
+
+    rec = Recorder(window)
+    window.set_scale(1.0)
+    wheel(window, 120, ctrl=True)
+    wheel(window, 120, ctrl=True)
+    assert rec.events == []
+    QTest.qWait(SCALE_REQUEST_DELAY_MS + 250)
+    assert [e[1] for e in rec.events] == pytest.approx([1.21])
+    assert not window.scale_request_pending
+
+
+def test_closing_drops_a_pending_scale(window):
+    from PySide6.QtTest import QTest
+
+    rec = Recorder(window)
+    window.set_scale(1.0)
+    wheel(window, 120, ctrl=True)
+    window.close()  # shutdown: nothing may be saved afterwards
+    QTest.qWait(SCALE_REQUEST_DELAY_MS + 100)
+    assert rec.events == [] and not window.scale_request_pending
 
 
 def test_click_through_toggles_input_transparency(window):

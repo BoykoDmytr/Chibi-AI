@@ -156,12 +156,13 @@ def test_quiet_on_and_off(chat, bus, clock):
     ("text", "action", "outcome", "performed", "reply_action"),
     [
         ("тримай смаколик", "feed", "fed", "feed", "fed"),
-        ("на, поїж", "feed", "full", "feed", "fed"),
         ("нагодую тебе", "feed", "starving_fed", "feed", "fed"),
         ("погладжу", "pet", "happy", "pet", "petted"),
-        ("обійми", "pet", "too_much", "pet", "petted"),
         ("йди спати", "rest", "sleep", "rest", "rest"),
-        ("відпочинь", "rest", "not_tired", "rest", "rest"),
+        # Refusals: the chat must not print "she ate / purrs / went to rest".
+        ("на, поїж", "feed", "full", "feed", ""),
+        ("обійми", "pet", "too_much", "pet", ""),
+        ("відпочинь", "rest", "not_tired", "rest", ""),
     ],
 )
 def test_actions_perform_and_reply_with_the_outcome(bus, db, clock, text, action, outcome, performed,
@@ -201,7 +202,22 @@ def test_unexpected_outcome_still_replies(bus, db, clock):
     chat = Chat(bus, db, clock, perform=Performer("weird"))
     reply = chat.say("тримай смаколик")
     assert reply.text == FALLBACKS["feed"]
-    assert reply.action == "fed"
+    assert reply.action == ""  # unknown outcome: do not claim she ate
+
+
+@pytest.mark.parametrize(
+    ("text", "outcome", "fallback", "action"),
+    [
+        ("тримай смаколик", "full", "feed.full", ""),
+        ("погладжу", "too_much", "pet.too_much", ""),
+        ("йди спати", "not_tired", "rest.not_tired", ""),
+        ("йди спати", "sleep", "rest", "rest"),
+    ],
+)
+def test_refusals_without_a_phrase_bank_do_not_claim_success(bus, db, clock, text, outcome, fallback, action):
+    chat = Chat(bus, db, clock, bank=PhraseBank(), perform=Performer(outcome))
+    reply = chat.say(text)
+    assert (reply.text, reply.action) == (FALLBACKS[fallback], action)
 
 
 @pytest.mark.parametrize(
@@ -295,3 +311,122 @@ def test_respond_never_raises(bus, db, clock, monkeypatch):
     monkeypatch.setattr(chat.selector, "say", explode)
     reply = chat.say("привіт")
     assert reply.text == FALLBACKS["unknown"]
+
+
+# -- review regressions: who a message is about ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "intent"),
+    [
+        # UK-1: asking her to talk, or cancelling quiet mode, never turns it on.
+        ("Не мовчи!", "quiet_off"), ("Не треба тиші", "quiet_off"), ("Вимкнути тишу", "quiet_off"),
+        ("Скасуй режим тиші", "quiet_off"), ("Досить тиші", "quiet_off"),
+        ("Мені тиша не потрібна", "quiet_off"),
+        ("Тиша набридла", "quiet_off"), ("Годі мовчати", "quiet_off"), ("Не треба мовчати", "quiet_off"),
+        ("Чому так тихо?", "unknown"), ("Тихо тут сьогодні", "unknown"),
+        ("Не вимикай режим тиші", "quiet_on"), ("Говори тихо", "quiet_on"),
+        ("Будь ласка, тихіше", "quiet_on"), ("Вимкни, будь ласка, режим тиші", "quiet_off"),
+        ("Тиша набридла, поговори зі мною", "quiet_off"), ("Тиша мені більше не потрібна", "quiet_off"),
+        # ...and a request for quiet that mentions "тиша" never lifts it.
+        ("Досить говорити, тиша!", "quiet_on"), ("Тиша, не треба нічого казати", "quiet_on"),
+        ("Не треба говорити, потрібна тиша", "quiet_on"), ("Вимкни музику, мені потрібна тиша", "quiet_on"),
+        ("Досить балакати", "quiet_on"), ("Перестань говорити", "quiet_on"),
+        # UK-2: more ways to ask for quiet; ambiguous ones stay out.
+        ("Тсс", "quiet_on"), ("Тссс!", "quiet_on"), ("Ш-ш-ш", "quiet_on"), ("ш-ш", "quiet_on"),
+        ("Шшш", "quiet_on"), ("Ша!", "quiet_on"), ("Тсс, я на дзвінку", "quiet_on"), ("Відстань", "quiet_on"),
+        ("Відстань від мене", "quiet_on"), ("Не відволікай мене, я працюю", "quiet_on"),
+        ("Дай поспати", "quiet_on"), ("Дай попрацювати", "quiet_on"),
+        ("Не зараз", "unknown"), ("Іди геть", "unknown"), ("Зникни", "unknown"),
+        ("Яка відстань до Місяця?", "unknown"), ("Відстань 5 км", "unknown"), ("Не говори так!", "unknown"),
+        # UK-7: questions do not lift quiet mode.
+        ("Ти можеш говорити українською?", "unknown"), ("Ти можеш розмовляти англійською?", "unknown"),
+        ("Вже можна їсти?", "unknown"), ("Можеш знову говорити", "quiet_off"),
+        ("Тепер можна говорити", "quiet_off"),
+        # UK-5: the user's mood is not a question about hers; compliments need an addressee.
+        ("У мене поганий настрій", "sad"), ("Як твій настрій?", "mood"), ("Як у тебе настрій?", "mood"),
+        ("Все супер", "good"), ("У мене все класно", "good"), ("Все добре, дякую", "good"),
+        ("Супер!", "good"),
+        ("Чудово, а в тебе?", "how_are_you"), ("Добре, а ти як?", "how_are_you"),
+        ("Гарна погода сьогодні", "unknown"), ("Ця гра чудова", "unknown"), ("Добре", "unknown"),
+        ("Ти така мила", "compliment"), ("Яка ти гарна", "compliment"), ("Розумничка!", "compliment"),
+        ("Як мило!", "compliment"),
+        # UK-6: self-criticism and complaints about a game are not insults to her.
+        ("Я такий дурень, знову забув зберегтися", "sad"), ("Цей бос тупий", "unknown"),
+        ("Ця гра відстій", "unknown"), ("Ідіот!", "unknown"), ("Ти дурна", "rude"), ("Ти відстій", "rude"),
+        ("Я тебе ненавиджу", "rude"), ("Ти мене дістала", "rude"), ("ти ж не дурна", "unknown"),
+        # UK-8: other misreads.
+        ("Я хочу їсти", "unknown"), ("Я голодна, піду поїсти", "unknown"), ("Мені треба поїсти", "unknown"),
+        ("Я тебе нагодую", "feed"), ("Поїж, а я теж поїм", "feed"), ("Я тебе люблю", "compliment"),
+        ("Спокійної ночі", "bye"), ("Доброї ночі", "bye"), ("Гарного дня!", "bye"), ("Гарного вечора", "bye"),
+        ("Доброго дня!", "greeting"), ("Доброго вечора", "greeting"),
+        ("Моя команда знову злила катку", "unknown"), ("Які в тебе команди?", "capabilities"),
+        ("Як ти думаєш, піца з ананасами норм?", "unknown"), ("Як ти там?", "how_are_you"),
+        ("Дякую за допомогу", "thanks"),
+        ("Мені пора спати", "bye"), ("Йди спати, а я ще пограю", "rest"),
+        # UK-14: sad news gets support, not "sounds interesting".
+        ("Мені сумно", "sad"), ("Мені погано", "sad"), ("У мене помер кіт", "sad"), ("Мій кіт помер", "sad"),
+        ("Мені сумно, обійми мене", "sad"), ("Не дуже, а ти?", "sad"), ("Я помер на босі", "unknown"),
+        ("Мені не сумно", "unknown"),
+        # Typos are corrected, but the context rules still apply.
+        ("ти чудвоа", "compliment"), ("ця гра чудвоа", "unknown"), ("нагдую тебе", "feed"),
+    ],
+)
+def test_detect_intent_reads_who_it_is_about(text, intent):
+    assert detect_intent(text) == intent
+
+
+def test_asking_her_to_talk_lifts_quiet_mode(chat, bus):
+    events = []
+    bus.subscribe(QuietModeChanged, events.append)
+    for text in ("Не мовчи!", "Скасуй режим тиші", "Досить тиші"):
+        chat.reactions.set_quiet(60)
+        reply = chat.say(text)
+        assert reply.action == "quiet_off", text
+        assert not chat.reactions.quiet_active, text
+        assert events[-1].enabled is False
+
+
+def test_a_question_does_not_lift_quiet_mode(chat):
+    chat.reactions.set_quiet(60)
+    for text in ("Ти можеш говорити українською?", "Вже можна їсти?"):
+        reply = chat.say(text)
+        assert reply.action == "", text
+        assert chat.reactions.quiet_active, text
+
+
+def test_the_users_hunger_does_not_feed_her(bus, db, clock):
+    performer = Performer("fed")
+    chat = Chat(bus, db, clock, perform=performer)
+    chat.say("Я хочу їсти")
+    chat.say("Я голодна, піду поїсти")
+    assert performer.calls == []
+
+
+@pytest.mark.parametrize(
+    ("text", "key"),
+    [
+        ("Мені сумно", "chat.user_sad"),
+        ("У мене поганий настрій", "chat.user_sad"),
+        ("У мене все класно", "chat.user_good"),
+    ],
+)
+def test_the_users_feelings_get_their_own_replies(bus, db, clock, text, key):
+    # Even with needs wired in: "у мене поганий настрій" is not a question about hers.
+    chat = Chat(bus, db, clock, needs=lambda: Needs(happiness=95).to_dict())
+    reply = chat.say(text)
+    assert reply.text in chat.texts(key)
+    assert reply.action == ""
+
+
+def test_feeling_fallbacks_without_a_phrase_bank(bus, db, clock):
+    chat = Chat(bus, db, clock, bank=PhraseBank())
+    assert chat.say("Мені сумно").text == FALLBACKS["sad"]
+    assert chat.say("Все супер").text == FALLBACKS["good"]
+
+
+def test_rest_reply_state_is_always_sleep(bus, db, clock):
+    # integ-3: any other state would wake her right after "йди спати".
+    chat = Chat(bus, db, clock, perform=Performer("sleep"))
+    states = {chat.say("йди спати").state for _ in range(len(BANK.phrases("interaction.rest.sleep")) * 2)}
+    assert states == {"sleep"}

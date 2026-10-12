@@ -101,6 +101,45 @@ def test_wipe_history_keeps_settings(db):
     assert db.conn.execute("SELECT COUNT(*) FROM settings").fetchone()[0] == 1
 
 
+def test_wipe_history_keeps_the_permission_audit_log(db):
+    """Grants stay active after "delete history", so their record must stay too."""
+    repo = PermissionRepository(db)
+    repo.save(Permission.APP_METADATA, True, 10.0)
+    db.wipe_history()
+    assert repo.load_all()[Permission.APP_METADATA] is True
+    history = [(r.permission, r.granted, r.at) for r in repo.history()]
+    assert history == [(Permission.APP_METADATA, True, 10.0)]
+
+
+def test_secure_delete_is_on(db, tmp_path):
+    assert db.conn.execute("PRAGMA secure_delete").fetchone()[0] == 1
+    on_disk = Database(tmp_path / "s.db")
+    try:
+        assert on_disk.conn.execute("PRAGMA secure_delete").fetchone()[0] == 1
+    finally:
+        on_disk.close()
+
+
+@pytest.mark.parametrize("wipe", ["wipe_history", "wipe_all"])
+def test_wiped_rows_leave_no_bytes_on_disk_before_close(tmp_path, wipe):
+    """The compacted file must replace the old pages right away, not at the next
+    clean close: a crash or kill would otherwise leave the deleted titles in chibi.db.
+    secure_delete is forced off here, as in SQLite builds where it defaults off
+    and someone turns it off again, so only the vacuum/checkpoint is tested."""
+    secret = b"SECRET_GAME_TITLE_XYZ"
+    db = Database(tmp_path / "chibi.db")
+    try:
+        db.conn.execute("PRAGMA secure_delete = 0")
+        repo = GameSessionRepository(db)
+        for _ in range(5):
+            repo.add("x", secret.decode(), 1.0, 500.0)
+        getattr(db, wipe)()
+        for path in tmp_path.iterdir():
+            assert secret not in path.read_bytes(), path.name
+    finally:
+        db.close()
+
+
 def test_wipe_all_removes_everything(tmp_path):
     db = Database(tmp_path / "w.db")
     SettingsRepository(db).save(Settings())

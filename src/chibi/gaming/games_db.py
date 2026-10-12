@@ -3,6 +3,10 @@
 Three layers, most certain first:
 
 1. **User games** (settings -> "custom_games"): the user said so, confidence 1.0.
+   The settings form asks only for the exe and a title, so a user game has no
+   genre (``None``) unless its entry names a valid one: guessing one would
+   greet a cozy farm game with action lines, while ``None`` lets reactions use
+   the lines written for games of unknown genre.
 2. **Built-in database** (``data/games.json``): exact, case-insensitive exe
    names of ~80 popular PC games, confidence 0.95.  Game ids there are stable
    phrase keys (``game_start.<id>``).
@@ -11,7 +15,7 @@ Three layers, most certain first:
    scores 0.75; an Unreal Engine ``*-Win64-Shipping.exe`` scores 0.7.
    Library folders also hold launchers, crash handlers, anti-cheat services
    and redistributable installers, so those are rejected by name and by the
-   folder they live in.
+   folder they live in.  Their genre is unknown (``None``).
 
 A few games run under a generic process (Minecraft Java is ``javaw.exe``);
 the database recognises them by a window-title pattern instead, which the
@@ -43,7 +47,6 @@ GENRES: frozenset[str] = frozenset(
         "horror", "racing", "sim", "rhythm", "mmo", "action", "party", "card",
     }
 )
-DEFAULT_GENRE = "action"
 
 CUSTOM_CONFIDENCE = 1.0
 DB_CONFIDENCE = 0.95
@@ -99,7 +102,7 @@ HELPER_DIRS: frozenset[str] = frozenset(
 class GameMatch:
     game_id: str
     title: str
-    genre: str
+    genre: str | None  # one of GENRES; None = unknown (heuristic guesses, most user games)
     confidence: float
     source: str  # "custom" | "db" | "title" | "heuristic"
 
@@ -108,7 +111,7 @@ class GameMatch:
 class GameInfo:
     game_id: str
     title: str
-    genre: str
+    genre: str | None  # always one of GENRES for "db"; None for a user game without one
     processes: tuple[str, ...]
     source: str  # "db" | "custom"
 
@@ -288,6 +291,8 @@ class GameDatabase:
 
         User games get id ``custom:<process>``; one naming an exe the database
         already knows is ignored (the built-in entry carries more: id, genre).
+        An optional ``"genre"`` is kept if it is one of :data:`GENRES`;
+        otherwise the genre is ``None`` (unknown).
         """
         builtin, hints = _builtin(path or DEFAULT_DATA_PATH)
         # Built-in entries come first: the first game to claim an exe keeps it.
@@ -349,7 +354,7 @@ class GameDatabase:
             # Prefer the exe's original spelling (the path keeps CamelCase, the name is lower-cased).
             base = _split_path(exe_path)[-1] if exe_path else name
             title = title_from_exe(base if base.lower() == name else name)
-        return GameMatch(f"exe:{name}", title, DEFAULT_GENRE, confidence, "heuristic")
+        return GameMatch(f"exe:{name}", title, None, confidence, "heuristic")
 
 
 def _custom_entries(custom_games: Iterable[Mapping[str, str]]) -> list[GameInfo]:
@@ -363,6 +368,7 @@ def _custom_entries(custom_games: Iterable[Mapping[str, str]]) -> list[GameInfo]
         title = raw.get("title")
         title = title.strip()[:80] if isinstance(title, str) and title.strip() else title_from_exe(process)
         genre = raw.get("genre")
-        genre = genre if genre in GENRES else DEFAULT_GENRE
+        # Hand-edited settings may hold anything here (a list is not even hashable).
+        genre = genre if isinstance(genre, str) and genre in GENRES else None
         entries.append(GameInfo(f"custom:{process}", title, genre, (process,), "custom"))
     return entries

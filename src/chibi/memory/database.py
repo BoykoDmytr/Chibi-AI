@@ -61,10 +61,12 @@ MIGRATIONS: list[str] = [
     """,
 ]
 
-#: Tables holding history about the user (cleared by "delete history").
-HISTORY_TABLES = ("phrase_history", "game_sessions", "permission_log")
+#: Tables holding history about the user (cleared by "delete history").  The
+#: permission audit log is deliberately not one of them: while grants stay
+#: active, their record of when they were given must stay too.
+HISTORY_TABLES = ("phrase_history", "game_sessions")
 #: Every table with user data (cleared by "delete all data").
-ALL_TABLES = ("settings", "kv_state", "permissions", *HISTORY_TABLES)
+ALL_TABLES = ("settings", "kv_state", "permissions", "permission_log", *HISTORY_TABLES)
 
 
 class Database:
@@ -75,6 +77,10 @@ class Database:
         self._conn = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
+        # Overwrite deleted content with zeros instead of leaving it in free
+        # pages: python.org builds of SQLite default to off, and "delete" must
+        # mean the bytes are gone, not merely unlinked.
+        self._conn.execute("PRAGMA secure_delete = ON")
         if self.path != ":memory:":
             self._conn.execute("PRAGMA journal_mode = WAL")
             self._conn.execute("PRAGMA synchronous = NORMAL")
@@ -117,6 +123,7 @@ class Database:
             conn.commit()
 
     def wipe_history(self) -> None:
+        """Delete game sessions and spoken lines; settings, permissions and their audit log stay."""
         with self.transaction() as conn:
             for table in HISTORY_TABLES:
                 conn.execute(f"DELETE FROM {table}")
@@ -131,9 +138,13 @@ class Database:
 
     def _vacuum(self) -> None:
         # Deleted rows can linger in free pages / the WAL; make deletion real.
+        # In WAL mode VACUUM writes the compacted database into the WAL only, so
+        # the main file keeps the old pages until the next checkpoint (normally
+        # at close, never if the app is killed): checkpoint again right away.
         if self.path != ":memory:":
             self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             self._conn.execute("VACUUM")
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     def close(self) -> None:
         try:

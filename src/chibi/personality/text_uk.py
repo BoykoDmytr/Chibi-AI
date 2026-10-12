@@ -2,10 +2,12 @@
 phrase rendering and normalisation of chat input.
 
 Durations are produced in the *accusative* ("1 годину", "2 години
-15 хвилин"), because every phrase that uses ``{duration}`` reads it after
-"вже", "цілих", "тебе не було ..." - places where Ukrainian wants the
-accusative of time.  For "2..4" and "5+" the accusative equals the
-nominative, so the same strings also work as a bare exclamation.
+15 хвилин"), because phrases read ``{duration}`` as the accusative of time:
+after a verb ("ти кодиш уже ...", "тебе не було ...", "гра тривала ...") or
+"за" / "на" ("за ... гри", "перерва на ...").  A template must never use it
+as a subject or a bare exclamation ("{duration} коду!"): for 1, 21, 31 ...
+the accusative ("1 годину", "21 хвилину") differs from the nominative
+("1 година"), and "цілих" cannot go with "один" either.
 
 Nothing here touches settings, the clock or the event bus, so it is trivially
 testable and safe to call from anywhere.
@@ -22,7 +24,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-#: (one, few, many) - accusative, as used after "вже" / "цілих".
+#: (one, few, many) - accusative, as used after "вже" / "тривала" / "за".
 MINUTE_FORMS: tuple[str, str, str] = ("хвилину", "хвилини", "хвилин")
 HOUR_FORMS: tuple[str, str, str] = ("годину", "години", "годин")
 DAY_FORMS: tuple[str, str, str] = ("день", "дні", "днів")
@@ -90,7 +92,9 @@ def _count(n: int, forms3: Sequence[str]) -> str:
 
 
 def format_duration(seconds: float) -> str:
-    """Human Ukrainian duration that reads well after "вже" / "цілих".
+    """Human Ukrainian duration in the accusative of time, for slots like "вже ...",
+    "тривала ...", "за ..." - never a subject or a bare exclamation (see the module
+    docstring: "1 годину" is not a nominative).
 
     ``45 -> "менше хвилини"``, ``60 -> "1 хвилину"``, ``2700 -> "45 хвилин"``,
     ``3600 -> "1 годину"``, ``8100 -> "2 години 15 хвилин"``,
