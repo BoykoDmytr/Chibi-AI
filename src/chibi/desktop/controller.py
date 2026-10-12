@@ -104,9 +104,13 @@ BODY_HALF_WIDTH = 0.3
 #: Extra transparent margin around the drawing (rounding, antialiasing).
 WINDOW_PAD = 4
 
+#: Walking, falling, dragging, hops: anything below ~30 fps looks choppy.
 FPS_FAST = 30
-FPS_CALM = 15
-FPS_SLEEP = 8
+#: Idle breathing / talking move a fraction of a pixel per frame; 10 fps is
+#: visually identical to 15 and costs a third less CPU (measured ~3 % -> ~2 %
+#: of one core for an app that runs all day).
+FPS_CALM = 10
+FPS_SLEEP = 5
 HIDDEN_TICK_MS = 1000
 #: Effects that move a lot per frame and look choppy below 30 fps.
 FAST_FX = frozenset({"hop", "shake", "swing"})
@@ -352,6 +356,7 @@ class CharacterController(QObject):
         self._fps = 0
         self._unsubscribers: list[Callable[[], None]] = []
         self._hooked_screens: list[QScreen] = []
+        self._app_screen_hooks = False
 
         self.window = CharacterWindow(always_on_top=self._cfg.character.always_on_top)
         self.window.set_paint_callback(self._paint)
@@ -1019,6 +1024,7 @@ class CharacterController(QObject):
             return
         app.screenAdded.connect(self._on_screen_added)
         app.screenRemoved.connect(self._on_screens_changed)
+        self._app_screen_hooks = True
         for screen in QGuiApplication.screens():
             self._hook_screen(screen)
 
@@ -1031,9 +1037,11 @@ class CharacterController(QObject):
         connections: list[tuple[Any, Callable[..., None]]] = [
             (screen.availableGeometryChanged, self._on_screens_changed) for screen in self._hooked_screens
         ]
-        if app is not None:
+        if app is not None and self._app_screen_hooks:
+            # Only disconnect what start() connected (shutdown without start is legal).
             connections += [(app.screenAdded, self._on_screen_added),
                             (app.screenRemoved, self._on_screens_changed)]
+            self._app_screen_hooks = False
         for signal, slot in connections:
             # RuntimeError/TypeError: the screen (and its signal) is already gone
             with contextlib.suppress(RuntimeError, TypeError):

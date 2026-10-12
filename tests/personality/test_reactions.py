@@ -291,19 +291,32 @@ def test_hourly_budget(h, clock):
 
 def test_min_gap(h, clock):
     h.settings.behavior.min_seconds_between_unsolicited = 600  # x1.0 at talkativeness 50
-    assert len(h.fire(game("a", "А"))) == 1
+    h.settings.activity.comment_on_browsing = True
+    assert len(h.fire(app(ActivityCategory.PROGRAMMING))) == 1
     clock.advance(5 * MIN)
-    assert h.fire(game("b", "Б")) == []
+    assert h.fire(app(ActivityCategory.WATCHING_VIDEO, name="VLC", process="vlc.exe")) == []
     clock.advance(5 * MIN)
-    assert len(h.fire(game("c", "В"))) == 1
+    assert len(h.fire(app(ActivityCategory.BROWSING, name="Firefox", process="firefox.exe"))) == 1
+
+
+def test_game_start_skips_min_gap_but_not_budget(h, clock):
+    # A greeting or comment a minute ago must not swallow "you started a game".
+    h.settings.behavior.min_seconds_between_unsolicited = 600
+    assert len(h.fire(app(ActivityCategory.PROGRAMMING))) == 1
+    clock.advance(1 * MIN)
+    assert len(h.fire(game())) == 1
+    # ...but the hourly budget still caps it.
+    h.settings.behavior.max_unsolicited_per_hour = 1
+    clock.advance(30 * MIN)
+    assert h.fire(game("dota2", "Dota 2")) == []
 
 
 def test_unsolicited_waits_after_an_answer(h, clock):
     h.fire(InteractionOutcome(kind=InteractionKind.CLICK, outcome="poke"))
     clock.advance(5)
-    assert h.fire(game()) == []
+    assert h.fire(app(ActivityCategory.PROGRAMMING)) == []
     clock.advance(15)
-    assert len(h.fire(game())) == 1
+    assert len(h.fire(app(ActivityCategory.PROGRAMMING))) == 1
 
 
 def test_game_cooldowns(h, clock):

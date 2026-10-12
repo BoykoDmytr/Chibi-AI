@@ -49,6 +49,7 @@ class StatusView:
     observing: bool  # any observation permission active
     activity_supported: bool  # activity monitoring works on this OS
     ai_connected: bool  # always False in Phase 1
+    #: Epoch seconds when quiet mode ends; ``inf`` = until lifted; None = not quiet.
     quiet_until: float | None
     do_not_disturb: bool
 

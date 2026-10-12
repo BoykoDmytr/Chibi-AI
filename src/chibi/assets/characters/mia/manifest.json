@@ -15,7 +15,7 @@
   "cheer_1": {
    "file": "frames/cheer_1.png",
    "anchor": [
-    203,
+    215,
     448
    ],
    "scale": 1.0
@@ -31,7 +31,7 @@
   "cheer_3": {
    "file": "frames/cheer_3.png",
    "anchor": [
-    206,
+    207,
     432
    ],
    "scale": 1.0
@@ -47,7 +47,7 @@
   "cheer_5": {
    "file": "frames/cheer_5.png",
    "anchor": [
-    210,
+    211,
     443
    ],
    "scale": 1.0
@@ -55,7 +55,7 @@
   "cheer_6": {
    "file": "frames/cheer_6.png",
    "anchor": [
-    209,
+    223,
     434
    ],
    "scale": 1.0
@@ -63,7 +63,7 @@
   "cheer_7": {
    "file": "frames/cheer_7.png",
    "anchor": [
-    202,
+    207,
     439
    ],
    "scale": 1.0
@@ -87,7 +87,7 @@
   "front_2": {
    "file": "frames/front_2.png",
    "anchor": [
-    183,
+    185,
     441
    ],
    "scale": 1.0
@@ -95,7 +95,7 @@
   "front_3": {
    "file": "frames/front_3.png",
    "anchor": [
-    187,
+    194,
     461
    ],
    "scale": 1.0
@@ -103,8 +103,8 @@
   "front_5": {
    "file": "frames/front_5.png",
    "anchor": [
-    204,
-    453
+    195,
+    463
    ],
    "scale": 1.0
   },
@@ -119,7 +119,7 @@
   "front_7": {
    "file": "frames/front_7.png",
    "anchor": [
-    199,
+    205,
     442
    ],
    "scale": 1.0
@@ -135,7 +135,7 @@
   "gesture_1": {
    "file": "frames/gesture_1.png",
    "anchor": [
-    201,
+    193,
     469
    ],
    "scale": 1.0
@@ -143,7 +143,7 @@
   "gesture_2": {
    "file": "frames/gesture_2.png",
    "anchor": [
-    184,
+    190,
     470
    ],
    "scale": 1.0
@@ -151,7 +151,7 @@
   "gesture_3": {
    "file": "frames/gesture_3.png",
    "anchor": [
-    186,
+    195,
     471
    ],
    "scale": 1.0
@@ -160,14 +160,14 @@
    "file": "frames/gesture_4.png",
    "anchor": [
     204,
-    460
+    461
    ],
    "scale": 1.0
   },
   "gesture_5": {
    "file": "frames/gesture_5.png",
    "anchor": [
-    207,
+    196,
     454
    ],
    "scale": 1.0
@@ -175,8 +175,8 @@
   "gesture_6": {
    "file": "frames/gesture_6.png",
    "anchor": [
-    185,
-    460
+    188,
+    468
    ],
    "scale": 1.0
   },
@@ -191,7 +191,7 @@
   "run_1": {
    "file": "frames/run_1.png",
    "anchor": [
-    280,
+    283,
     400
    ],
    "scale": 1.0
@@ -199,7 +199,7 @@
   "run_2": {
    "file": "frames/run_2.png",
    "anchor": [
-    294,
+    303,
     401
    ],
    "scale": 1.0
@@ -207,7 +207,7 @@
   "run_3": {
    "file": "frames/run_3.png",
    "anchor": [
-    306,
+    316,
     404
    ],
    "scale": 1.0
@@ -223,7 +223,7 @@
   "run_5": {
    "file": "frames/run_5.png",
    "anchor": [
-    155,
+    158,
     371
    ],
    "scale": 1.0
@@ -231,7 +231,7 @@
   "run_6": {
    "file": "frames/run_6.png",
    "anchor": [
-    312,
+    317,
     394
    ],
    "scale": 1.0
@@ -239,7 +239,7 @@
   "run_7": {
    "file": "frames/run_7.png",
    "anchor": [
-    304,
+    315,
     395
    ],
    "scale": 1.0
@@ -255,7 +255,7 @@
   "sit_1": {
    "file": "frames/sit_1.png",
    "anchor": [
-    201,
+    195,
     435
    ],
    "scale": 1.0
@@ -263,7 +263,7 @@
   "sit_2": {
    "file": "frames/sit_2.png",
    "anchor": [
-    207,
+    205,
     421
    ],
    "scale": 1.0
@@ -271,7 +271,7 @@
   "sit_3": {
    "file": "frames/sit_3.png",
    "anchor": [
-    189,
+    174,
     413
    ],
    "scale": 1.0
@@ -287,7 +287,7 @@
   "sit_5": {
    "file": "frames/sit_5.png",
    "anchor": [
-    209,
+    197,
     407
    ],
    "scale": 1.0
@@ -295,7 +295,7 @@
   "sit_6": {
    "file": "frames/sit_6.png",
    "anchor": [
-    212,
+    216,
     420
    ],
    "scale": 1.0
@@ -303,7 +303,7 @@
   "sit_7": {
    "file": "frames/sit_7.png",
    "anchor": [
-    219,
+    216,
     427
    ],
    "scale": 1.0
@@ -319,7 +319,7 @@
   "sleep_1": {
    "file": "frames/sleep_1.png",
    "anchor": [
-    196,
+    195,
     337
    ],
    "scale": 1.0
@@ -327,7 +327,7 @@
   "sleep_3": {
    "file": "frames/sleep_3.png",
    "anchor": [
-    188,
+    193,
     327
    ],
    "scale": 1.0
@@ -343,7 +343,7 @@
   "sleep_6": {
    "file": "frames/sleep_6.png",
    "anchor": [
-    194,
+    200,
     324
    ],
    "scale": 1.0
@@ -351,7 +351,7 @@
   "sleep_7": {
    "file": "frames/sleep_7.png",
    "anchor": [
-    188,
+    191,
     326
    ],
    "scale": 1.0
@@ -367,7 +367,7 @@
   "walk_1": {
    "file": "frames/walk_1.png",
    "anchor": [
-    129,
+    113,
     434
    ],
    "scale": 1.0
@@ -375,7 +375,7 @@
   "walk_2": {
    "file": "frames/walk_2.png",
    "anchor": [
-    118,
+    113,
     435
    ],
    "scale": 1.0
@@ -383,7 +383,7 @@
   "walk_3": {
    "file": "frames/walk_3.png",
    "anchor": [
-    120,
+    113,
     435
    ],
    "scale": 1.0
@@ -399,7 +399,7 @@
   "walk_5": {
    "file": "frames/walk_5.png",
    "anchor": [
-    129,
+    114,
     424
    ],
    "scale": 1.0
@@ -407,7 +407,7 @@
   "walk_6": {
    "file": "frames/walk_6.png",
    "anchor": [
-    115,
+    101,
     430
    ],
    "scale": 1.0
@@ -415,7 +415,7 @@
   "walk_7": {
    "file": "frames/walk_7.png",
    "anchor": [
-    124,
+    113,
     441
    ],
    "scale": 1.0
@@ -423,7 +423,7 @@
   "wave_1": {
    "file": "frames/wave_1.png",
    "anchor": [
-    198,
+    187,
     466
    ],
    "scale": 1.0
@@ -431,7 +431,7 @@
   "wave_2": {
    "file": "frames/wave_2.png",
    "anchor": [
-    199,
+    195,
     463
    ],
    "scale": 1.0
@@ -455,15 +455,15 @@
   "wave_5": {
    "file": "frames/wave_5.png",
    "anchor": [
-    185,
-    460
+    176,
+    463
    ],
    "scale": 1.0
   },
   "wave_6": {
    "file": "frames/wave_6.png",
    "anchor": [
-    218,
+    227,
     457
    ],
    "scale": 1.0
@@ -471,8 +471,8 @@
   "wave_7": {
    "file": "frames/wave_7.png",
    "anchor": [
-    210,
-    460
+    209,
+    465
    ],
    "scale": 1.0
   }

@@ -424,7 +424,10 @@ class ReactionEngine:
             return
         if not self._ready("game", GAME_GLOBAL_COOLDOWN_SECONDS):
             return
-        if self._speak(settings, self._game_start_keys(event.game_id), game=event.title):
+        # A game launch is rare and salient and has its own cooldowns, so it
+        # skips the minimum gap (a greeting a minute ago must not swallow it);
+        # the hourly budget, DND, quiet mode and fullscreen still apply.
+        if self._speak(settings, self._game_start_keys(event.game_id), ignore_gap=True, game=event.title):
             self._start_cooldown(per_game, "game")
 
     def _game_start_keys(self, game_id: str) -> list[str]:

@@ -238,7 +238,17 @@ def _ground_and_anchor_x(alpha: np.ndarray, lying: bool) -> tuple[int, int, int]
 
 
 def _split_figures(rgba: np.ndarray, sleeping: bool) -> list[np.ndarray]:
-    """Separate the 8 figures of a 4x2 sheet without a fixed grid cut."""
+    """Separate the 8 figures of a 4x2 sheet without a fixed grid cut.
+
+    Hair in these sheets regularly crosses the cell borders.  Assigning
+    pixels to the nearest body would slice every such curl at the midline
+    (and hand it to the neighbour's frame), so ownership is decided per
+    connected component instead: a figure whose silhouette doesn't touch a
+    neighbour keeps all of its hair, uncut.  Only silhouettes that really
+    touch are split - by nearest body, with a soft feathered fade along the
+    seam instead of a ruler-straight edge.  Faint edge pixels follow the
+    strong pixel they surround.
+    """
     alpha = rgba[..., 3]
     _, w = alpha.shape
     seeds = np.zeros_like(alpha, dtype=np.int32)
@@ -253,10 +263,52 @@ def _split_figures(rgba: np.ndarray, sleeping: bool) -> list[np.ndarray]:
             if box.sum() < 500:
                 raise SystemExit(f"figure core {k} is empty; sheet layout changed?")
             seeds[y0:y1, x0:x1][box] = k
-    dist, (iy, ix) = ndimage.distance_transform_edt(seeds == 0, return_indices=True)
-    owner = seeds[iy, ix]
-    owner[(alpha == 0) | (dist > 320)] = 0
-    return [np.where(owner == i, alpha, 0).astype(np.uint8) for i in range(1, 9)]
+
+    # Distance of every pixel to each body core (for splitting touching figures).
+    core_dist = np.stack([ndimage.distance_transform_edt(seeds != i) for i in range(1, 9)])
+    order = np.argsort(core_dist, axis=0)
+    nearest = order[0] + 1
+    rows, cols = np.indices(alpha.shape)
+    d_own = core_dist[order[0], rows, cols]
+    d_next = core_dist[order[1], rows, cols]
+
+    strong = alpha >= 40
+    lab, _ = ndimage.label(strong, structure=np.ones((3, 3)))
+    owner = np.zeros_like(alpha, dtype=np.int32)
+    feather = np.ones(alpha.shape, dtype=np.float32)
+    seam = 26.0  # px over which a forced split fades out
+    objects = ndimage.find_objects(lab)
+    for comp, sl in enumerate(objects, start=1):
+        if sl is None:
+            continue
+        mask = lab[sl] == comp
+        cores = set(np.unique(seeds[sl][mask])) - {0}
+        if len(cores) == 1:
+            owner[sl][mask] = cores.pop()
+        elif len(cores) > 1:
+            # Touching silhouettes: split by nearest body, feather the seam.
+            owner[sl][mask] = nearest[sl][mask]
+            margin = (d_next[sl] - d_own[sl])[mask]
+            t = np.clip(margin / seam, 0.0, 1.0)
+            feather[sl][mask] = t * t * (3 - 2 * t)
+        else:
+            # No body inside (zzz, sparkles, detached curls): whole piece to the
+            # body that is nearest on average - never split.
+            votes = np.bincount(nearest[sl][mask].ravel(), minlength=9)
+            owner[sl][mask] = int(votes.argmax())
+
+    # Faint pixels (soft edges, glow) belong to the strong pixel they touch.
+    weak = (alpha > 0) & ~strong
+    dist, (iy, ix) = ndimage.distance_transform_edt(~strong, return_indices=True)
+    owner[weak] = owner[iy[weak], ix[weak]]
+    feather[weak] = feather[iy[weak], ix[weak]]
+    owner[weak & (dist > 24)] = 0
+
+    out = []
+    for i in range(1, 9):
+        a = np.where(owner == i, alpha.astype(np.float32) * feather, 0.0)
+        out.append(np.clip(np.rint(a), 0, 255).astype(np.uint8))
+    return out
 
 
 def _crop(rgba: np.ndarray, alpha: np.ndarray, pad: int = 2) -> tuple[Image.Image, int, int]:
