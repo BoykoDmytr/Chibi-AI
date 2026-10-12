@@ -186,6 +186,10 @@ class GameEnded(Event):
     game_id: str
     title: str
     duration_seconds: float
+    #: The game became private while running (the user excluded it): consumers
+    #: must forget the session - no line about it, nothing persisted.  The
+    #: title is empty in that case.
+    forgotten: bool = False
 
 
 @dataclass(frozen=True, slots=True)
