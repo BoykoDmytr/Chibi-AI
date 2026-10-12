@@ -1,0 +1,1186 @@
+{
+ "format": 1,
+ "name": "Mia",
+ "description": "Chibi girl in a black cat hoodie. Art supplied by the project owner (generated with ChatGPT image generation); see ASSETS.md.",
+ "reference_height": 443,
+ "frames": {
+  "cheer_0": {
+   "file": "frames/cheer_0.png",
+   "anchor": [
+    198,
+    456
+   ],
+   "scale": 1.0
+  },
+  "cheer_1": {
+   "file": "frames/cheer_1.png",
+   "anchor": [
+    203,
+    448
+   ],
+   "scale": 1.0
+  },
+  "cheer_2": {
+   "file": "frames/cheer_2.png",
+   "anchor": [
+    206,
+    437
+   ],
+   "scale": 1.0
+  },
+  "cheer_3": {
+   "file": "frames/cheer_3.png",
+   "anchor": [
+    206,
+    432
+   ],
+   "scale": 1.0
+  },
+  "cheer_4": {
+   "file": "frames/cheer_4.png",
+   "anchor": [
+    209,
+    429
+   ],
+   "scale": 1.0
+  },
+  "cheer_5": {
+   "file": "frames/cheer_5.png",
+   "anchor": [
+    210,
+    443
+   ],
+   "scale": 1.0
+  },
+  "cheer_6": {
+   "file": "frames/cheer_6.png",
+   "anchor": [
+    209,
+    434
+   ],
+   "scale": 1.0
+  },
+  "cheer_7": {
+   "file": "frames/cheer_7.png",
+   "anchor": [
+    202,
+    439
+   ],
+   "scale": 1.0
+  },
+  "front_0": {
+   "file": "frames/front_0.png",
+   "anchor": [
+    191,
+    461
+   ],
+   "scale": 1.0
+  },
+  "front_1": {
+   "file": "frames/front_1.png",
+   "anchor": [
+    186,
+    449
+   ],
+   "scale": 1.0
+  },
+  "front_2": {
+   "file": "frames/front_2.png",
+   "anchor": [
+    183,
+    441
+   ],
+   "scale": 1.0
+  },
+  "front_3": {
+   "file": "frames/front_3.png",
+   "anchor": [
+    187,
+    461
+   ],
+   "scale": 1.0
+  },
+  "front_5": {
+   "file": "frames/front_5.png",
+   "anchor": [
+    204,
+    453
+   ],
+   "scale": 1.0
+  },
+  "front_6": {
+   "file": "frames/front_6.png",
+   "anchor": [
+    196,
+    449
+   ],
+   "scale": 1.0
+  },
+  "front_7": {
+   "file": "frames/front_7.png",
+   "anchor": [
+    199,
+    442
+   ],
+   "scale": 1.0
+  },
+  "gesture_0": {
+   "file": "frames/gesture_0.png",
+   "anchor": [
+    200,
+    471
+   ],
+   "scale": 1.0
+  },
+  "gesture_1": {
+   "file": "frames/gesture_1.png",
+   "anchor": [
+    201,
+    469
+   ],
+   "scale": 1.0
+  },
+  "gesture_2": {
+   "file": "frames/gesture_2.png",
+   "anchor": [
+    184,
+    470
+   ],
+   "scale": 1.0
+  },
+  "gesture_3": {
+   "file": "frames/gesture_3.png",
+   "anchor": [
+    186,
+    471
+   ],
+   "scale": 1.0
+  },
+  "gesture_4": {
+   "file": "frames/gesture_4.png",
+   "anchor": [
+    204,
+    460
+   ],
+   "scale": 1.0
+  },
+  "gesture_5": {
+   "file": "frames/gesture_5.png",
+   "anchor": [
+    207,
+    454
+   ],
+   "scale": 1.0
+  },
+  "gesture_6": {
+   "file": "frames/gesture_6.png",
+   "anchor": [
+    185,
+    460
+   ],
+   "scale": 1.0
+  },
+  "run_0": {
+   "file": "frames/run_0.png",
+   "anchor": [
+    264,
+    398
+   ],
+   "scale": 1.0
+  },
+  "run_1": {
+   "file": "frames/run_1.png",
+   "anchor": [
+    280,
+    400
+   ],
+   "scale": 1.0
+  },
+  "run_2": {
+   "file": "frames/run_2.png",
+   "anchor": [
+    294,
+    401
+   ],
+   "scale": 1.0
+  },
+  "run_3": {
+   "file": "frames/run_3.png",
+   "anchor": [
+    306,
+    404
+   ],
+   "scale": 1.0
+  },
+  "run_4": {
+   "file": "frames/run_4.png",
+   "anchor": [
+    295,
+    388
+   ],
+   "scale": 1.0
+  },
+  "run_5": {
+   "file": "frames/run_5.png",
+   "anchor": [
+    155,
+    371
+   ],
+   "scale": 1.0
+  },
+  "run_6": {
+   "file": "frames/run_6.png",
+   "anchor": [
+    312,
+    394
+   ],
+   "scale": 1.0
+  },
+  "run_7": {
+   "file": "frames/run_7.png",
+   "anchor": [
+    304,
+    395
+   ],
+   "scale": 1.0
+  },
+  "sit_0": {
+   "file": "frames/sit_0.png",
+   "anchor": [
+    204,
+    432
+   ],
+   "scale": 1.0
+  },
+  "sit_1": {
+   "file": "frames/sit_1.png",
+   "anchor": [
+    201,
+    435
+   ],
+   "scale": 1.0
+  },
+  "sit_2": {
+   "file": "frames/sit_2.png",
+   "anchor": [
+    207,
+    421
+   ],
+   "scale": 1.0
+  },
+  "sit_3": {
+   "file": "frames/sit_3.png",
+   "anchor": [
+    189,
+    413
+   ],
+   "scale": 1.0
+  },
+  "sit_4": {
+   "file": "frames/sit_4.png",
+   "anchor": [
+    206,
+    425
+   ],
+   "scale": 1.0
+  },
+  "sit_5": {
+   "file": "frames/sit_5.png",
+   "anchor": [
+    209,
+    407
+   ],
+   "scale": 1.0
+  },
+  "sit_6": {
+   "file": "frames/sit_6.png",
+   "anchor": [
+    212,
+    420
+   ],
+   "scale": 1.0
+  },
+  "sit_7": {
+   "file": "frames/sit_7.png",
+   "anchor": [
+    219,
+    427
+   ],
+   "scale": 1.0
+  },
+  "sleep_0": {
+   "file": "frames/sleep_0.png",
+   "anchor": [
+    196,
+    314
+   ],
+   "scale": 1.0
+  },
+  "sleep_1": {
+   "file": "frames/sleep_1.png",
+   "anchor": [
+    196,
+    337
+   ],
+   "scale": 1.0
+  },
+  "sleep_3": {
+   "file": "frames/sleep_3.png",
+   "anchor": [
+    188,
+    327
+   ],
+   "scale": 1.0
+  },
+  "sleep_4": {
+   "file": "frames/sleep_4.png",
+   "anchor": [
+    194,
+    367
+   ],
+   "scale": 1.0
+  },
+  "sleep_6": {
+   "file": "frames/sleep_6.png",
+   "anchor": [
+    194,
+    324
+   ],
+   "scale": 1.0
+  },
+  "sleep_7": {
+   "file": "frames/sleep_7.png",
+   "anchor": [
+    188,
+    326
+   ],
+   "scale": 1.0
+  },
+  "walk_0": {
+   "file": "frames/walk_0.png",
+   "anchor": [
+    113,
+    433
+   ],
+   "scale": 1.0
+  },
+  "walk_1": {
+   "file": "frames/walk_1.png",
+   "anchor": [
+    129,
+    434
+   ],
+   "scale": 1.0
+  },
+  "walk_2": {
+   "file": "frames/walk_2.png",
+   "anchor": [
+    118,
+    435
+   ],
+   "scale": 1.0
+  },
+  "walk_3": {
+   "file": "frames/walk_3.png",
+   "anchor": [
+    120,
+    435
+   ],
+   "scale": 1.0
+  },
+  "walk_4": {
+   "file": "frames/walk_4.png",
+   "anchor": [
+    102,
+    426
+   ],
+   "scale": 1.0
+  },
+  "walk_5": {
+   "file": "frames/walk_5.png",
+   "anchor": [
+    129,
+    424
+   ],
+   "scale": 1.0
+  },
+  "walk_6": {
+   "file": "frames/walk_6.png",
+   "anchor": [
+    115,
+    430
+   ],
+   "scale": 1.0
+  },
+  "walk_7": {
+   "file": "frames/walk_7.png",
+   "anchor": [
+    124,
+    441
+   ],
+   "scale": 1.0
+  },
+  "wave_1": {
+   "file": "frames/wave_1.png",
+   "anchor": [
+    198,
+    466
+   ],
+   "scale": 1.0
+  },
+  "wave_2": {
+   "file": "frames/wave_2.png",
+   "anchor": [
+    199,
+    463
+   ],
+   "scale": 1.0
+  },
+  "wave_3": {
+   "file": "frames/wave_3.png",
+   "anchor": [
+    198,
+    465
+   ],
+   "scale": 1.0
+  },
+  "wave_4": {
+   "file": "frames/wave_4.png",
+   "anchor": [
+    215,
+    446
+   ],
+   "scale": 1.0
+  },
+  "wave_5": {
+   "file": "frames/wave_5.png",
+   "anchor": [
+    185,
+    460
+   ],
+   "scale": 1.0
+  },
+  "wave_6": {
+   "file": "frames/wave_6.png",
+   "anchor": [
+    218,
+    457
+   ],
+   "scale": 1.0
+  },
+  "wave_7": {
+   "file": "frames/wave_7.png",
+   "anchor": [
+    210,
+    460
+   ],
+   "scale": 1.0
+  }
+ },
+ "clips": {
+  "idle": {
+   "frames": [
+    {
+     "id": "front_0",
+     "ms": 3200
+    },
+    {
+     "id": "front_1",
+     "ms": 160
+    },
+    {
+     "id": "front_0",
+     "ms": 2600
+    },
+    {
+     "id": "front_1",
+     "ms": 140
+    },
+    {
+     "id": "front_0",
+     "ms": 900
+    },
+    {
+     "id": "front_5",
+     "ms": 2800
+    },
+    {
+     "id": "front_6",
+     "ms": 170
+    },
+    {
+     "id": "front_5",
+     "ms": 2200
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "breathe": 0.012
+   }
+  },
+  "idle_look": {
+   "frames": [
+    {
+     "id": "front_7",
+     "ms": 2400
+    }
+   ],
+   "loop": false,
+   "facing": "left",
+   "fx": {
+    "breathe": 0.012
+   }
+  },
+  "idle_smile": {
+   "frames": [
+    {
+     "id": "gesture_0",
+     "ms": 2200
+    },
+    {
+     "id": "front_3",
+     "ms": 900
+    }
+   ],
+   "loop": false,
+   "facing": "front",
+   "fx": {
+    "breathe": 0.012
+   }
+  },
+  "walk": {
+   "frames": [
+    {
+     "id": "walk_0",
+     "ms": 110
+    },
+    {
+     "id": "walk_1",
+     "ms": 110
+    },
+    {
+     "id": "walk_2",
+     "ms": 110
+    },
+    {
+     "id": "walk_3",
+     "ms": 110
+    },
+    {
+     "id": "walk_4",
+     "ms": 110
+    },
+    {
+     "id": "walk_5",
+     "ms": 110
+    },
+    {
+     "id": "walk_6",
+     "ms": 110
+    },
+    {
+     "id": "walk_7",
+     "ms": 110
+    }
+   ],
+   "loop": true,
+   "facing": "left",
+   "fx": {
+    "bob": 0.01
+   }
+  },
+  "run": {
+   "frames": [
+    {
+     "id": "run_0",
+     "ms": 75
+    },
+    {
+     "id": "run_1",
+     "ms": 75
+    },
+    {
+     "id": "run_2",
+     "ms": 75
+    },
+    {
+     "id": "run_3",
+     "ms": 75
+    },
+    {
+     "id": "run_4",
+     "ms": 75
+    },
+    {
+     "id": "run_5",
+     "ms": 75
+    },
+    {
+     "id": "run_6",
+     "ms": 75
+    },
+    {
+     "id": "run_7",
+     "ms": 75
+    }
+   ],
+   "loop": true,
+   "facing": "right",
+   "fx": {
+    "bob": 0.016
+   }
+  },
+  "sit": {
+   "frames": [
+    {
+     "id": "sit_0",
+     "ms": 3600
+    },
+    {
+     "id": "sit_6",
+     "ms": 2600
+    },
+    {
+     "id": "sit_0",
+     "ms": 2400
+    },
+    {
+     "id": "sit_4",
+     "ms": 1600
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "breathe": 0.01
+   },
+   "blend_ms": 220
+  },
+  "yawn": {
+   "frames": [
+    {
+     "id": "sit_3",
+     "ms": 1800
+    }
+   ],
+   "loop": false,
+   "facing": "front",
+   "fx": {
+    "breathe": 0.016
+   }
+  },
+  "sleep": {
+   "frames": [
+    {
+     "id": "sleep_0",
+     "ms": 3000
+    },
+    {
+     "id": "sleep_1",
+     "ms": 3000
+    },
+    {
+     "id": "sleep_3",
+     "ms": 3000
+    },
+    {
+     "id": "sleep_7",
+     "ms": 3000
+    },
+    {
+     "id": "sleep_4",
+     "ms": 3000
+    },
+    {
+     "id": "sleep_6",
+     "ms": 3000
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "breathe": 0.018
+   },
+   "blend_ms": 1100
+  },
+  "talk": {
+   "frames": [
+    {
+     "id": "gesture_0",
+     "ms": 420
+    },
+    {
+     "id": "gesture_2",
+     "ms": 380
+    },
+    {
+     "id": "gesture_4",
+     "ms": 520
+    },
+    {
+     "id": "gesture_6",
+     "ms": 380
+    },
+    {
+     "id": "gesture_1",
+     "ms": 450
+    },
+    {
+     "id": "gesture_3",
+     "ms": 420
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "bob": 0.008,
+    "breathe": 0.008
+   },
+   "blend_ms": 90
+  },
+  "laugh": {
+   "frames": [
+    {
+     "id": "cheer_0",
+     "ms": 260
+    },
+    {
+     "id": "cheer_3",
+     "ms": 260
+    },
+    {
+     "id": "cheer_5",
+     "ms": 260
+    },
+    {
+     "id": "cheer_3",
+     "ms": 260
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "shake": 0.006,
+    "bob": 0.01
+   }
+  },
+  "happy": {
+   "frames": [
+    {
+     "id": "cheer_1",
+     "ms": 300
+    },
+    {
+     "id": "cheer_2",
+     "ms": 300
+    },
+    {
+     "id": "cheer_4",
+     "ms": 300
+    },
+    {
+     "id": "cheer_6",
+     "ms": 300
+    },
+    {
+     "id": "cheer_7",
+     "ms": 300
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "hop": 0.035
+   },
+   "overlay": "sparkle"
+  },
+  "angry": {
+   "frames": [
+    {
+     "id": "front_2",
+     "ms": 2000
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "shake": 0.01
+   },
+   "overlay": "anger"
+  },
+  "sad": {
+   "frames": [
+    {
+     "id": "sit_5",
+     "ms": 3000
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "breathe": 0.01
+   },
+   "overlay": "tear"
+  },
+  "surprised": {
+   "frames": [
+    {
+     "id": "gesture_6",
+     "ms": 600
+    },
+    {
+     "id": "gesture_2",
+     "ms": 1100
+    }
+   ],
+   "loop": false,
+   "facing": "front",
+   "fx": {
+    "hop": 0.03
+   },
+   "overlay": "exclaim"
+  },
+  "curious": {
+   "frames": [
+    {
+     "id": "front_7",
+     "ms": 2200
+    },
+    {
+     "id": "front_0",
+     "ms": 600
+    }
+   ],
+   "loop": true,
+   "facing": "left",
+   "fx": {
+    "tilt": 3.0
+   },
+   "overlay": "question"
+  },
+  "gaming": {
+   "frames": [
+    {
+     "id": "sit_0",
+     "ms": 2200
+    },
+    {
+     "id": "sit_2",
+     "ms": 900
+    },
+    {
+     "id": "sit_1",
+     "ms": 800
+    },
+    {
+     "id": "sit_0",
+     "ms": 1800
+    },
+    {
+     "id": "sit_7",
+     "ms": 900
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "breathe": 0.008
+   },
+   "overlay": "game",
+   "blend_ms": 150
+  },
+  "thinking": {
+   "frames": [
+    {
+     "id": "gesture_5",
+     "ms": 2200
+    },
+    {
+     "id": "front_7",
+     "ms": 1400
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "breathe": 0.01
+   },
+   "overlay": "dots",
+   "blend_ms": 200
+  },
+  "wave": {
+   "frames": [
+    {
+     "id": "wave_1",
+     "ms": 300
+    },
+    {
+     "id": "wave_3",
+     "ms": 300
+    },
+    {
+     "id": "wave_4",
+     "ms": 300
+    },
+    {
+     "id": "wave_3",
+     "ms": 300
+    },
+    {
+     "id": "wave_1",
+     "ms": 300
+    },
+    {
+     "id": "wave_5",
+     "ms": 450
+    }
+   ],
+   "loop": false,
+   "facing": "front",
+   "fx": {
+    "bob": 0.006
+   }
+  },
+  "dragged": {
+   "frames": [
+    {
+     "id": "cheer_1",
+     "ms": 360
+    },
+    {
+     "id": "cheer_6",
+     "ms": 360
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "swing": 9.0
+   }
+  },
+  "eat": {
+   "frames": [
+    {
+     "id": "cheer_5",
+     "ms": 500
+    },
+    {
+     "id": "cheer_0",
+     "ms": 500
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "bob": 0.01
+   },
+   "overlay": "hearts"
+  },
+  "shy": {
+   "frames": [
+    {
+     "id": "gesture_5",
+     "ms": 1800
+    },
+    {
+     "id": "front_6",
+     "ms": 1200
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "breathe": 0.01
+   },
+   "overlay": "blush"
+  },
+  "greet": {
+   "frames": [
+    {
+     "id": "wave_2",
+     "ms": 500
+    },
+    {
+     "id": "wave_6",
+     "ms": 500
+    },
+    {
+     "id": "wave_7",
+     "ms": 500
+    },
+    {
+     "id": "wave_6",
+     "ms": 500
+    }
+   ],
+   "loop": false,
+   "facing": "front",
+   "fx": {
+    "hop": 0.02
+   }
+  },
+  "bye": {
+   "frames": [
+    {
+     "id": "wave_3",
+     "ms": 350
+    },
+    {
+     "id": "wave_4",
+     "ms": 350
+    },
+    {
+     "id": "wave_3",
+     "ms": 350
+    },
+    {
+     "id": "wave_4",
+     "ms": 350
+    },
+    {
+     "id": "wave_1",
+     "ms": 500
+    }
+   ],
+   "loop": false,
+   "facing": "front",
+   "fx": {
+    "bob": 0.006
+   }
+  },
+  "point": {
+   "frames": [
+    {
+     "id": "gesture_4",
+     "ms": 1600
+    }
+   ],
+   "loop": false,
+   "facing": "front",
+   "overlay": "exclaim"
+  }
+ },
+ "states": {
+  "idle": {
+   "clip": "idle",
+   "variants": [
+    "idle_look",
+    "idle_smile"
+   ],
+   "portrait": "calm"
+  },
+  "walk": {
+   "clip": "walk",
+   "portrait": "calm"
+  },
+  "run": {
+   "clip": "run",
+   "portrait": "excited"
+  },
+  "sit": {
+   "clip": "sit",
+   "portrait": "smile"
+  },
+  "sleep": {
+   "clip": "sleep",
+   "portrait": "sleep_cat"
+  },
+  "talk": {
+   "clip": "talk",
+   "portrait": "smile"
+  },
+  "laugh": {
+   "clip": "laugh",
+   "portrait": "laugh"
+  },
+  "happy": {
+   "clip": "happy",
+   "portrait": "joy"
+  },
+  "angry": {
+   "clip": "angry",
+   "portrait": "angry"
+  },
+  "sad": {
+   "clip": "sad",
+   "portrait": "offended"
+  },
+  "surprised": {
+   "clip": "surprised",
+   "portrait": "wow"
+  },
+  "curious": {
+   "clip": "curious",
+   "portrait": "question"
+  },
+  "gaming": {
+   "clip": "gaming",
+   "portrait": "typing"
+  },
+  "thinking": {
+   "clip": "thinking",
+   "portrait": "thinking"
+  },
+  "wave": {
+   "clip": "wave",
+   "variants": [
+    "greet"
+   ],
+   "portrait": "wink"
+  },
+  "dragged": {
+   "clip": "dragged",
+   "portrait": "wow"
+  },
+  "eat": {
+   "clip": "eat",
+   "portrait": "eat"
+  },
+  "shy": {
+   "clip": "shy",
+   "portrait": "shy"
+  },
+  "yawn": {
+   "clip": "yawn",
+   "portrait": "tired"
+  },
+  "bye": {
+   "clip": "bye",
+   "portrait": "bye"
+  },
+  "point": {
+   "clip": "point",
+   "portrait": "point"
+  }
+ },
+ "portraits": {
+  "angry": "portraits/angry.png",
+  "bye": "portraits/bye.png",
+  "calm": "portraits/calm.png",
+  "drink": "portraits/drink.png",
+  "eat": "portraits/eat.png",
+  "excited": "portraits/excited.png",
+  "facepalm": "portraits/facepalm.png",
+  "greet": "portraits/greet.png",
+  "idea": "portraits/idea.png",
+  "joy": "portraits/joy.png",
+  "joyful": "portraits/joyful.png",
+  "laugh": "portraits/laugh.png",
+  "music": "portraits/music.png",
+  "offended": "portraits/offended.png",
+  "phone": "portraits/phone.png",
+  "point": "portraits/point.png",
+  "question": "portraits/question.png",
+  "shy": "portraits/shy.png",
+  "sleep_cat": "portraits/sleep_cat.png",
+  "smile": "portraits/smile.png",
+  "surprised": "portraits/surprised.png",
+  "thinking": "portraits/thinking.png",
+  "tired": "portraits/tired.png",
+  "typing": "portraits/typing.png",
+  "wink": "portraits/wink.png",
+  "wink_heart": "portraits/wink_heart.png",
+  "wow": "portraits/wow.png"
+ }
+}

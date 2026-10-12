@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chibi-companion"
+version = "0.1.0"
+description = "Chibi AI Companion - a desktop tamagotchi that lives on your Windows desktop"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary - all rights reserved (see README)" }
+dependencies = [
+    # Essentials is enough (QtCore/QtGui/QtWidgets); the full "PySide6"
+    # meta-package also pulls WebEngine (~300 MB) which we don't use.
+    "PySide6-Essentials>=6.7",
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    # tools/build_sprites.py only
+    "Pillow>=10",
+    "numpy>=1.26",
+    "scipy>=1.11",
+]
+
+[project.scripts]
+chibi-companion = "chibi.app:main"
+
+[project.gui-scripts]
+chibi-companion-gui = "chibi.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+chibi = [
+    "assets/characters/*/manifest.json",
+    "assets/characters/*/frames/*.png",
+    "assets/characters/*/portraits/*.png",
+    "assets/characters/*/ASSETS.md",
+    "*/data/*.json",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tools"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "tests", "tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # Ukrainian text legitimately contains look-alike letters
+]
