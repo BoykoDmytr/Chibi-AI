@@ -75,7 +75,10 @@ class CharacterWindow(QWidget):
     dragged = Signal(QPointF)
     drag_finished = Signal()
     context_menu_requested = Signal(QPoint)
+    #: Ctrl+wheel gesture finished (debounced): persist this scale.
     scale_requested = Signal(float)
+    #: Every Ctrl+wheel notch, immediately: resize now so the user sees it.
+    scale_preview = Signal(float)
     #: The window moved to another screen or its device pixel ratio changed.
     display_changed = Signal()
 
@@ -304,6 +307,8 @@ class CharacterWindow(QWidget):
             return
         base = self._pending_scale if self._pending_scale is not None else self._scale
         self._pending_scale = round(min(max(base * SCALE_STEP ** steps, MIN_SCALE), MAX_SCALE), 3)
+        # Visual feedback per notch; saving the setting waits for the gesture to end.
+        self.scale_preview.emit(self._pending_scale)
 
     def _finish_drag(self) -> None:
         self._dragging = False

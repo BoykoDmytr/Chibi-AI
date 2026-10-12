@@ -98,3 +98,10 @@ def test_revocation_takes_effect_even_if_persisting_fails(db, clock, monkeypatch
     monkeypatch.setattr(m._repo, "save", broken_save)
     m.revoke(Permission.APP_METADATA)
     assert not m.is_granted(Permission.APP_METADATA)
+
+
+def test_stored_dependent_without_base_is_not_resurrected(db):
+    PermissionRepository(db).save(Permission.WINDOW_TITLES, True, 1.0)
+    PermissionRepository(db).save(Permission.APP_METADATA, False, 2.0)
+    m = PermissionManager(PermissionRepository(db))
+    assert not m.is_granted(Permission.WINDOW_TITLES)

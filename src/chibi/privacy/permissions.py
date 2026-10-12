@@ -55,6 +55,11 @@ class PermissionManager:
         stored = repo.load_all()
         # Never resurrect a grant for a feature this build doesn't have.
         self._granted = {p: bool(stored.get(p)) and p in AVAILABLE for p in Permission}
+        # Nor a dependent grant whose base is off (e.g. a partially failed
+        # revoke left window_titles=1, app_metadata=0 on disk).
+        for dependent, base in REQUIRES.items():
+            if self._granted[dependent] and not self._granted[base]:
+                self._granted[dependent] = False
 
     def is_granted(self, permission: Permission) -> bool:
         """Thread-safe."""

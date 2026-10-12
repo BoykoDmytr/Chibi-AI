@@ -384,6 +384,7 @@ class CharacterController(QObject):
         self.window = CharacterWindow(always_on_top=self._cfg.character.always_on_top)
         self.window.set_paint_callback(self._paint)
         self.window.clicked.connect(self._on_clicked)
+        self.window.scale_preview.connect(self._preview_scale)
         self.window.drag_started.connect(self._on_drag_started)
         self.window.dragged.connect(self._on_dragged)
         self.window.drag_finished.connect(self._on_drag_finished)
@@ -1193,6 +1194,21 @@ class CharacterController(QObject):
             return self._screen.qrect()
         screen = QGuiApplication.primaryScreen()
         return screen.availableGeometry() if screen is not None else QRect(0, 0, 1280, 720)
+
+    def _preview_scale(self, scale: float) -> None:
+        """Resize immediately during a Ctrl+wheel gesture.  The setting itself is
+        saved once the gesture ends (``scale_requested``); apply_settings then
+        sees the same scale and does nothing more."""
+        if self._shutdown or scale == self._scale:
+            return
+        self._scale = scale
+        self._height = BASE_HEIGHT * self._scale
+        self._half_width = BODY_HALF_WIDTH * self._height
+        self._renderer.invalidate()
+        if self._started:
+            self._layout()
+            self._update_area()
+        self._visual_dirty = True
 
     def _layout(self) -> None:
         """Size the window from the renderer's reach plus room for overlays."""

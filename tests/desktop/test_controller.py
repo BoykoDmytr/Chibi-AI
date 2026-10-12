@@ -729,3 +729,25 @@ def test_display_change_drops_cached_pixmaps(make_controller, clock):
     assert ctrl.renderer.cached_pixmaps > 0
     ctrl.window.display_changed.emit()
     assert ctrl.renderer.cached_pixmaps == 0
+
+
+def test_ctrl_wheel_resizes_immediately_and_saves_once(make_controller, settings):
+    # Live feedback per notch (scale_preview), one settings save per gesture.
+    from tests.desktop.test_character_window import wheel
+
+    ctrl = make_controller()
+    saved = []
+    ctrl.window.scale_requested.connect(saved.append)
+    h0 = ctrl.height_px
+    w0 = ctrl.window.width()
+    wheel(ctrl.window, 120, ctrl=True)
+    wheel(ctrl.window, 120, ctrl=True)
+    assert ctrl.height_px == pytest.approx(h0 * 1.1 * 1.1, rel=1e-3)
+    assert ctrl.window.width() > w0
+    assert saved == []  # nothing persisted mid-gesture
+    ctrl.window.commit_pending_scale()
+    assert saved == [pytest.approx(1.21, rel=1e-3)]
+    # Applying that saved scale afterwards changes nothing visually.
+    settings.character.scale = saved[0]
+    ctrl.apply_settings()
+    assert ctrl.height_px == pytest.approx(h0 * 1.21, rel=1e-3)
