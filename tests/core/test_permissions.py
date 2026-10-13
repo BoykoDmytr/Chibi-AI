@@ -32,7 +32,7 @@ def test_grant_persists_and_announces(db, clock):
 
 
 def test_unavailable_features_cannot_be_granted(manager):
-    for p in (Permission.SCREEN_CAPTURE, Permission.CLOUD_VISION, Permission.CLOUD_AI, Permission.MICROPHONE):
+    for p in (Permission.SCREEN_CAPTURE, Permission.CLOUD_VISION, Permission.MICROPHONE):
         with pytest.raises(PermissionUnavailableError):
             manager.grant(p)
         assert not manager.is_granted(p)
@@ -105,3 +105,9 @@ def test_stored_dependent_without_base_is_not_resurrected(db):
     PermissionRepository(db).save(Permission.APP_METADATA, False, 2.0)
     m = PermissionManager(PermissionRepository(db))
     assert not m.is_granted(Permission.WINDOW_TITLES)
+
+
+def test_cloud_ai_is_available_from_phase_2_and_off_by_default(manager):
+    assert not manager.is_granted(Permission.CLOUD_AI)
+    manager.grant(Permission.CLOUD_AI)
+    assert manager.is_granted(Permission.CLOUD_AI)

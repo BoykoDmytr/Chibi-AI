@@ -32,7 +32,9 @@ from chibi.memory.repositories import PermissionRecord, PermissionRepository
 log = logging.getLogger(__name__)
 
 #: Permissions whose feature exists in this build.
-AVAILABLE: frozenset[Permission] = frozenset({Permission.APP_METADATA, Permission.WINDOW_TITLES})
+AVAILABLE: frozenset[Permission] = frozenset(
+    {Permission.APP_METADATA, Permission.WINDOW_TITLES, Permission.CLOUD_AI}
+)
 
 #: permission -> permission it requires
 REQUIRES: dict[Permission, Permission] = {

@@ -315,3 +315,48 @@ class NeedsChanged(Event):
     boredom: float
     affection: float
     friendship_level: int
+
+
+# --- Phase 2: AI, memory, emotion ------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AIStatusChanged(Event):
+    """The configured AI provider became usable or unusable."""
+
+    online: bool
+    provider: str  # "none" | "ollama" | "anthropic" | "openai"
+    model: str
+    #: Why it is offline, short Ukrainian text for the UI ("немає ключа", "ліміт на сьогодні"...).
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryChanged(Event):
+    """Long-term memory was added to, edited or cleared (UI refresh)."""
+
+    kind: str = ""  # memory kind affected, "" = several / all
+
+
+@dataclass(frozen=True, slots=True)
+class EmotionChanged(Event):
+    """Emotion snapshot (0..100 each) after a meaningful change."""
+
+    happiness: float
+    energy: float
+    boredom: float
+    affection: float
+    curiosity: float
+    excitement: float
+    hunger: float
+    trust: float
+    #: CharacterState value that best expresses the mood ("happy", "sad", "curious", "idle"...).
+    dominant: str = "idle"
+
+
+@dataclass(frozen=True, slots=True)
+class InitiativeAction(Event):
+    """A non-speech autonomous action chosen by the decision engine, for the
+    desktop controller: "wave", "approach_cursor", "sit", "sleep", "jump", "dance"."""
+
+    action: str

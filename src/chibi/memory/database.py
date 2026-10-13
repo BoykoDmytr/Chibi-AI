@@ -59,14 +59,41 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX game_sessions_game ON game_sessions(game_id);
     """,
+    # v2 - Phase 2: long-term memory and AI usage accounting
+    """
+    CREATE TABLE memories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        text TEXT NOT NULL,
+        source TEXT NOT NULL,
+        importance REAL NOT NULL DEFAULT 0.5,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL,
+        last_used_at REAL
+    );
+    CREATE INDEX memories_kind ON memories(kind, updated_at);
+    CREATE TABLE ai_usage (
+        day TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        purpose TEXT NOT NULL,
+        requests INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        PRIMARY KEY (day, provider, model, purpose)
+    );
+    """,
 ]
 
 #: Tables holding history about the user (cleared by "delete history").  The
 #: permission audit log is deliberately not one of them: while grants stay
 #: active, their record of when they were given must stay too.
-HISTORY_TABLES = ("phrase_history", "game_sessions")
-#: Every table with user data (cleared by "delete all data").
-ALL_TABLES = ("settings", "kv_state", "permissions", "permission_log", *HISTORY_TABLES)
+HISTORY_TABLES = ("phrase_history", "game_sessions", "ai_usage")
+#: Every table with user data (cleared by "delete all data").  Long-term
+#: memories have their own "forget" controls in the memory viewer.
+ALL_TABLES = ("settings", "kv_state", "permissions", "permission_log", "memories", *HISTORY_TABLES)
 
 
 class Database:

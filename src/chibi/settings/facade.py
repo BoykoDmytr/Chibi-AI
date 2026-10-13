@@ -7,6 +7,7 @@ The application (``chibi.app.ChibiApp``) implements it.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -54,6 +55,35 @@ class StatusView:
     do_not_disturb: bool
 
 
+#: Long-term memory kinds shown as tabs in the memory viewer.
+MEMORY_KINDS = ("fact", "preference", "relationship", "game_event", "joke")
+
+
+@dataclass(frozen=True)
+class AIStatusView:
+    provider: str  # "none" | "ollama" | "anthropic" | "openai"
+    model: str
+    online: bool
+    reason: str  # why offline, Ukrainian ("" when online)
+    cloud: bool  # data leaves this PC (needs Permission.CLOUD_AI)
+    requests_today: int
+    requests_limit_day: int
+    cost_today_usd: float
+    cost_limit_usd: float
+    cost_known: bool  # False for OpenAI-compatible models without a price set
+
+
+@dataclass(frozen=True)
+class MemoryView:
+    id: int
+    kind: str  # one of MEMORY_KINDS
+    text: str
+    source: str  # "chat" | "system" | "game" | "user"
+    pinned: bool
+    created_at: float
+    updated_at: float
+
+
 class AppFacade(Protocol):
     permissions: PermissionManager
 
@@ -97,6 +127,47 @@ class AppFacade(Protocol):
     def stop_all_observation(self) -> None: ...
 
     def wipe_history(self) -> None: ...
+
+    # -- Phase 2: AI and memory (callbacks always run on the Qt main thread) --
+
+    def ai_status(self) -> AIStatusView: ...
+
+    def ai_has_key(self, provider: str) -> bool: ...
+
+    def ai_set_key(self, provider: str, key: str) -> None:
+        """Store an API key in the OS credential store ("" deletes it).  Never logged."""
+        ...
+
+    def ai_test(self, on_done: Callable[[bool, str], None]) -> None:
+        """Try a tiny request with the current settings; on_done(ok, Ukrainian message)."""
+        ...
+
+    def ai_list_models(self, on_done: Callable[[list[str], str], None]) -> None:
+        """Ask the provider which models exist; on_done(models, error message or "")."""
+        ...
+
+    def send_chat_stream(self, text: str, on_delta: Callable[[str], None],
+                         on_done: Callable[[ChatReply], None]) -> None:
+        """AI reply streamed through on_delta when AI is usable; otherwise the
+        offline reply arrives through on_done only.  on_done always fires once."""
+        ...
+
+    def list_memories(self, kind: str | None = None, query: str = "") -> list[MemoryView]: ...
+
+    def add_memory(self, kind: str, text: str) -> None: ...
+
+    def update_memory(self, memory_id: int, text: str) -> None: ...
+
+    def set_memory_pinned(self, memory_id: int, pinned: bool) -> None: ...
+
+    def delete_memory(self, memory_id: int) -> None: ...
+
+    def clear_memories(self, kind: str | None = None) -> None: ...
+
+    def emotion(self) -> dict[str, float]:
+        """The 8 emotion values 0..100: happiness, energy, boredom, affection,
+        curiosity, excitement, hunger, trust."""
+        ...
 
     def wipe_all(self) -> None:
         """Delete all data (database, log files, the open chat) and return to

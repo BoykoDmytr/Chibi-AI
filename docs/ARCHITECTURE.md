@@ -316,3 +316,159 @@ class OfflineChatResponder:
 Depend only on `settings/facade.py` (`AppFacade`, `NeedsView`, `ChatReply`,
 `StatusView`): `theme.apply_dark_theme(app)`, `SettingsDialog(facade)`,
 `StatusWindow(facade)`, `ChatWindow(facade)`, `FirstRunDialog(facade)`.
+
+---
+
+## Phase 2 contracts: AI brain, memory, emotion, decisions
+
+Principles: rules decide *when* she acts, the LLM only decides *how* she
+phrases it; every AI failure (offline, budget, refusal, timeout) falls back to
+the offline phrase bank; the Qt main thread never waits for a model.  Data
+that leaves the PC (any provider whose host is not loopback) requires
+`Permission.CLOUD_AI`.  Shared types: `chibi/ai/types.py` (exists).
+
+### ai: providers, secrets, budget, service
+
+```python
+# ai/secrets.py
+class SecretStore(Protocol):
+    secure: bool                                   # True = OS credential store
+    def get(self, name: str) -> str | None
+    def set(self, name: str, value: str) -> None   # value never logged
+    def delete(self, name: str) -> None
+class WindowsCredentialStore   # ctypes advapi32 CredReadW/CredWriteW/CredDeleteW/CredFree,
+                               # CRED_TYPE_GENERIC, target "ChibiCompanion/<name>"
+class FileSecretStore          # non-Windows dev fallback (secure=False, file mode 0600)
+class MemorySecretStore        # tests
+def default_secret_store(data_dir: Path) -> SecretStore
+KEY_NAMES = {"anthropic": "anthropic_api_key", "openai": "openai_api_key"}
+
+# ai/providers/anthropic_provider.py  - official `anthropic` SDK only
+class AnthropicProvider(TextProvider):
+    def __init__(self, api_key: str | None, model: str = "claude-opus-5-5", *, effort: str = "low",
+                 timeout: float = 30.0, max_retries: int = 2, http_client=None)
+# ai/providers/openai_provider.py  - httpx2, OpenAI-compatible /chat/completions (+ SSE)
+class OpenAIProvider(TextProvider):
+    def __init__(self, api_key: str | None, base_url: str, model: str, *, timeout: float = 30.0,
+                 http_client=None)
+# ai/providers/ollama_provider.py  - httpx2, /api/chat (NDJSON stream), /api/tags, /api/show
+class OllamaProvider(TextProvider):
+    def __init__(self, base_url: str, model: str, *, timeout: float = 60.0, http_client=None)
+# ai/providers/fake.py  - scripted provider for tests and the headless smoke test
+class FakeProvider(TextProvider): replies: list[str | Exception]; requests: list[GenerationRequest]
+# ai/providers/factory.py
+DEFAULT_MODELS = {"anthropic": "claude-opus-5-5"}
+def is_cloud(ai: AISettings) -> bool
+def build_provider(ai: AISettings, secrets: SecretStore) -> TextProvider | None   # None for "none"
+
+# ai/budget.py
+PRICES_PER_MTOK: Mapping[str, tuple[float, float]]   # Claude model id -> (input, output) USD
+@dataclass(frozen=True)
+class UsageSummary: requests: int; input_tokens: int; output_tokens: int; cost_usd: float; cost_known: bool
+class UsageLedger:                     # SQLite table ai_usage; main thread only
+    def __init__(self, db: Database, clock: Clock)
+    def record(self, provider: str, model: str, purpose: Purpose, usage: Usage, cost_usd: float | None) -> None
+    def today(self) -> UsageSummary
+    def requests_last_hour(self) -> int
+def estimate_cost(provider: str, model: str, usage: Usage, ai: AISettings) -> float | None
+class BudgetGuard:
+    def __init__(self, ledger: UsageLedger, settings: Callable[[], AISettings])
+    def check(self, purpose: Purpose) -> None      # raises BudgetExceededError (Ukrainian user_message)
+
+# ai/service.py  (QObject; the only place that runs model calls - on one worker thread)
+class AIService(QObject):
+    def __init__(self, bus, settings: Callable[[], Settings], permissions, secrets: SecretStore,
+                 ledger: UsageLedger, clock, *, provider_factory=build_provider, parent=None)
+    def status(self) -> tuple[bool, str]             # (online, Ukrainian reason when offline)
+    def is_available(self, purpose: Purpose) -> bool
+    def submit(self, request: GenerationRequest, *, on_done: Callable[[GenerationResult], None],
+               on_error: Callable[[Exception], None], on_delta: Callable[[str], None] | None = None,
+               cancel: CancelToken | None = None) -> CancelToken
+        # callbacks always on the main thread; queue max 4, lower Purpose rank dropped first;
+        # identical non-chat requests answered from a 10-minute cache
+    def reconfigure(self) -> None                   # settings or key changed
+    def test(self, on_done: Callable[[bool, str], None]) -> None
+    def list_models(self, on_done: Callable[[list[str], str], None]) -> None
+    def usage_today(self) -> UsageSummary
+    def shutdown(self) -> None                       # cancels and joins the worker (<= 2 s)
+    # publishes AIStatusChanged; circuit breaker: 3 consecutive "unavailable" errors -> offline 120 s
+```
+
+### memory and emotion
+
+```python
+# memory/longterm.py
+@dataclass(frozen=True)
+class Memory: id: int; kind: str; text: str; source: str; importance: float; pinned: bool
+              created_at: float; updated_at: float; last_used_at: float | None
+def looks_sensitive(text: str) -> bool     # card/IBAN numbers, passwords, emails, phones -> never stored
+class MemoryStore:                          # main thread; publishes MemoryChanged
+    def __init__(self, db: Database, bus: EventBus | None, clock: Clock)
+    def add(self, kind: str, text: str, source: str = "chat", importance: float = 0.5) -> Memory | None
+        # near-duplicates (same kind) update the existing row; sensitive/empty text -> None
+    def update(self, memory_id: int, text: str) -> None
+    def set_pinned(self, memory_id: int, pinned: bool) -> None
+    def delete(self, memory_id: int) -> None
+    def clear(self, kind: str | None = None) -> None
+    def list(self, kind: str | None = None, query: str = "", limit: int = 500) -> list[Memory]
+    def search(self, query: str, k: int = 6, kinds: Iterable[str] | None = None) -> list[Memory]
+        # BM25 over Ukrainian-friendly tokens (lower, apostrophes unified, 5-char prefix stems),
+        # pinned + recency boost; updates last_used_at
+class ShortTermMemory:                      # current conversation only, never persisted
+    def __init__(self, max_turns: int = 60)
+    def add(self, role: Role, text: str) -> None
+    def turns(self, limit: int) -> tuple[ChatTurn, ...]
+    def clear(self) -> None
+
+# emotion/engine.py
+EMOTIONS = ("happiness", "energy", "boredom", "affection", "curiosity", "excitement", "hunger", "trust")
+class EmotionEngine:   # deterministic; hunger/energy/happiness/boredom/affection come from the tamagotchi
+    def __init__(self, bus, repo: StateRepository, clock, needs: Callable[[], Needs],
+                 settings: Callable[[], Settings])
+    def values(self) -> dict[str, float]
+    def dominant(self) -> str                 # CharacterState value
+    def describe(self) -> str                 # short Ukrainian mood description for prompts
+    def tick(self) -> None                    # decay; persists; publishes EmotionChanged on change >= 3
+    # subscribes: GameStarted/GameEnded, InteractionOutcome, UserReturned, ForegroundAppChanged,
+    #             ActivityMilestone, NeedsChanged
+```
+
+### brain, composer, decisions (personality package)
+
+```python
+# ai/prompts.py - stable Ukrainian persona prompt (cacheable: no timestamps), context and event prompts
+# ai/brain.py
+@dataclass(frozen=True)
+class BrainContext: activity_category: str | None; activity_app: str | None; game_title: str | None
+                    game_minutes: float | None; observation: str | None; user_away: bool
+class AIBrain:
+    def __init__(self, ai: AIService, memory: MemoryStore, short_term: ShortTermMemory,
+                 emotion: EmotionEngine, settings: Callable[[], Settings], clock,
+                 context: Callable[[], BrainContext], needs: Callable[[], Mapping[str, float]])
+    def available(self, purpose: Purpose) -> bool
+    def chat(self, text: str, on_delta: Callable[[str], None],
+             on_done: Callable[[ChatReply | None], None]) -> None   # None -> caller uses offline reply
+    def phrase(self, keys: Sequence[str], variables: Mapping[str, str], solicited: bool,
+               on_done: Callable[[SpeechRequested | None], None]) -> None
+# reply control line (first line of every chat/phrase reply, stripped before display):
+#   <<state=happy;action=none>>     state: CharacterState value; action (chat only):
+#   none | feed | pet | rest | quiet_on | quiet_off - anything else is ignored
+
+# personality/composer.py
+class SpeechComposer:   # one entry point for every line she says
+    def __init__(self, bus, selector: PhraseSelector, brain: AIBrain | None,
+                 settings: Callable[[], Settings], clock, *, ai_timeout: float = 8.0)
+    def compose(self, *keys: str, solicited: bool = False, **variables) -> bool
+        # True if a line will be published (now from the phrase bank, or later from the AI with
+        # a phrase-bank fallback on failure/timeout); publishes exactly one SpeechRequested
+
+# personality/initiative.py
+@dataclass(frozen=True)
+class Candidate: name: str; keys: tuple[str, ...]; priority: float; cooldown: float
+                 requires: Callable[[InitiativeContext], bool]; emotion_fit: Callable[[Mapping[str, float]], float]
+                 interruption_cost: Callable[[InitiativeContext], float]; action: str | None = None
+class DecisionEngine:   # replaces ReactionEngine's idle chatter when wired
+    def __init__(self, bus, composer: SpeechComposer, settings, clock, rng, emotion: EmotionEngine,
+                 context: Callable[[], InitiativeContext], can_speak: Callable[[], bool])
+    def tick(self) -> None        # called every ~10 s; picks the best candidate above threshold or nothing
+```

@@ -104,6 +104,56 @@ class ActivitySettings:
     custom_games: list[dict[str, str]] = field(default_factory=list)
 
 
+AI_PROVIDERS = ("none", "ollama", "anthropic", "openai")
+AI_EFFORTS = ("low", "medium", "high")
+
+
+@dataclass
+class AISettings:
+    """Phase 2: the LLM that phrases her lines and chats.  Rules still decide
+    *when* she speaks; the model only decides *how*.  Any provider whose host
+    is not this machine needs Permission.CLOUD_AI (data leaves the PC)."""
+
+    provider: str = "none"
+    #: Empty -> provider default (anthropic: claude-opus-5-5; ollama: first installed model).
+    model: str = ""
+    ollama_url: str = "http://localhost:11434"
+    #: Any OpenAI-compatible server (OpenAI, LM Studio, ...).
+    openai_base_url: str = "https://api.openai.com/v1"
+    #: Price per 1M tokens for OpenAI-compatible models (unknown to us); 0 = unknown.
+    openai_price_input_per_mtok: float = _range(0.0, 0.0, 1000.0)
+    openai_price_output_per_mtok: float = _range(0.0, 0.0, 1000.0)
+    #: Claude effort for companion lines (thinking depth / spend).
+    effort: str = "low"
+    use_for_chat: bool = True
+    use_for_reactions: bool = True
+    stream: bool = True
+    #: Remember facts the user shares in chat (never anything from the screen).
+    remember_facts: bool = True
+    max_requests_per_hour: int = _range(60, 1, 2000)
+    max_requests_per_day: int = _range(400, 1, 20000)
+    #: Hard daily spending cap for priced providers, in USD.
+    max_cost_per_day_usd: float = _range(1.0, 0.01, 100.0)
+    request_timeout_seconds: float = _range(30.0, 5.0, 180.0)
+    #: Recent chat turns sent with each request (short-term memory).
+    context_turns: int = _range(12, 2, 60)
+    #: Relevant long-term memories sent with each request.
+    memory_items: int = _range(6, 0, 20)
+
+    def __post_init__(self) -> None:
+        if self.provider not in AI_PROVIDERS:
+            self.provider = "none"
+        if self.effort not in AI_EFFORTS:
+            self.effort = "low"
+        self.model = self.model.strip()[:120]
+        for attr, default in (("ollama_url", "http://localhost:11434"),
+                              ("openai_base_url", "https://api.openai.com/v1")):
+            value = getattr(self, attr).strip().rstrip("/")
+            if not re.fullmatch(r"https?://[^\s/]+(/[^\s]*)?", value):
+                value = default
+            setattr(self, attr, value[:300])
+
+
 @dataclass
 class Settings:
     schema_version: int = SCHEMA_VERSION
@@ -112,6 +162,7 @@ class Settings:
     behavior: BehaviorSettings = field(default_factory=BehaviorSettings)
     personality: PersonalitySettings = field(default_factory=PersonalitySettings)
     activity: ActivitySettings = field(default_factory=ActivitySettings)
+    ai: AISettings = field(default_factory=AISettings)
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
