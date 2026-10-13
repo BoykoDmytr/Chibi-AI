@@ -21,10 +21,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Phase 4: voice.  Optional because it is large (~150 MB of libraries, plus
+# models downloaded from the Voice settings page); everything else works
+# without it.  All MIT/BSD-licensed: the GPL "piper-tts" package is not
+# used - Piper voices run directly on onnxruntime (chibi/voice/piper_onnx.py).
+voice = [
+    "numpy>=1.26",
+    "onnxruntime>=1.18",
+    "faster-whisper>=1.1",
+    "sounddevice>=0.4.6",
+]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
-    # tools/build_sprites.py only
+    # tools/build_sprites.py and the voice tests
     "Pillow>=10",
     "numpy>=1.26",
     "scipy>=1.11",
