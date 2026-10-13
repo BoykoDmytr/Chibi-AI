@@ -394,7 +394,6 @@ def test_activity_events_queued_before_the_kill_switch_are_ignored(make_app):
 def test_second_instance_message_does_not_name_her(monkeypatch, qapp):
     shown = []
     monkeypatch.setattr(app_module, "setup_logging", lambda debug=False: None)
-    monkeypatch.setattr(app_module, "_install_excepthook", lambda: None)
     monkeypatch.setattr(QMessageBox, "information", lambda *args: shown.append(args[-1]))
     quit_on_close = qapp.quitOnLastWindowClosed()
     lock = QLockFile(str(paths.data_dir() / "chibi.lock"))

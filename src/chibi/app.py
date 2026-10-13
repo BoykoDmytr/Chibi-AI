@@ -695,17 +695,9 @@ def _set_windows_app_id() -> None:
         log.debug("could not set AppUserModelID", exc_info=True)
 
 
-def _install_excepthook() -> None:
-    def hook(exc_type, exc, tb):
-        log.critical("unhandled exception", exc_info=(exc_type, exc, tb))
-
-    sys.excepthook = hook
-
-
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(sys.argv[1:] if argv is None else argv)
-    setup_logging(debug=args.debug)
-    _install_excepthook()
+    setup_logging(debug=args.debug)  # also installs the crash hooks (redacted)
     _set_windows_app_id()
 
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
