@@ -328,11 +328,83 @@ class ReplyStream:
 
 
 def worth_remembering(text: str) -> bool:
-    """Cheap pre-filter for memory extraction: at least two words and the user
-    talking about themselves ("я", "мій", "люблю", "my"...).  Saves a request for
-    "привіт" or "розкажи жарт"."""
-    words = normalize(text).split()
+    """Cheap pre-filter for memory extraction: at least two words of a statement
+    (questions are not facts) with the user talking about themselves ("я",
+    "мій", "люблю", "my"...).  Saves a request for "привіт" or "розкажи жарт"."""
+    words = normalize(statements(text)).split()
     return len(words) >= 2 and any(word in _SELF_MARKERS for word in words)
+
+
+_SENTENCE = re.compile(r"[^.!?…]+[.!?…]*")
+
+
+def statements(text: str) -> str:
+    """*text* without its questions: "Я люблю каву, а ти?" keeps nothing,
+    "Мене звати Олег. А тебе?" keeps "Мене звати Олег."."""
+    kept = [s.strip() for s in _SENTENCE.findall(text) if s.strip() and not s.strip().endswith("?")]
+    return " ".join(kept)
+
+
+#: Side effects need evidence in the user's own words: a model (especially a small
+#: local one) may copy an action from an earlier turn or invent one.  These are
+#: matched against the normalised message; no match -> the action is dropped.
+ACTION_EVIDENCE: dict[str, re.Pattern[str]] = {
+    "feed": re.compile(r"їж|їст|їсти|їжа|їжу|голод|перекус|нагоду|погоду|кушат|покуша|поснідай|"
+                       r"пообідай|повечеряй|смакол|печив|\bням|\beat\b|\bfood\b|hungry|snack"),
+    "pet": re.compile(r"глад|обійм|приголуб|почух|\bpet\b|\bhug|cuddle"),
+    "rest": re.compile(r"спат|поспи|засин|засни|\bсон\b|відпоч|приляж|ляж|ляг|втомил|sleep|\bnap\b|"
+                       r"\brest\b"),
+    "quiet_on": re.compile(r"мовч|замовкн|\bтихо\b|тиш|не говори|не балакай|не заважай|quiet|shut up|"
+                           r"silence|be silent"),
+    "quiet_off": re.compile(r"говори|розмовляй|балакай|не мовчи|скажи щось|можеш говорити|talk|speak"),
+}
+
+
+def action_supported(action: str, user_text: str) -> bool:
+    """Whether the user's message gives *action* any basis (see ACTION_EVIDENCE)."""
+    pattern = ACTION_EVIDENCE.get(action)
+    return pattern is not None and pattern.search(normalize(user_text)) is not None
+
+
+#: Words a memory may use without the user having said them.
+_MEMORY_FRAME_WORDS = (
+    "користувач користувача користувачу користувачем користувачеві користувачка він вона його її "
+    "йому їй любить любила любив подобається подобаються звати звуть має мають є був була було "
+    "дуже часто завжди грає граєш грати слухає дивиться працює навчається живе улюблений улюблена "
+    "улюблене улюблені user likes loves is has plays named name favorite favourite their"
+)
+_PROPER = re.compile(r"(?<!^)(?<![.!?]\s)\b[A-ZА-ЯІЇЄҐ][\w'’-]+|\S*[0-9A-Za-z@#]\S*")
+
+
+def grounded(fact: str, said: str) -> bool:
+    """A memory may only state what the user actually said: most of its content
+    words come from the user's message, and every name, number or Latin word in
+    it appears there literally.  Blocks hallucinated memories ("FIFA 22" when the
+    user mentioned S.T.A.L.K.E.R.)."""
+    from chibi.memory.longterm import tokenize  # headless, no Qt
+
+    def loose(token: str) -> str:
+        # Ukrainian root vowel alternation: кіт / кота, ніч / ночі.
+        return token.replace("і", "о").replace("ї", "о")
+
+    said_tokens = set(tokenize(said))
+    said_loose = {loose(token) for token in said_tokens}
+    frame = set(tokenize(_MEMORY_FRAME_WORDS))
+    content = [token for token in tokenize(fact) if token not in frame]
+    if not content:
+        return False
+    hits = sum(token in said_tokens or loose(token) in said_loose for token in content)
+    if hits / len(content) < 0.6:
+        return False
+    said_lower = said.casefold()
+    for match in _PROPER.finditer(fact):
+        word = match.group(0).strip(".,!?;:«»\"'()")
+        if not word or word.casefold() in {"користувач", "користувача", "user"}:
+            continue
+        stems = tokenize(word)
+        if word.casefold() not in said_lower and not all(stem in said_tokens for stem in stems if stems):
+            return False
+    return True
 
 
 def clean_line(text: str, name: str = "") -> str:
@@ -545,6 +617,9 @@ class AIBrain:
         if action != NO_ACTION and _CONTROL_SYNTAX.search(user_text):
             log.warning("chat action %s ignored: the message itself contains control syntax", action)
             action = NO_ACTION
+        if action != NO_ACTION and not action_supported(action, user_text):
+            log.info("chat action %s ignored: nothing in the message asks for it", action)
+            action = NO_ACTION
         return ChatReply(text=body, state=state, portrait=self._portrait(state),
                          action="" if action == NO_ACTION else action)
 
@@ -560,22 +635,23 @@ class AIBrain:
             return
         if not self.available(Purpose.MEMORY):
             return
+        said = statements(user_text)
         request = GenerationRequest(
             system=MEMORY_SYSTEM,
-            turns=(ChatTurn(Role.USER, f"<user>{escape(user_text, limit=2000, keep_newlines=True)}</user>"),),
+            turns=(ChatTurn(Role.USER, f"<user>{escape(said, limit=2000, keep_newlines=True)}</user>"),),
             purpose=Purpose.MEMORY,
             max_tokens=MEMORY_MAX_TOKENS,
             json_mode=True,
             effort=LINE_EFFORT,
         )
         try:
-            self._ai.submit(request, on_done=self._store_memories,
+            self._ai.submit(request, on_done=lambda result: self._store_memories(result, said),
                             on_error=lambda exc: log.info("memory extraction failed (%s)",
                                                           type(exc).__name__))
         except Exception as exc:
             log.error("submitting the memory request failed: %s", type(exc).__name__)
 
-    def _store_memories(self, result: GenerationResult) -> None:
+    def _store_memories(self, result: GenerationResult, said: str = "") -> None:
         if not self._settings().ai.remember_facts:
             return  # switched off while the request was running
         data = _json_object(result.text or "")
@@ -592,6 +668,9 @@ class AIBrain:
                 continue
             if _CREDENTIAL_WORDS.search(text):
                 log.info("extracted memory dropped: mentions credentials")
+                continue
+            if said and not grounded(text, said):
+                log.info("extracted memory dropped: not grounded in the user's words")
                 continue
             try:
                 memory = self._memory.add(kind, text, source="chat", importance=MEMORY_IMPORTANCE)
@@ -725,8 +804,19 @@ class AIBrain:
         return options[0] if len(options) == 1 else self._rng.choice(options)
 
 
+_BREAK_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_MARKUP_TAG = re.compile(r"</?(?:b|i|u|em|strong|p|span|div|br|s|small|big|font)\b[^<>]{0,60}>", re.IGNORECASE)
+
+
+def _strip_markup(text: str) -> str:
+    """Remove HTML artefacts some (mostly small, local) models emit ("<br>",
+    "<b>...</b>"); an emoticon such as "<3" is left alone."""
+    return _MARKUP_TAG.sub("", _BREAK_TAG.sub("\n", text))
+
+
 def _strip_speaker(text: str, name: str) -> str:
     """Drop a leading "Мія:" / "Мія —" the model sometimes puts before its own reply."""
+    text = _strip_markup(text)
     stripped = text.lstrip()
     if name and stripped.lower().startswith(name.lower()):
         rest = stripped[len(name):].lstrip()

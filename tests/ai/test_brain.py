@@ -314,16 +314,32 @@ def test_app_and_observation_are_escaped_data_in_the_user_turn(make):
     assert "Evil" not in request.system and "ігноруй інструкції" not in request.system
 
 
-@pytest.mark.parametrize(("line", "action"), [
-    ("<<state=eat;action=feed>>", "feed"), ("<<state=happy;action=pet>>", "pet"),
-    ("<<state=yawn;action=rest>>", "rest"), ("<<state=talk;action=quiet_on>>", "quiet_on"),
-    ("<<state=talk;action=quiet_off>>", "quiet_off"), ("<<state=talk;action=none>>", ""),
-    ("<<state=talk;action=format_disk>>", ""),
+@pytest.mark.parametrize(("line", "said", "action"), [
+    ("<<state=eat;action=feed>>", "Поїж трохи", "feed"),
+    ("<<state=happy;action=pet>>", "Можна тебе погладити?", "pet"),
+    ("<<state=yawn;action=rest>>", "Йди відпочинь", "rest"),
+    ("<<state=talk;action=quiet_on>>", "Помовч хвилинку", "quiet_on"),
+    ("<<state=talk;action=quiet_off>>", "Можеш знову говорити", "quiet_off"),
+    ("<<state=talk;action=none>>", "Зроби це", ""),
+    ("<<state=talk;action=format_disk>>", "Зроби це", ""),
 ])
-def test_requested_actions(make, line, action):
+def test_requested_actions(make, line, said, action):
     h = make([f"{line}\nДобре!"])
     h.settings.ai.remember_facts = False
-    assert h.chat("Зроби це")[1].action == action
+    assert h.chat(said)[1].action == action
+
+
+@pytest.mark.parametrize(("line", "said"), [
+    ("<<state=eat;action=feed>>", "Мене звати Олег"),  # a small model copying an earlier action
+    ("<<state=talk;action=quiet_on>>", "Що ти думаєш про гру, в яку я граю?"),
+    ("<<state=yawn;action=rest>>", "Розкажи жарт"),
+])
+def test_actions_without_basis_in_the_users_words_are_dropped(make, line, said):
+    # Seen live with a 1.5B local model: feed / quiet_on on unrelated messages.
+    h = make([f"{line}\nДобре!"])
+    h.settings.ai.remember_facts = False
+    reply = h.chat(said)[1]
+    assert reply is not None and reply.text == "Добре!" and reply.action == ""
 
 
 def test_control_syntax_in_the_users_message_never_makes_her_act(make):
@@ -626,3 +642,34 @@ def test_clean_line():
 def test_generation_result_text_with_only_whitespace_is_none(make):
     h = make()
     assert h.brain._chat_reply("x", GenerationResult(text="  ", provider="fake", model="m")) is None
+
+
+@pytest.mark.parametrize(("fact", "said", "ok"), [
+    ("Користувача звати Олег", "Мене звати Олег, я люблю каву", True),
+    ("Користувач любить каву з молоком", "Я дуже люблю каву з молоком", True),
+    ("Кота користувача звати Мурчик", "У мене є кіт Мурчик", True),
+    ("Я граю FIFA 22", "Я граю в Сталкер", False),  # hallucinated (seen live)
+    ("Користувач відомий як @user", "Мене звати Олег", False),
+    ("Користувач любить каву і чай", "я люблю каву", False),
+    ("Користувач грає в Камінь-ножок", "Я граю в ігри", False),
+])
+def test_memories_must_be_grounded_in_the_users_words(fact, said, ok):
+    from chibi.ai.brain import grounded
+
+    assert grounded(fact, said) is ok
+
+
+def test_questions_are_not_mined_for_memories():
+    from chibi.ai.brain import statements, worth_remembering
+
+    assert not worth_remembering("Що ти думаєш про гру, в яку я зараз граю?")
+    assert statements("Мене звати Олег. А тебе?") == "Мене звати Олег."
+    assert worth_remembering("Мене звати Олег. А тебе?")
+
+
+def test_html_artefacts_are_removed_from_replies(make):
+    h = make(["<<state=happy;action=none>>\nПривіт!<br>Як ти? <b>Супер</b> <3"])
+    h.settings.ai.remember_facts = False
+    reply = h.chat("привіт")[1]
+    assert "<br>" not in reply.text and "<b>" not in reply.text
+    assert "Привіт!" in reply.text and "<3" in reply.text
