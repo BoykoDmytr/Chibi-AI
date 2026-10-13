@@ -409,17 +409,17 @@ def test_wake_phrase_standby_and_command_in_one_breath():
     assert h.service.microphone_open
     h.feed(np.concatenate([speech(1.2), silence(1.0)]))
     h.worker.run_all()
-    assert h.results == [("Котра година?", "ok")]
+    assert h.results == [("Котра година?", "named")]
     assert h.service.state == VoiceState.STANDBY
 
 
-def test_wake_phrase_alone_starts_listening():
+def test_wake_phrase_alone_keeps_listening_on_the_open_microphone():
     h = Harness(stt=FakeSTT(text="Гей, Міє!"))
     h.service.set_listen_mode("name")
     h.feed(np.concatenate([speech(0.8), silence(1.0)]))
     h.worker.run_all()
     assert h.wakes == 1
-    assert h.service.state == VoiceState.LISTENING
+    assert h.service.state == VoiceState.STANDBY and h.service.microphone_open
 
 
 def test_other_speech_in_standby_is_ignored():
@@ -521,7 +521,7 @@ def test_name_anywhere_and_the_request_without_it():
     h = Harness()
     h.service.set_listen_mode("name")
     utter(h, "А ти, Міє, що думаєш?")
-    assert h.results == [("А ти що думаєш?", "ok")]
+    assert h.results == [("А ти що думаєш?", "named")]
     assert h.stt.calls[-1][1] == h.service.standby_prompt
 
 
@@ -530,7 +530,7 @@ def test_open_microphone_uses_the_users_phrase_length():
     h.service.wake_config = VADConfig(end_silence_ms=800, max_utterance_seconds=30.0, min_speech_ms=350)
     h.service.set_listen_mode("name")
     utter(h, "Міє, розкажи, будь ласка, довгу історію", seconds=12.0)  # one long breath, not cut
-    assert h.results == [("Розкажи, будь ласка, довгу історію", "ok")]
+    assert h.results == [("Розкажи, будь ласка, довгу історію", "named")]
     assert h.stt.calls[-1][0] >= 12 * SR
 
 
@@ -558,7 +558,7 @@ def test_conversation_follows_without_her_name_while_she_answers_and_after():
     assert h.service.state == VoiceState.STANDBY
     h.now += 15
     utter(h, "А завтра о котрій вставати?")  # no name: still the conversation
-    assert h.results[-1] == ("А завтра о котрій вставати?", "ok")
+    assert h.results[-1] == ("А завтра о котрій вставати?", "heard")
     h.service.say("О сьомій.", solicited=True)
     h.worker.run_all()
     h.output.finish()
@@ -576,7 +576,7 @@ def test_conversation_window_closes_when_no_answer_comes():
     h.now += h.service.reply_wait_seconds + 1
     assert not h.service.conversation_open
     utter(h, "ну то що там")
-    assert h.results == [("Привіт", "ok")]
+    assert h.results == [("Привіт", "named")]
 
 
 def test_an_answer_shown_without_voice_keeps_the_conversation_going():
@@ -599,7 +599,7 @@ def test_follow_up_zero_means_only_by_name():
     utter(h, "Міє, привіт")
     assert not h.service.conversation_open
     utter(h, "а як справи")
-    assert h.results == [("Привіт", "ok")]
+    assert h.results == [("Привіт", "named")]
 
 
 def test_push_to_talk_opens_the_conversation_too():
@@ -621,9 +621,11 @@ def test_open_mode_hears_everything_but_fillers_and_phantoms():
     utter(h, "Дякую за перегляд!")  # Whisper's subtitle credits
     utter(h, "Розмова українською.")  # its own prompt echoed back in noise
     utter(h, "[музика]")
-    assert h.results == [("Яка сьогодні погода?", "ok")]
+    assert h.results == [("Яка сьогодні погода?", "heard")]
     utter(h, "Міє!")  # her name alone: she listens for what comes next
-    assert h.wakes == 1 and h.service.state == VoiceState.LISTENING
+    assert h.wakes == 1 and h.service.state == VoiceState.STANDBY
+    utter(h, "котра година?")
+    assert h.results[-1] == ("Котра година?", "named")
 
 
 def test_fillers_in_the_conversation_are_ignored():
@@ -632,7 +634,7 @@ def test_fillers_in_the_conversation_are_ignored():
     utter(h, "Міє, привіт")
     utter(h, "Ммм...")
     utter(h, "Міє, угу")  # her name and a filler: only called
-    assert h.results == [("Привіт", "ok")]
+    assert h.results == [("Привіт", "named")]
     assert h.wakes == 1
 
 
@@ -648,7 +650,7 @@ def test_she_does_not_hear_the_tail_of_her_own_voice():
     h.worker.run_all()
     assert h.stt.calls == []
     utter(h, "А тепер я")
-    assert h.results == [("А тепер я", "ok")]
+    assert h.results == [("А тепер я", "heard")]
 
 
 def test_one_recognition_at_a_time_and_the_rest_is_dropped():
@@ -657,12 +659,13 @@ def test_one_recognition_at_a_time_and_the_rest_is_dropped():
     h.stt.text = "раз"
     for _ in range(3):
         h.feed(np.concatenate([speech(1.0), silence(1.0)]))
-    assert len(h.worker.jobs) == 1  # never piles up
-    assert h.service.dropped_utterances == 2
+    assert len(h.worker.jobs) == 1  # never piles up: one recognised, one kept
+    assert h.service.dropped_utterances == 1
     h.worker.run_all()
-    assert h.results == [("раз", "ok")]
+    assert h.results == [("раз", "heard")]
+    assert len(h.stt.calls) == 1 and h.service.dropped_utterances == 2  # kept only after her name
     utter(h, "два")  # free again
-    assert h.results[-1] == ("два", "ok")
+    assert h.results[-1] == ("два", "heard")
 
 
 def test_a_request_heard_before_she_started_talking_still_arrives():
@@ -673,7 +676,7 @@ def test_a_request_heard_before_she_started_talking_still_arrives():
     h.service.say("коментар", solicited=True)  # ... and she starts a line meanwhile
     assert h.service.state == VoiceState.SPEAKING
     h.worker.run_all()
-    assert h.results == [("Котра година?", "ok")]
+    assert h.results == [("Котра година?", "named")]
 
 
 def test_her_comments_wait_while_someone_is_talking():
@@ -912,3 +915,181 @@ def test_reentrant_say_from_on_done_is_not_lost():
     h.worker.run_all()
     assert said == [True]
     assert h.tts.said == ["перша", "друга"]
+
+
+# --- review fixes: name matching, pauses, her own lines mid-answer, replies to her remarks --------------
+
+
+@pytest.mark.parametrize(
+    ("name", "text"),
+    [("Віка", "Вікно зависло, мама сказала перезавантажити"), ("Ніка", "Ніби все працює"),
+     ("Маша", "Мама дзвонила вчора"), ("Маша", "Мама, дай води"), ("Саша", "Сама не знаю, що робити"),
+     ("Ліна", "Ліва кнопка не працює"), ("Кіра", "Кіно було класне"), ("Ліза", "Ліси горять"),
+     ("Кіра", "Кіно!")],
+)
+def test_everyday_words_are_not_her_name(name, text):
+    # A one-letter slip in a short name is too often another word: no fuzzy match.
+    assert find_address(text, NameForms.for_name(name) | MIA_FORMS) is None
+
+
+def test_her_exact_name_and_a_set_off_slip_of_a_long_name_still_count():
+    vika = NameForms.for_name("Віка") | MIA_FORMS
+    assert find_address("Віко, котра година?", vika) == "Котра година?"
+    assert find_address("Віка, привіт", vika) == "Привіт"
+    olena = NameForms.for_name("Олена") | MIA_FORMS
+    assert find_address("Алено, котра година?", olena) == "Котра година?"  # set off: a slip
+    assert find_address("Алено!", olena) == ""
+    assert find_address("Алено котра година", olena) is None  # not set off: another word
+
+
+def test_delivered_requests_say_how_they_reached_her():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    utter(h, "Міє, котра година?")
+    utter(h, "А завтра?")  # the conversation window: no name
+    assert h.results == [("Котра година?", "named"), ("А завтра?", "heard")]
+    h.service.set_listen_mode("open")
+    utter(h, "Яка погода?")
+    assert h.results[-1] == ("Яка погода?", "heard")
+    h.stt.text = "Привіт, Міє"
+    h.service.listen()
+    h.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    h.worker.run_all()
+    assert h.results[-1] == ("Привіт, Міє", "ok")  # push-to-talk
+
+
+def test_her_name_alone_keeps_the_open_microphone_and_takes_the_next_phrase():
+    h = Harness()
+    h.service.follow_up_seconds = 0  # no conversation window: only the call itself counts
+    h.service.set_listen_mode("name")
+    utter(h, "Міє!")
+    assert h.wakes == 1
+    assert h.service.state == VoiceState.STANDBY and h.service.microphone_open
+    assert not h.service.say("коментар")  # she waits for the request, does not talk over it
+    utter(h, "котра година?")
+    assert h.results == [("Котра година?", "named")]
+    utter(h, "а це вже не тобі")  # only the next phrase
+    assert len(h.results) == 1
+
+
+def test_after_her_name_alone_the_next_phrase_must_come_soon():
+    h = Harness()
+    h.service.follow_up_seconds = 0
+    h.service.set_listen_mode("name")
+    utter(h, "Міє!")
+    h.now += 30
+    utter(h, "котра година?")
+    assert h.results == []
+
+
+class SequenceSTT(FakeSTT):
+    """Returns the given texts one after another."""
+
+    def __init__(self, texts):
+        super().__init__()
+        self.texts = list(texts)
+
+    def transcribe(self, audio, prompt=""):
+        self.calls.append((len(audio), prompt))
+        return Transcript(self.texts.pop(0) if self.texts else "", len(audio) / SR)
+
+
+def test_a_pause_after_her_name_does_not_lose_the_request():
+    h = Harness(stt=SequenceSTT(["Міє,", "котра година?"]))
+    h.service.set_listen_mode("name")
+    h.feed(np.concatenate([talk(0.6), silence(1.0)]))  # "Міє," - recognised ...
+    h.feed(np.concatenate([talk(1.2), silence(1.0)]))  # ... while the user goes on
+    h.worker.run_all()
+    assert h.results == [("Котра година?", "named")]
+    assert h.service.dropped_utterances == 0
+    assert h.service.state == VoiceState.STANDBY
+
+
+def test_the_phrase_kept_behind_a_recognition_is_dropped_unless_she_was_called():
+    h = Harness(stt=SequenceSTT(["Я сьогодні йду в магазин", "Міє, котра година?"]))
+    h.service.set_listen_mode("name")
+    h.feed(np.concatenate([talk(1.2), silence(1.0)]))
+    h.feed(np.concatenate([talk(1.2), silence(1.0)]))
+    h.worker.run_all()
+    assert h.results == [] and len(h.stt.calls) == 1  # the TV keeps no queue of work
+    assert h.service.dropped_utterances == 1
+
+
+def test_pausing_after_her_name_drops_what_comes_next():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    utter(h, "Міє!")
+    h.service.set_suspended(True)
+    assert not h.service.microphone_open and not h.service.conversation_open
+    h.service.set_suspended(False)
+    utter(h, "котра година?")
+    assert h.results == []
+
+
+def test_pausing_ends_the_conversation_window():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    utter(h, "Міє, привіт")
+    assert h.service.conversation_open
+    h.service.set_suspended(True)
+    assert not h.service.conversation_open
+    h.service.set_suspended(False)
+    utter(h, "а як справи")
+    assert h.results == [("Привіт", "named")]
+
+
+def test_push_to_talk_keeps_listening_through_a_pause():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    assert h.service.listen()
+    h.service.set_suspended(True)
+    assert h.service.state == VoiceState.LISTENING and h.service.microphone_open
+    h.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    h.worker.run_all()
+    assert h.results == [("Привіт, Міє", "ok")]
+
+
+def test_her_own_lines_never_come_between_the_sentences_of_an_answer():
+    h = Harness()
+    h.service.hold_for_reply(8.0)
+    h.service.say("Перше довге речення відповіді.", solicited=True, prefetch=True)
+    h.worker.run_all()
+    assert not h.service.say("Ого, ти щойно переміг боса!")  # while sentence 1 plays
+    h.output.finish()  # sentence 1 ends; sentence 2 is still being written
+    assert not h.service.say("Ого, ти щойно переміг боса!")
+    assert h.service.say("Друге речення відповіді тут.", solicited=True, prefetch=True)
+    h.worker.run_all()
+    h.output.finish()
+    h.service.release_reply_hold()
+    assert h.tts.said == ["Перше довге речення відповіді.", "Друге речення відповіді тут."]
+    assert h.service.say("Ого!")  # the answer is over
+
+
+def test_her_question_opens_the_conversation():
+    h = Harness()
+    h.service.follow_up_seconds = 20
+    h.service.set_listen_mode("name")
+    assert h.service.say("Бачу помилку. Глянемо разом?", opens_conversation=True)
+    h.worker.run_all()
+    h.output.finish()
+    assert h.service.conversation_open
+    utter(h, "Так, давай")
+    assert h.results == [("Так, давай", "heard")]
+
+
+def test_a_remark_that_asks_nothing_does_not_open_the_conversation():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    h.service.say("Ого, красиво!")
+    h.worker.run_all()
+    h.output.finish()
+    utter(h, "так, гарно")
+    assert h.results == []
+
+
+def test_a_question_that_was_never_heard_does_not_open_the_conversation():
+    h = Harness(tts=FakeTTS(fail=True))
+    h.service.set_listen_mode("name")
+    h.service.say("Глянемо разом?", opens_conversation=True)
+    h.worker.run_all()
+    assert not h.service.conversation_open

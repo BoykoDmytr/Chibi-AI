@@ -614,10 +614,12 @@ def build_history_user_turn(text: str) -> str:
     return f"<user>{escape(text, limit=MAX_USER_CHARS, keep_newlines=True)}</user>"
 
 
-def build_chat_turn(text: str, context: BrainContext | None, memories: Iterable[object]) -> str:
+def build_chat_turn(text: str, context: BrainContext | None, memories: Iterable[object], *,
+                    said_before: Iterable[str] = ()) -> str:
     """The current chat message with what she may know around it: relevant
-    memories, the foreground app or game, a vision observation - all escaped
-    data - and the user's own words last."""
+    memories, the foreground app or game, a vision observation, what she said on
+    her own just before (*said_before*: the user may be answering it) - all
+    escaped data - and the user's own words last."""
     parts = memory_blocks(memories)
     if context is not None:
         category = context.activity_category or ""
@@ -634,6 +636,11 @@ def build_chat_turn(text: str, context: BrainContext | None, memories: Iterable[
                 parts.append(f"<app{' ' if attrs else ''}{' '.join(attrs)}>{inner}</app>")
         if context.observation:
             parts.append(f"<observation>{escape(context.observation, limit=600)}</observation>")
+    said = [escape(line, limit=BUBBLE_MAX_CHARS * 2) for line in said_before if line and line.strip()]
+    if said:
+        parts.append("Перед цим ти сама, без запиту, сказала користувачеві (можливо, він відповідає "
+                     "на це):")
+        parts.extend(f"<example>{line}</example>" for line in said)
     parts.append(build_history_user_turn(text))
     return "\n".join(parts)
 

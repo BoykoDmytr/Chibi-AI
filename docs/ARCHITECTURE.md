@@ -556,22 +556,40 @@ microphone (PortAudio thread) ──► EnergyVAD ──► utterance ──► 
   anywhere as a separate word and returns the request without it
   ("Як справи, Міє?" -> "Як справи?").  An unambiguous vocative counts
   anywhere, the plain name only at the start / end / next to punctuation,
-  other case forms only at the start; `NameForms.for_name` covers common
-  Ukrainian declension, the app adds Mia's forms.  `"open"` - every phrase is
+  other case forms only at the start; a one-letter recognition slip only of
+  a vocative / the name of 5+ letters, at the start and set off like a
+  vocative (`NameForms.near`: "Алено, ..."; never "вікно" for Віка, "мама"
+  for Маша).  `NameForms.for_name` covers common Ukrainian declension, the
+  app adds Mia's forms.  Her name alone keeps the open microphone and makes
+  the next phrase (within 8 s) the request; one utterance may wait behind the
+  one being recognised, kept only for that case.  `"open"` - every phrase is
   for her.  Push-to-talk works in every mode.
+* A delivered request's `on_result` status says how it reached her: `"ok"`
+  (push-to-talk), `"named"`, `"heard"` (open mode, conversation window) ->
+  `VoiceTranscript.origin` `"push"` / `"named"` / `"heard"`.  What was
+  `"heard"` (it may be the TV or someone else) is answered but never mined
+  for memories (`AIBrain.chat(remember=False)`).
 * Conversation window: after a delivered request (also push-to-talk) the
   microphone stays "addressed" while her answer is pending (up to 30 s) or
   being spoken and `follow_up_seconds` after it ends (`note_reply_shown()`
-  for text-only answers; 0 turns it off).
+  for text-only answers; 0 turns it off).  A voiced line of her own that
+  invites a reply (`voice.integration.invites_reply`: the observer's, a
+  question) opens it too (`say(opens_conversation=True)`), and the app hands
+  such lines to `AIBrain.note_unprompted`, so the next chat message carries
+  them as context.  Pausing the open microphone ends the window.
 * Filters on the open microphone: fillers ("угу", "мм"), what
   `stt.clean_segments` drops, a Whisper echo of the open-mic prompt, phrases
   shorter than 350 ms of speech, and the first 0.3 s after the microphone
   reopens (`echo_tail_seconds`: never her own voice).  Recognition is
   single-flight: phrases arriving meanwhile are dropped and counted
   (`dropped_utterances`), so work never queues up.  Her unprompted lines are
-  shown as text instead of voiced while the open microphone hears someone.
+  shown as text instead of voiced while the open microphone hears someone,
+  right after the user called her, and while she voices an answer sentence
+  by sentence (never between two of its sentences).
 * Pauses (`VoiceIntegration`, `VoiceStatus.pause_reason`): the user's switch
-  (`set_open_mic_paused`, the "Пауза мікрофона" menu item; not saved), a
+  (`set_open_mic_paused`, the "Пауза мікрофона" menu item; the app saves it in
+  the state table, so a restart keeps it; "I hear you again" only when
+  nothing else keeps the microphone paused), a
   private app in front (always), a call app in front (`pause_in_calls`,
   `is_call_app`), do-not-disturb, a fullscreen app unless
   `wake_in_fullscreen`.  The app in front comes from `ForegroundAppChanged`
@@ -596,7 +614,8 @@ window is one she may see (scope `"allowed"`: the allowed lists; scope
 `"foreground"`: any window except her own, private ones (by process, exe
 path, or title with WINDOW_TITLES), Windows' own surfaces (`SYSTEM_PROCESSES`:
 lock and sign-in screens, Start, flyouts, Task Manager, UAC, file pickers),
-`explorer.exe` unless its title is readable and not a shell title, and
+`explorer.exe` unless its title is readable and not a shell title, the
+Microsoft / work account sign-in hosts, and
 browsers unless WINDOW_TITLES is granted; display names come from the games
 database and the app catalog, never from titles) -> due (mode, interval, back-off) ->
 capture that one window (`PrintWindow`, foreground-only `BitBlt` fallback) ->
@@ -646,9 +665,24 @@ As built for Phase 6:
   `details_for(event) -> ObservationDetails(interesting, spoiler, is_game, work,
   solicited)` for the last 16 published events (by identity).
 * Cost in AUTO mode with scope `"foreground"`: no automatic frames between
-  `UserIdle` and `UserReturned` (`service.away`), identical frames of the same
+  `UserIdle` and `UserReturned` (`service.away`; a `VoiceTranscript` in the
+  last 5 minutes counts as presence), identical frames of the same
   window stretch the pause (x0.5 per frame, up to x3), `adapt_to_load`
-  doubles the interval, a locked screen has no target.
+  doubles the interval, a locked screen has no target.  With commentary
+  `"observer"`, no automatic frames while the observer could not speak
+  (`observer_ai`: her own lines may not use the AI, offline, limit;
+  `service.muted`, `VisionStatusView.observer_note`).  Everywhere:
+  `BudgetGuard` gives `Purpose.VISION` at most half of `max_requests_per_hour`
+  (counting its own requests), so chat and the observer keep headroom; an
+  hourly refusal pauses vision 10 min with an "this hour" message, not
+  "today".
+* Requests that carry what she saw (`GenerationRequest.screen_data`, or
+  images) are bound to the provider current at submit, and a cloud provider
+  gets them only while `CLOUD_VISION` is granted and "Лише локальний аналіз"
+  is off (re-checked on the AI worker; revoking cloud vision drops them).  A
+  line composed from the screen is voiced by Azure only under the same
+  condition (shown as text otherwise), and then the chat context carries no
+  observation either.
 
 ## Phase 5: character polish, gifts, mini-games
 
@@ -683,8 +717,11 @@ As built for Phase 6:
   fails, even mid-answer, the stream is aborted and the offline answer is
   routed instead.  Offline answers and "подивись на екран" take `route()` as
   before.
-* `VoiceTranscript` is dropped unless `MICROPHONE` is granted at dispatch time;
-  otherwise it goes to the open chat window (keeping the user's draft; while
+* `VoiceTranscript` is dropped unless `MICROPHONE` is granted and
+  `VoiceIntegration.transcript_allowed(origin)` holds at dispatch time (one
+  from the open microphone not once it paused, left the open modes or
+  recognition is off - a request waiting for the answer in flight is dropped
+  then too); otherwise it goes to the open chat window (keeping the user's draft; while
   that window is answering, `BUSY_REPLY` there, never spoken) or straight to
   `send_chat_stream`.  One chat answer at a time: a request heard while an
   answer is in flight waits for it (only the newest one, at most 60 s); an
@@ -701,15 +738,18 @@ As built for Phase 6:
   context=_brain_context, last_chat=..., details=vision.details_for,
   may_share=vision.screen_data_may_leave, permissions, sleeping)`.  Active
   only with commentary `"observer"`: it keeps an in-memory log of up to 10
-  moments / 15 minutes from `VisionObserved` (never correspondence; an
-  unconfirmed or unsure event is logged as `other`) and, when every gate in its
-  module docstring passes (presence, DND / quiet, nobody talking to her for
+  moments / 15 minutes from `VisionObserved` (never correspondence; a death /
+  victory not confirmed by a second frame is not logged at all, another unsure
+  event is logged as `other`) and, when every gate in its
+  module docstring passes (presence - a voice transcript counts for 5
+  minutes -, DND / quiet, nobody talking to her for
   60 s, cooldown 2-10 min after speaking, growing gaps after silences, 6-20
   decisions an hour, the shared unsolicited gate, AI available, data may
   leave), asks `AIBrain.consider_comment` - one `Purpose.INITIATIVE` request
-  with escaped `<observation>` data.  The strict parser answers silence for
-  `SILENT_REPLY`, malformed output, repeats, sensitive text or a number /
-  Latin word that appears in nothing she saw; otherwise one or two sentences
+  with escaped `<observation>` data (`screen_data=True`).  The strict parser
+  answers silence for `SILENT_REPLY`, malformed output, repeats, sensitive
+  text or a number / Latin word that appears in nothing she saw (her name,
+  the user's nickname and the persona text count as known); otherwise one or two sentences
   are published as `SpeechRequested(solicited=False, source="observer:ai")`
   and counted against the shared budget.  A newer different frame, an app
   change, the user going away or talking, quiet / DND, a revoked permission,

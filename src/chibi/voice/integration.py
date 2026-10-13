@@ -10,6 +10,10 @@ which engines exist:
   only with ``Permission.CLOUD_AI`` and a stored key).  The Azure key is read
   for every request on the worker thread, *after* re-checking the
   permission, so a line queued just before a revoke never leaves the PC.
+  A line composed by the model from what she saw on the screen (the
+  observer, vision's AI lines) is voiced by Azure only while screen data may
+  go to the cloud (``CLOUD_VISION``, not "Лише локальний аналіз"); otherwise
+  it is shown as text (:meth:`VoiceIntegration.screen_content_may_be_voiced`).
 * **Recognition** - local Whisper, only while ``Permission.MICROPHONE`` is
   granted (a revoke also frees the model's memory).  Revoking the
   permission or the kill switch closes the microphone at once, drops a
@@ -41,6 +45,14 @@ it (:meth:`VoiceIntegration.set_open_mic_paused`).  The app in front is
 known only while ``Permission.APP_METADATA`` is granted.
 :attr:`VoiceStatus.pause_reason` says why, in Ukrainian.
 
+What the user said arrives as :class:`VoiceTranscript` with its ``origin``
+("push", "named", "heard"); :meth:`VoiceIntegration.transcript_allowed`
+tells the app whether one may still be sent (a request heard on the open
+microphone is dropped once it pauses, changes mode or recognition is off).
+A question or remark of hers that invites a reply (:func:`invites_reply`)
+opens the conversation window once heard, so the user can answer without
+her name.
+
 Streamed answers: :meth:`VoiceIntegration.begin_reply` returns a
 :class:`ReplyStream` that voices a chat answer sentence by sentence while
 the model is still writing it (see its docstring for the contract).
@@ -56,6 +68,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import logging
+import re
 import threading
 import time
 import traceback
@@ -183,6 +196,27 @@ CALL_APP_PREFIXES = ("discord", "telegram", "teamspeak", "ts3client", "webex", "
 REPLY_HOLD_SECONDS = 8.0
 #: Reading speed assumed for an answer shown without voice (conversation window).
 READ_CHARS_PER_SECOND = 15.0
+
+#: ``SpeechRequested.source`` of the observer's lines (``chibi.ai.brain.OBSERVER_SOURCE``).
+OBSERVER_SOURCE = "observer:ai"
+#: VoiceService result status -> ``VoiceTranscript.origin``.
+TRANSCRIPT_ORIGINS: dict[str, str] = {"ok": "push", "named": "named", "heard": "heard"}
+_QUESTION_END = re.compile(r"\?[^\w]*$")
+_MARKUP = re.compile(r"</?(?:b|i|u|em|strong|p|span|div|br|s|small|big|font)\b[^<>]{0,60}>", re.IGNORECASE)
+
+
+def invites_reply(event: SpeechRequested) -> bool:
+    """A line of her own that the user may answer: the observer's (she started
+    a conversation about the screen) or a question."""
+    if event.solicited:
+        return False
+    return event.source == OBSERVER_SOURCE or bool(_QUESTION_END.search(event.text.strip()))
+
+
+def carries_screen_content(event: SpeechRequested) -> bool:
+    """A line the model composed from what she saw on the screen."""
+    source = event.source or ""
+    return source == OBSERVER_SOURCE or (source.startswith("vision.") and source.endswith(":ai"))
 
 
 def is_call_app(process_name: str) -> bool:
@@ -387,8 +421,15 @@ class _Routed:
 ShowFn = Callable[[SpeechRequested, "float | None"], None]
 
 
-def _same_words(text: str) -> str:
-    return " ".join(text.split())
+def _same_words(text: str, name: str = "") -> str:
+    """A sentence as compared by :meth:`ReplyStream._remainder`: markup and a leading
+    "Мія:" / "Мія —" (artefacts the final answer no longer has) dropped, spaces collapsed."""
+    text = " ".join(_MARKUP.sub("", text).split())
+    if name and text.casefold().startswith(name.casefold()):
+        rest = text[len(name):].lstrip()
+        if rest.startswith((":", "—")):
+            text = rest[1:].lstrip()
+    return text
 
 
 class ReplyStream:
@@ -421,11 +462,14 @@ class ReplyStream:
       has them); the sentence she is saying finishes.
     """
 
-    def __init__(self, owner: VoiceIntegration, show: ShowFn, source: str, voiced: bool) -> None:
+    def __init__(self, owner: VoiceIntegration, show: ShowFn, source: str, voiced: bool,
+                 name: str = "") -> None:
         self._owner = owner
         self._show = show
         self._source = source
         self._voiced = voiced
+        #: Her name: a "Мія:" prefix the final answer drops is not "new" text.
+        self._name = name.strip()
         self._chunker = SentenceChunker()
         #: Every sentence handed on (voiced, shown or kept for later), in order.
         self._routed: list[str] = []
@@ -504,10 +548,10 @@ class ReplyStream:
         """The sentences of the final *text* not routed yet."""
         chunker = SentenceChunker()
         sentences = chunker.feed(text) + chunker.flush()
-        routed = Counter(_same_words(s) for s in self._routed)
+        routed = Counter(_same_words(s, self._name) for s in self._routed)
         rest = []
         for sentence in sentences:
-            key = _same_words(sentence)
+            key = _same_words(sentence, self._name)
             if routed[key] > 0:
                 routed[key] -= 1
             else:
@@ -912,16 +956,24 @@ class VoiceIntegration(QObject):
     def set_open_mic_paused(self, paused: bool, *, announce: bool = True) -> None:
         """The user's "pause the microphone" switch (a menu item): the open
         microphone closes at once and stays closed until resumed; push-to-talk
-        keeps working.  Not saved: the app starts unpaused.  With *announce*
-        she says so (a short line) when it changes something she does."""
+        keeps working.  The app saves it, so it survives a restart.  With
+        *announce* she says so (a short line) when it changes something she
+        does - "I hear you again" only if nothing else keeps it paused (Do
+        Not Disturb, a call...): then that reason is shown instead."""
         paused = bool(paused)
         if paused == self._user_paused or self._closed:
             return
         self._user_paused = paused
         self._refresh_pause()
         service = self._service
-        if announce and service is not None and service.listen_mode != "push" and self._stt is not None:
-            self._say_line(MIC_PAUSED_LINE if paused else MIC_RESUMED_LINE)
+        if not announce or service is None or service.listen_mode == "push" or self._stt is None:
+            return
+        if paused:
+            self._say_line(MIC_PAUSED_LINE)
+        elif not self._pause_reason:
+            self._say_line(MIC_RESUMED_LINE)
+        else:
+            self._notify_once(self._pause_reason)  # still closed: never claim to hear
 
     # -- speech routing ----------------------------------------------------------------------------
 
@@ -938,7 +990,11 @@ class VoiceIntegration(QObject):
         """Start voicing an answer that is still being written (see
         :class:`ReplyStream`).  *show* is the same callback :meth:`route` takes."""
         voiced = self._should_voice(SpeechRequested(text="…", solicited=True, source=source))
-        stream = ReplyStream(self, show, source, voiced)
+        try:
+            name = self._settings().character.name
+        except Exception:
+            name = ""
+        stream = ReplyStream(self, show, source, voiced, name)
         if voiced:
             self._streams.append(stream)
         return stream
@@ -1009,7 +1065,8 @@ class VoiceIntegration(QObject):
                                    on_start=lambda seconds: self._line_started(line, attempt, seconds),
                                    on_done=lambda outcome: self._line_done(line, attempt, outcome),
                                    is_cancelled=lambda: line.cancelled,
-                                   prefetch=line.stream is not None)
+                                   prefetch=line.stream is not None,
+                                   opens_conversation=invites_reply(line.event))
         except Exception as exc:
             _log_failure("queueing a voiced line", exc)
             accepted = False
@@ -1031,6 +1088,8 @@ class VoiceIntegration(QObject):
         v = cfg.voice
         if v.speak == "off" or (v.speak == "replies" and not event.solicited):
             return False
+        if carries_screen_content(event) and not self._screen_may_reach_voice(cfg):
+            return False  # what she saw goes to a cloud voice only with cloud vision allowed
         if self._fullscreen and cfg.behavior.hide_on_fullscreen:
             return v.speak_when_hidden  # a fullscreen game hides her: voice only, if wanted
         if self._is_visible is not None:
@@ -1041,6 +1100,26 @@ class VoiceIntegration(QObject):
             if not visible:
                 return event.solicited  # the user hid her: only answers
         return True
+
+    def screen_content_may_be_voiced(self) -> bool:
+        """Whether a line drawn from what she saw on the screen may be voiced now: always
+        by a local voice (or none); by a cloud voice (Azure) only while screen data may
+        go to the cloud - ``CLOUD_VISION`` (and ``CLOUD_AI``) granted and "Лише
+        локальний аналіз" off.  The app also keeps what she saw out of a chat answer
+        that a cloud voice would read out otherwise."""
+        try:
+            cfg = self._settings()
+        except Exception as exc:
+            _log_failure("reading the voice settings", exc)
+            return False
+        return cfg.voice.speak == "off" or self._screen_may_reach_voice(cfg)
+
+    def _screen_may_reach_voice(self, cfg: Settings) -> bool:
+        key = self._tts_key
+        if key is None or key[0] != "azure":
+            return True
+        return (not cfg.vision.local_only and self._granted(Permission.CLOUD_VISION)
+                and self._granted(Permission.CLOUD_AI))
 
     def _line_started(self, line: _Routed, attempt: int, seconds: float) -> None:
         if attempt != line.attempt or line.done:
@@ -1148,6 +1227,20 @@ class VoiceIntegration(QObject):
         except Exception:
             return False
 
+    def transcript_allowed(self, origin: str) -> bool:
+        """May a request heard as *origin* (``VoiceTranscript.origin``) still be sent to
+        her?  Never without the microphone permission or with recognition off; one
+        heard on the open microphone ("named" / "heard") no longer once it pauses (the
+        user's switch, DND, a call or private app, fullscreen) or leaves the "name" /
+        "open" modes - what it heard just before is dropped, not sent later."""
+        if not self._mic_allowed():
+            return False
+        if origin == "push":
+            return True
+        service = self._service
+        return (service is not None and self._stt is not None and not self._pause_reason
+                and service.listen_mode != "push")
+
     def _audio_allowed(self) -> bool:
         """Audio thread: thread-safe permission check, no settings access."""
         return not self._closed and self._granted(Permission.MICROPHONE)
@@ -1182,10 +1275,12 @@ class VoiceIntegration(QObject):
         self._bus.publish(VoiceStateChanged(state=value, reason=reason))
 
     def _on_result(self, text: str, status: str) -> None:
-        if status == "ok":
+        origin = TRANSCRIPT_ORIGINS.get(status)
+        if origin is not None:
             text = text.strip()
-            if text and self._mic_allowed():  # revoked meanwhile: what was heard is dropped
-                self._bus.publish(VoiceTranscript(text=text))
+            # Revoked, paused or switched meanwhile: what was heard is dropped.
+            if text and self.transcript_allowed(origin):
+                self._bus.publish(VoiceTranscript(text=text, origin=origin))
             return
         key = RESULT_LINES.get(status)
         if key is not None:

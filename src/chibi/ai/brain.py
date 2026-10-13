@@ -20,17 +20,28 @@ Chat (:meth:`AIBrain.chat`):
 * streaming: the control line is held back until it is complete (first
   newline or :data:`~chibi.ai.prompts.CONTROL_SCAN_CHARS` characters), then
   body deltas are forwarded; a stray control-looking line inside the body is
-  held until its newline and dropped, so the streamed text matches the final
-  :class:`ChatReply` text;
+  held until its newline and dropped, HTML artefacts ("<b>", "<br>") are
+  removed and a leading "Мія:" speaker label is dropped (an unfinished tag or
+  label is held until it can be decided), so the streamed text matches the
+  final :class:`ChatReply` text - her voice says each sentence once;
+* her own unprompted lines that invite a reply (:meth:`AIBrain.note_unprompted`:
+  the observer's remarks, her questions) go with the next chat message as
+  context, so "Так, давай" is understood;
 * actions: the control line may request feed / pet / rest / quiet_on /
   quiet_off.  An action is dropped when the user's own message contains
   control-line syntax - a message that *contains* ``<<state=...;action=feed>>``
   must never make her act, even if the model echoes it;
-* memory extraction: after a successful reply, if ``remember_facts`` is on,
-  a background ``Purpose.MEMORY`` JSON request looks at the user's own words
-  only (never her reply, the app or an observation) and stores at most
+* memory extraction: after a successful reply, if ``remember_facts`` is on
+  and the message was said to her (``remember``: not what the open microphone
+  overheard - the TV, someone else in the room), a background
+  ``Purpose.MEMORY`` JSON request looks at the user's own words only (never
+  her reply, the app or an observation) and stores at most
   :data:`MEMORY_MAX_ITEMS` facts / preferences.  :class:`MemoryStore`
-  rejects anything that looks like personal data.
+  rejects anything that looks like personal data;
+* a request that carries what she saw (an observation in the chat turn, a
+  vision line, an observer decision) is marked ``screen_data``: the AI
+  service sends it only to the provider it was checked for, and to a cloud
+  one only with cloud vision.
 
 Reaction / initiative lines (:meth:`AIBrain.phrase`): the event, its
 variables, related memories and two phrase-bank examples (picked from the
@@ -132,6 +143,9 @@ RECENT_LINES_PER_KEY = 3
 RECENT_KEYS = 64
 #: Earlier replies whose state is remembered for the history's control lines.
 REPLY_STATES_KEPT = 64
+#: Her unprompted lines (see note_unprompted) go with the next chat message this long.
+UNPROMPTED_CONTEXT_SECONDS = 180.0
+UNPROMPTED_KEPT = 2
 
 #: Source of the lines she says as an observer (SpeechRequested.source).
 OBSERVER_SOURCE = "observer:ai"
@@ -312,18 +326,95 @@ def _json_object(text: str) -> Any:
         return None
 
 
+_TAG_NAMES = ("b", "i", "u", "em", "strong", "p", "span", "div", "br", "s", "small", "big", "font")
+_TAG_START = re.compile(r"</?([A-Za-z]*)")
+
+
+def _could_be_tag(fragment: str) -> bool:
+    """*fragment* (starting with "<", no ">" yet) may still become a markup tag."""
+    match = _TAG_START.match(fragment)
+    if match is None:
+        return False
+    name, after = match.group(1).lower(), fragment[match.end():]
+    if not after:
+        return any(tag.startswith(name) for tag in _TAG_NAMES)
+    return name in _TAG_NAMES and not (after[0].isalnum() or after[0] == "_") and "<" not in after \
+        and len(after) <= 60
+
+
+class _BodyCleaner:
+    """Streams what :func:`_strip_markup` and :func:`_strip_speaker` do to the whole
+    body: markup tags are removed (``<br>`` becomes a newline) and a leading
+    "<name>:" / "<name> —" is dropped.  An unfinished tag, or a body start that may
+    still turn out to be the speaker label, is held until it can be decided."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name.strip()
+        self._tag = ""  # an unfinished "<..." held back
+        self._head: str | None = "" if self._name else None  # None once the label is decided
+
+    def feed(self, text: str, *, final: bool = False) -> str:
+        return self._label(self._markup(self._tag + text, final), final)
+
+    def flush(self) -> str:
+        return self.feed("", final=True)
+
+    def _markup(self, text: str, final: bool) -> str:
+        self._tag = ""
+        out: list[str] = []
+        while text:
+            start = text.find("<")
+            if start == -1:
+                out.append(text)
+                break
+            out.append(text[:start])
+            rest = text[start:]
+            tag = _BREAK_TAG.match(rest) or _MARKUP_TAG.match(rest)
+            if tag is not None:
+                if _BREAK_TAG.match(rest):
+                    out.append("\n")
+                text = rest[tag.end():]
+                continue
+            if not final and ">" not in rest and _could_be_tag(rest):
+                self._tag = rest
+                break
+            out.append("<")
+            text = rest[1:]
+        return "".join(out)
+
+    def _label(self, text: str, final: bool) -> str:
+        if self._head is None:
+            return text
+        self._head += text
+        probe = self._head.lstrip()
+        name = self._name
+        if not final:
+            if not probe or name.casefold().startswith(probe.casefold()):
+                return ""  # may still be the label
+            if probe.casefold().startswith(name.casefold()) and not probe[len(name):].strip():
+                return ""  # "Мія " - a ":" may follow
+        head, self._head = self._head, None
+        if probe.casefold().startswith(name.casefold()):
+            rest = probe[len(name):].lstrip()
+            if rest.startswith((":", "—")):
+                return rest[1:].lstrip()
+        return head
+
+
 class ReplyStream:
     """Turns raw reply deltas into body deltas (see the module docstring).
 
     ``feed`` takes pieces as they arrive, ``finish`` flushes what is held back.
+    *name* is hers: a leading "<name>:" label is dropped, as in the final reply.
     """
 
-    def __init__(self, emit: Callable[[str], None]) -> None:
+    def __init__(self, emit: Callable[[str], None], name: str = "") -> None:
         self._emit = emit
         self._head: str | None = ""  # None once the control line is resolved
         self._held: str | None = None  # current body line held back (may be a control token)
         self._line_start = True
         self._sent = False
+        self._clean = _BodyCleaner(name)
 
     def feed(self, piece: str) -> None:
         if not piece:
@@ -345,6 +436,7 @@ class ReplyStream:
             held, self._held = self._held, None
             if not is_stray_control(held):
                 self._out(held)
+        self._send(self._clean.flush())
 
     # -- internals --------------------------------------------------------------------------
 
@@ -419,12 +511,16 @@ class ReplyStream:
         self._line_start = False
 
     def _out(self, text: str) -> None:
+        self._send(self._clean.feed(text))
+
+    def _send(self, text: str) -> None:
         if not self._sent:
             text = text.lstrip()
             if not text:
                 return
             self._sent = True
-        self._emit(text)
+        if text:
+            self._emit(text)
 
 
 def worth_remembering(text: str) -> bool:
@@ -764,6 +860,8 @@ class AIBrain:
         self._rng = rng or random.Random()
         self._recent: OrderedDict[str, deque[str]] = OrderedDict()
         self._reply_states: OrderedDict[str, str] = OrderedDict()
+        #: Her unprompted lines not yet followed by a chat message: (monotonic time, text).
+        self._unprompted: deque[tuple[float, str]] = deque(maxlen=UNPROMPTED_KEPT)
 
     # -- public API ----------------------------------------------------------------------------
 
@@ -775,11 +873,19 @@ class AIBrain:
             log.warning("AI availability check failed (%s)", type(exc).__name__)
             return False
 
+    def note_unprompted(self, text: str) -> None:
+        """She said *text* on her own (an observer remark, a question) and the user may
+        answer it: it goes with the next chat message as context (in memory only)."""
+        if isinstance(text, str) and text.strip():
+            self._unprompted.append((self._clock.monotonic(), text.strip()))
+
     def chat(self, text: str, on_delta: Callable[[str], None],
-             on_done: Callable[[ChatReply | None], None]) -> None:
+             on_done: Callable[[ChatReply | None], None], *, remember: bool = True) -> None:
         """Answer a chat message.  Body text streams through *on_delta*; *on_done*
         fires exactly once with the reply, or None (the caller answers offline).
-        When the AI is unavailable, None is delivered synchronously."""
+        When the AI is unavailable, None is delivered synchronously.  *remember*:
+        the message may be mined for long-term memories (False for what the open
+        microphone overheard)."""
         message = text.strip() if isinstance(text, str) else ""
         if not message or not self.available(Purpose.CHAT):
             _safe_call(on_done, None)
@@ -788,7 +894,9 @@ class AIBrain:
         ai = settings.ai
         history = self._history(max(0, ai.context_turns - 1))
         memories = self._search(message, ai.memory_items)
-        turn = build_chat_turn(message, self._brain_context(), memories)
+        context = self._brain_context()
+        said_before = self._take_unprompted()
+        turn = build_chat_turn(message, context, memories, said_before=said_before)
         request = GenerationRequest(
             system=build_persona(settings),
             turns=(*history, ChatTurn(Role.USER, turn)),
@@ -796,9 +904,13 @@ class AIBrain:
             max_tokens=CHAT_MAX_TOKENS,
             context=self._operator_context(settings),
             effort=ai.effort,
+            screen_data=bool(context is not None and context.observation),
         )
+        for line in said_before:  # her lines come before the message in the conversation
+            self._short_term.add(Role.ASSISTANT, line)
         self._short_term.add(Role.USER, message)
-        stream = ReplyStream(lambda piece: _safe_call(on_delta, piece))
+        stream = ReplyStream(lambda piece: _safe_call(on_delta, piece),
+                             name=prompt_safe_name(settings.character.name, "Мія"))
         finished = False
 
         def finish(reply: ChatReply | None) -> None:
@@ -819,7 +931,8 @@ class AIBrain:
             self._short_term.add(Role.ASSISTANT, reply.text)
             self._remember_state(reply.text, reply.state)
             finish(reply)
-            self._extract_memories(message)
+            if remember:
+                self._extract_memories(message)
 
         def error(exc: Exception) -> None:
             log.info("AI chat failed (%s); answering offline", type(exc).__name__)
@@ -871,6 +984,7 @@ class AIBrain:
             max_tokens=PHRASE_MAX_TOKENS,
             context=self._operator_context(settings),
             effort=LINE_EFFORT,
+            screen_data=bool(observation),
         )
         finished = False
 
@@ -915,7 +1029,10 @@ class AIBrain:
             return None
         settings = self._settings()
         name = prompt_safe_name(settings.character.name, "Мія")
-        sources = [*observer_sources(moments, context), name, settings.character.user_nickname]
+        # Names and words she knows besides the screen: hers, the user's nickname and
+        # the user's description of her character ("обожнює RPG і Dark Souls").
+        sources = [*observer_sources(moments, context), name, settings.character.user_nickname,
+                   settings.personality.persona]
         said = tuple(context.said_recently)
         request = GenerationRequest(
             system=build_persona(settings),
@@ -924,6 +1041,7 @@ class AIBrain:
             max_tokens=OBSERVER_MAX_TOKENS,
             context=self._operator_context(settings),
             effort=LINE_EFFORT,
+            screen_data=True,
         )
         token = CancelToken()
         finished = False
@@ -990,6 +1108,13 @@ class AIBrain:
             action = NO_ACTION
         return ChatReply(text=body, state=state, portrait=self._portrait(state),
                          action="" if action == NO_ACTION else action)
+
+    def _take_unprompted(self) -> tuple[str, ...]:
+        """Her recent unprompted lines (see note_unprompted), once."""
+        now = self._clock.monotonic()
+        lines = tuple(text for at, text in self._unprompted if now - at <= UNPROMPTED_CONTEXT_SECONDS)
+        self._unprompted.clear()
+        return lines
 
     def _remember_state(self, text: str, state: str) -> None:
         self._reply_states[text.strip()] = state

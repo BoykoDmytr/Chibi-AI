@@ -22,14 +22,24 @@ How she listens (``listen_mode``):
   (:func:`find_address`: "Міє, котра година?", "Як справи, Міє?").  After a
   delivered request a *conversation window* opens: while her answer is
   pending or being spoken, and ``follow_up_seconds`` after she finishes,
-  anything said is meant for her, name or not;
+  anything said is meant for her, name or not.  A question or remark of
+  her own that invites a reply (``say(..., opens_conversation=True)``) opens
+  it too, once it has been heard;
 * ``"open"`` - the microphone stays open and every utterance is for her.
 
 In both open modes pure fillers ("угу", "ага", "мм") and what the
-hallucination filter drops are ignored, her name alone opens a push-to-talk
-style listening session, and at most one utterance is recognised at a time:
-one arriving meanwhile is dropped (and counted) - work never piles up.
-Push-to-talk works in every mode.
+hallucination filter drops are ignored.  Her name alone keeps the open
+microphone listening and makes the next phrase (within
+:data:`CALLED_SECONDS`) the request - also when it was said while her name
+was still being recognised.  At most one utterance is recognised at a time
+and at most one waits behind it, kept only for that case; any other is
+dropped (and counted) - work never piles up.  Push-to-talk works in every
+mode.
+
+A delivered request reaches ``on_result(text, status)`` with the status
+saying how it reached her: ``"ok"`` (push-to-talk), ``"named"`` (the open
+microphone, addressed by name) or ``"heard"`` (the open microphone, not
+addressed: "open" mode, the conversation window).
 
 Rules that protect the user:
 
@@ -42,7 +52,11 @@ Rules that protect the user:
   :meth:`hold_for_reply`) and the first ``echo_tail_seconds`` after it
   reopens are ignored; pressing push-to-talk while she speaks interrupts her;
 * unsolicited lines never pile up: a full queue drops them, stale ones are
-  skipped, and none are queued while the user is talking to her.
+  skipped, and none are queued while the user is talking to her, right
+  after the user called her, or while she is voicing an answer sentence by
+  sentence (never between two of its sentences);
+* pausing the open microphone (:meth:`set_suspended`) also ends the
+  conversation window: after a resume only her name opens it again.
 
 Nothing here logs what was said or heard.
 """
@@ -96,6 +110,14 @@ ECHO_TAIL_SECONDS = 0.3
 REPLY_WAIT_SECONDS = 30.0
 #: Open-microphone utterances shorter than this (voiced) are a clack or a cough.
 OPEN_MIC_MIN_SPEECH_MS = 350
+#: After her name alone, the next phrase said within this long is the request.
+CALLED_SECONDS = 8.0
+
+#: ``on_result`` statuses of a delivered request (see the module docstring).
+DELIVERED_PUSH = "ok"
+DELIVERED_NAMED = "named"
+DELIVERED_HEARD = "heard"
+DELIVERED = frozenset({DELIVERED_PUSH, DELIVERED_NAMED, DELIVERED_HEARD})
 
 
 @dataclass
@@ -108,6 +130,8 @@ class _Utterance:
     is_cancelled: Callable[[], bool] | None = None
     #: Synthesise while the line before it plays (the sentences of a streamed answer).
     prefetch: bool = False
+    #: Once heard, what the user says next is for her (a question of hers).
+    opens_conversation: bool = False
     id: int = field(default_factory=itertools.count().__next__)
     resolved: bool = False
     #: Synthesis: "" not started, "pending", "done" (``clip`` or ``error`` set).
@@ -160,19 +184,25 @@ class NameForms:
       by punctuation ("Як справи, Мія?"), so "подивись, що Мія робить" is not
       a request;
     * ``lead`` - other case forms ("Мію", "Мії"): only at the start of the
-      phrase, where recognition sometimes mishears the vocative.
+      phrase, where recognition sometimes mishears the vocative;
+    * ``near`` - forms whose one-letter recognition slip still counts ("Алено"
+      for "Олено"): only the vocative and the name itself, only names of at
+      least :data:`NEAR_MIN_LETTERS` letters, and only at the start and set
+      off like a vocative ("Алено, ..."; see :func:`find_address`).
     """
 
     strong: frozenset[str] = frozenset()
     weak: frozenset[str] = frozenset()
     lead: frozenset[str] = frozenset()
+    near: frozenset[str] = frozenset()
 
     @property
     def every(self) -> frozenset[str]:
         return self.strong | self.weak | self.lead
 
     def __or__(self, other: NameForms) -> NameForms:
-        return NameForms(self.strong | other.strong, self.weak | other.weak, self.lead | other.lead)
+        return NameForms(self.strong | other.strong, self.weak | other.weak, self.lead | other.lead,
+                         self.near | other.near)
 
     @classmethod
     def for_name(cls, name: str) -> NameForms:
@@ -206,7 +236,14 @@ class NameForms:
         elif n[-1] not in "аеєиіїоуюяь'" and _CYRILLIC.search(n):  # Тарас: Тарасе
             strong.add(n + "е")
             lead.update({n + "а", n + "у", n + "ом", n + "ові"})
-        return cls(frozenset(strong), frozenset(weak), frozenset(lead))
+        near = {form for form in (*strong, n) if len(form) >= NEAR_MIN_LETTERS}
+        return cls(frozenset(strong), frozenset(weak), frozenset(lead), frozenset(near))
+
+
+#: A recognition slip of her name counts only for forms this long: in a shorter one a
+#: one-letter difference is usually another word ("Віка" / "вікно", "Маша" / "мама",
+#: "Кіра" / "кіно", "Ніка" / "ніби").
+NEAR_MIN_LETTERS = 5
 
 
 _CYRILLIC = re.compile(r"[а-яґєії]")
@@ -248,8 +285,11 @@ def find_address(text: str, names: NameForms = MIA_FORMS) -> str | None:
     last = len(tokens) - 1
     for i, word in enumerate(words):
         if i < 3 and all(w in _LEAD_FILLERS for w in words[:i]):
-            # At the start every form counts, and one recognition slip too.
-            if word in names.every or any(_close(word, n) for n in names.every if len(n) >= 4):
+            # At the start every form counts.  A recognition slip only of a long vocative
+            # (or the name itself) that is set off like one: "Алено, ..." / "Алено!".
+            after = text[tokens[i].end():tokens[i + 1].start()] if i < last else ""
+            slip = (i == last or bool(_SET_OFF.search(after))) and any(_close(word, n) for n in names.near)
+            if word in names.every or slip:
                 return _clean_request(text[tokens[i].end():])
             continue
         if word in names.strong:
@@ -395,6 +435,10 @@ class VoiceService:
         self._conv_until = 0.0
         self._conv_awaiting_until = 0.0
         self._conv_speaking = False
+        #: Her name alone was heard: the next phrase until then is the request.
+        self._called_until = 0.0
+        #: One open-microphone utterance kept while another is recognised: (audio, open gen).
+        self._standby_waiting: tuple[Any, int] | None = None
 
     # -- configuration ---------------------------------------------------------------------
 
@@ -463,12 +507,15 @@ class VoiceService:
 
     def set_suspended(self, suspended: bool) -> None:
         """Pause the open microphone (push-to-talk keeps working).  What it
-        heard just before is dropped, not delivered later."""
+        heard just before is dropped, not delivered later, and the
+        conversation window ends: after a resume only her name opens it."""
         if suspended == self._suspended:
             return
         self._suspended = suspended
         if suspended:
             self._open_gen += 1
+            self._standby_waiting = None
+            self._end_conversation()
         if self._state in (VoiceState.IDLE, VoiceState.STANDBY):
             self._rest("suspended" if suspended else "resumed")
 
@@ -500,19 +547,21 @@ class VoiceService:
             on_start: Callable[[float], None] | None = None,
             on_done: Callable[[Outcome], None] | None = None,
             is_cancelled: Callable[[], bool] | None = None,
-            prefetch: bool = False) -> bool:
+            prefetch: bool = False, opens_conversation: bool = False) -> bool:
         """Queue a line.  False (and no callbacks) if voice can't speak now -
         the caller then shows the text without voice.  A line whose
         *is_cancelled* returns True before its audio starts is skipped
         (``Outcome.DROPPED``).  *prefetch*: synthesise it while the line
-        before it plays, so the sentences of an answer follow without a gap."""
+        before it plays, so the sentences of an answer follow without a gap.
+        *opens_conversation*: a question or remark of hers that invites a
+        reply - once its audio has played, the conversation window opens."""
         if not self.can_speak or not text.strip() or self._state == VoiceState.OFF:
             return False
         if not solicited and (self._state in (VoiceState.LISTENING, VoiceState.TRANSCRIBING)
-                              or self._user_talking()):
-            return False  # never talk over the user
+                              or self._user_talking() or self._called() or self._answering()):
+            return False  # never talk over the user, nor into the middle of her own answer
         utterance = _Utterance(text, solicited, on_start, on_done, self._clock(), is_cancelled,
-                               prefetch=prefetch)
+                               prefetch=prefetch, opens_conversation=opens_conversation)
         if len(self._queue) >= self.max_queue:
             victim = next((u for u in self._queue if not u.solicited), None)
             if victim is None and not solicited:
@@ -578,6 +627,17 @@ class VoiceService:
 
     def _held(self) -> bool:
         return self._hold_until > self._clock()
+
+    def _answering(self) -> bool:
+        """She is voicing an answer sentence by sentence (also between two of its
+        sentences): a line of her own must not come in between."""
+        if self._waiting_for_reply or self._held():
+            return True
+        return any(u is not None and u.solicited and u.prefetch for u in (self._current, *self._queue))
+
+    def _called(self) -> bool:
+        """Her name alone was just heard: the user is about to say the request."""
+        return self._clock() < self._called_until
 
     def _user_talking(self) -> bool:
         """The open microphone hears someone talking right now."""
@@ -704,6 +764,8 @@ class VoiceService:
             utterance.finish(Outcome.FAILED)
             self._continue()
             return
+        if utterance.opens_conversation and self.follow_up_seconds > 0:
+            self._conv_speaking = True  # heard: the follow-up time starts when she stops
         if utterance.on_start is not None:
             try:
                 utterance.on_start(clip.duration)
@@ -860,20 +922,22 @@ class VoiceService:
             self._error(error)
             self._result("", "error")
         elif text:
-            self._deliver(text)
+            self._deliver(text, DELIVERED_PUSH)
         else:
             self._result("", "not_understood")
 
-    def _deliver(self, text: str) -> None:
-        """A request for her: hand it over and open the conversation window."""
+    def _deliver(self, text: str, status: str) -> None:
+        """A request for her: hand it over (*status*: how it reached her, see
+        :data:`DELIVERED`) and open the conversation window."""
+        self._called_until = 0.0
         if self.follow_up_seconds > 0:
             now = self._clock()
             self._conv_awaiting_until = now + self.reply_wait_seconds
             self._conv_until = max(self._conv_until, now + self.follow_up_seconds)
-        self._result(text, "ok")
+        self._result(text, status)
 
     def _end_conversation(self) -> None:
-        self._conv_until = self._conv_awaiting_until = 0.0
+        self._conv_until = self._conv_awaiting_until = self._called_until = 0.0
         self._conv_speaking = False
 
     # -- the open microphone ("name" / "open" modes) ---------------------------------------------
@@ -921,8 +985,11 @@ class VoiceService:
             return
         if self._standby_busy:
             # One recognition at a time: under constant talk (a TV) work never piles up.
-            self.dropped_utterances += 1
-            log.debug("open microphone busy: %d utterance(s) dropped so far", self.dropped_utterances)
+            # The newest phrase waits - it is the request if the one being recognised
+            # turns out to be her name alone ("Міє, ... котра година?").
+            if self._standby_waiting is not None:
+                self._drop_utterance()
+            self._standby_waiting = (audio, open_gen)
             return
         self._standby_busy = True
         stt, prompt = self.stt, self.standby_prompt
@@ -939,28 +1006,43 @@ class VoiceService:
 
     def _standby_heard(self, open_gen: int, text: str) -> None:
         self._standby_busy = False
+        waiting, self._standby_waiting = self._standby_waiting, None
         if not self._open_result_valid(open_gen):
             return  # paused, revoked, mode changed or push-to-talk took over meanwhile
-        request = self._request_from(text)
-        if request is None:
-            return
-        if not request:  # only her name: listen to what comes next
+        found = self._request_from(text)
+        if found is not None and not found[0]:
+            # Only her name: the microphone stays open and the next phrase is the
+            # request - also one said while her name was being recognised.
+            self._called_until = self._clock() + CALLED_SECONDS
             if self._on_wake is not None:
                 self._on_wake()
-            self.listen("wake")
+            if waiting is not None:
+                self._standby_utterance(*waiting)
             return
-        self._deliver(request)
+        if waiting is not None:
+            self._drop_utterance()
+        if found is not None:
+            self._deliver(*found)
 
-    def _request_from(self, text: str) -> str | None:
-        """What of *text* is for her: None (not for her), "" (only her name), or the request."""
+    def _drop_utterance(self) -> None:
+        self.dropped_utterances += 1
+        log.debug("open microphone busy: %d utterance(s) dropped so far", self.dropped_utterances)
+
+    def _request_from(self, text: str) -> tuple[str, str] | None:
+        """What of *text* is for her: None (not for her), or (request, status) -
+        the request is "" when the user only called her."""
         text = text.strip()
         if not text or _echoes(text, self.standby_prompt) or not clean_segments([Segment(text)])[0]:
             return None  # silence, a sound, a subtitle credit, the prompt echoed back
         addressed = find_address(text, self.names)
         if addressed is not None:
-            return "" if is_filler(addressed) else addressed
+            return ("" if is_filler(addressed) else addressed), DELIVERED_NAMED
+        if is_filler(text):
+            return None
+        if self._called():  # the phrase right after her name alone
+            return _clean_request(text), DELIVERED_NAMED
         if self._listen_mode == OPEN or self.conversation_open:
-            return None if is_filler(text) else text
+            return text, DELIVERED_HEARD
         return None
 
     # -- helpers ------------------------------------------------------------------------------

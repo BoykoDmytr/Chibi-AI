@@ -874,7 +874,7 @@ def test_wake_phrase_shows_listening_as_a_bubble_only(heard):
     rig.feed(np.concatenate([speech(1.0), silence(1.0)]))
     rig.worker.run_all()
     assert rig.composer.calls == [(("voice.listening",), True)]
-    assert rig.service.state == "listening"
+    assert rig.service.state == "standby" and rig.mic is not None  # the open microphone goes on
     shows = Shows()
     listening_line = rig.published(SpeechRequested)[-1]
     rig.voice.route(listening_line, shows)
@@ -1328,7 +1328,9 @@ def test_her_name_alone_shows_listening_without_saying_it(heard):
     rig.change(listen_mode="open")
     say_aloud(rig, "Міє!")
     assert rig.composer.calls == [(("voice.listening",), True)]
-    assert rig.service.state == "listening"
+    assert rig.service.state == "standby"
+    say_aloud(rig, "котра година?")
+    assert [(e.text, e.origin) for e in rig.published(VoiceTranscript)] == [("Котра година?", "named")]
 
 
 def test_do_not_disturb_pauses_the_open_microphone(heard):
@@ -1623,3 +1625,138 @@ def test_an_answer_cut_by_settings_is_shown_not_lost(rig):
     stream.finish("Перше довге речення тут. Друге речення теж є. Третє речення вже новим голосом.")
     assert shown.texts[:2] == ["Перше довге речення тут.", "Друге речення теж є."]
     assert shown.texts[2] == "Третє речення вже новим голосом." and len(shown.texts) == 3
+
+
+# --- review fixes -------------------------------------------------------------------------------------
+
+
+def test_transcripts_say_how_they_reached_her(heard):
+    rig = heard
+    rig.service.stt.text = "Привіт"
+    rig.voice.toggle_listening()
+    rig.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    rig.worker.run_all()
+    rig.change(listen_mode="name")
+    say_aloud(rig, "Міє, котра година?")
+    say_aloud(rig, "а завтра?")  # the conversation window
+    assert [(e.text, e.origin) for e in rig.published(VoiceTranscript)] == [
+        ("Привіт", "push"), ("Котра година?", "named"), ("а завтра?", "heard")]
+
+
+def test_a_request_from_the_open_microphone_is_not_sent_once_it_pauses(heard):
+    rig = heard
+    rig.change(listen_mode="open")
+    assert rig.voice.transcript_allowed("heard") and rig.voice.transcript_allowed("push")
+    rig.voice.set_open_mic_paused(True)
+    assert not rig.voice.transcript_allowed("heard") and not rig.voice.transcript_allowed("named")
+    assert rig.voice.transcript_allowed("push")  # push-to-talk works while paused
+    rig.voice.set_open_mic_paused(False)
+    rig.change(listen_mode="push")
+    assert not rig.voice.transcript_allowed("heard") and rig.voice.transcript_allowed("push")
+    rig.change(stt_enabled=False)
+    assert not rig.voice.transcript_allowed("push")
+
+
+def test_resuming_while_something_else_keeps_the_microphone_paused_says_why(heard):
+    rig = heard
+    rig.change(listen_mode="name")
+    rig.bus.publish(DoNotDisturbChanged(enabled=True))
+    rig.dispatch()
+    rig.voice.set_open_mic_paused(True)
+    rig.voice.set_open_mic_paused(False)
+    assert rig.mic is None and rig.voice.status().pause_reason == PAUSED_DND
+    assert (("voice.mic_resumed",), True) not in rig.composer.calls  # never "I hear you again"
+    assert rig.notes[-1] == PAUSED_DND
+
+
+def test_her_question_is_answered_without_her_name(heard):
+    rig = heard
+    rig.change(listen_mode="name")
+    rig.voice.route(line("Бачу помилку. Глянемо разом?", source="observer:ai"), Shows())
+    rig.worker.run_all()
+    rig.output.finish()
+    assert rig.service.conversation_open
+    say_aloud(rig, "Так, давай")
+    assert [(e.text, e.origin) for e in rig.published(VoiceTranscript)] == [("Так, давай", "heard")]
+
+
+def test_invites_reply():
+    assert integration_module.invites_reply(line("Ого!", source="observer:ai"))
+    assert integration_module.invites_reply(line("Чим займаєшся? 🙂", source="initiative.idle"))
+    assert not integration_module.invites_reply(line("Ого, бос!", source="vision.boss_fight"))
+    assert not integration_module.invites_reply(line("Так?", solicited=True, source="chat"))
+
+
+def azure_voice(rig):
+    rig.secrets.set(AZURE_KEY_NAME, "k" * 32)
+    rig.grant(Permission.CLOUD_AI)
+    rig.change(tts_engine="azure")
+    assert rig.service.tts.name == "azure"
+
+
+def test_a_cloud_voice_reads_out_what_she_saw_only_with_cloud_vision(rig):
+    azure_voice(rig)
+    assert not rig.voice.screen_content_may_be_voiced()
+    for source in ("observer:ai", "vision.error_on_screen:ai"):
+        shows = Shows()
+        rig.voice.route(line("Бачу помилку в коді.", source=source), shows)
+        rig.worker.run_all()
+        assert shows.calls == [("Бачу помилку в коді.", None)]  # shown as text
+    assert rig.service.tts.said == []
+    rig.voice.route(line("Привіт!", source="initiative.greeting"), Shows())  # nothing from the screen
+    rig.worker.run_all()
+    assert rig.service.tts.said == ["Привіт!"]
+    rig.output.finish()
+    rig.grant(Permission.SCREEN_CAPTURE, Permission.CLOUD_VISION)
+    assert rig.voice.screen_content_may_be_voiced()
+    rig.voice.route(line("Бачу помилку в коді.", source="observer:ai"), Shows())
+    rig.worker.run_all()
+    assert rig.service.tts.said[-1] == "Бачу помилку в коді."
+    rig.output.finish()
+    rig.settings.vision.local_only = True
+    assert not rig.voice.screen_content_may_be_voiced()
+
+
+def test_a_local_voice_reads_out_what_she_saw(rig):
+    assert rig.voice.screen_content_may_be_voiced()
+    rig.voice.route(line("Бачу помилку в коді.", source="observer:ai"), Shows())
+    rig.worker.run_all()
+    assert rig.service.tts.said == ["Бачу помилку в коді."]
+
+
+def test_her_own_line_never_comes_between_the_sentences_of_an_answer(rig):
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    stream.feed("Перше довге речення відповіді. Друге")
+    rig.worker.run_all()
+    rig.output.finish()  # the first sentence is over, the second is still being written
+    reaction = Shows()
+    rig.voice.route(line("Ого, ти щойно переміг боса!", source="vision.victory"), reaction)
+    assert reaction.calls == [("Ого, ти щойно переміг боса!", None)]  # shown, not voiced
+    stream.finish("Перше довге речення відповіді. Друге речення відповіді тут.")
+    rig.worker.run_all()
+    rig.output.finish()
+    assert rig.service.tts.said == ["Перше довге речення відповіді.", "Друге речення відповіді тут."]
+
+
+@pytest.mark.parametrize(
+    ("deltas", "final", "spoken"),
+    [(["Мія: Привіт, радий тебе чути! Сьогодні чудовий день для прогулянки. Ходімо?"],
+      "Привіт, радий тебе чути! Сьогодні чудовий день для прогулянки. Ходімо?",
+      ["Мія: Привіт, радий тебе чути!", "Сьогодні чудовий день для прогулянки.", "Ходімо?"]),
+     (["Це <b>дуже</b> важливо для тебе. Тож ", "подумай."],
+      "Це дуже важливо для тебе. Тож подумай.",
+      ["Це <b>дуже</b> важливо для тебе.", "Тож подумай."])],
+)
+def test_artefacts_the_final_answer_drops_do_not_make_her_repeat_herself(rig, deltas, final, spoken):
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    for delta in deltas:
+        stream.feed(delta)
+    rig.worker.run_all()
+    stream.finish(final)
+    for _ in range(4):
+        rig.worker.run_all()
+        if rig.output.playing:
+            rig.output.finish()
+    assert rig.service.tts.said == spoken  # each sentence once

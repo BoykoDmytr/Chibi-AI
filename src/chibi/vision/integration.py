@@ -14,7 +14,8 @@ tested on its own with fakes:
     (``settings.vision.allowed_processes``);
   - ``"foreground"``: any window, except Windows' own surfaces (desktop,
     taskbar, lock screen, Start and search, Task Manager, UAC and credential
-    prompts - :data:`SYSTEM_PROCESSES`) and browsers while window titles may
+    prompts, the Microsoft / work account sign-in windows - :data:`SYSTEM_PROCESSES`)
+    and browsers while window titles may
     not be read: without the title the privacy filter cannot tell a private
     tab, a bank or web mail from any other page, so a browser is skipped (and
     the status says why).
@@ -31,8 +32,12 @@ tested on its own with fakes:
   :class:`~chibi.privacy.permissions.PermissionManager` on every step, so they
   take effect even before the bus delivers the event.  With the "foreground"
   scope in AUTO mode she does not look while the user is away
-  (``UserIdle`` .. ``UserReturned``), and a window that keeps showing the same
-  picture is captured less often.
+  (``UserIdle`` .. ``UserReturned``, unless they talked to her by voice in the
+  last :data:`VOICE_PRESENCE_SECONDS`), and a window that keeps showing the
+  same picture is captured less often.  As an observer she takes no automatic
+  frames while she could not say anything about them (her own lines may not
+  use the AI, it is offline or its limit is reached): the status says why
+  (:attr:`VisionStatusView.observer_note`).
 * **What she does with it**: every analysed observation that is still allowed
   when its answer arrives is published as
   :class:`~chibi.core.events.VisionObserved` (see :meth:`_publish`).  With
@@ -89,6 +94,7 @@ from chibi.core.events import (
     UserReturned,
     VisionObserved,
     VisionStateChanged,
+    VoiceTranscript,
 )
 from chibi.core.worker import SerialWorker
 from chibi.gaming.games_db import GameDatabase, GameMatch, normalize_process, title_from_exe
@@ -173,6 +179,9 @@ SYSTEM_PROCESSES = frozenset({
     "screenclippinghost.exe", "pickerhost.exe", "taskmgr.exe", "systemsettings.exe", "control.exe",
     "mmc.exe", "smartscreen.exe", "sihost.exe", "dwm.exe", "rundll32.exe", "securityhealthhost.exe",
     "applicationframehost.exe",
+    # Sign-in windows (Microsoft / work account, Windows Hello): e-mail and one-time codes.
+    "microsoft.aad.brokerplugin.exe", "wwahost.exe", "useroobebroker.exe",
+    "credentialenrollmentmanager.exe",
 })
 #: explorer.exe is the desktop ("Program Manager"), the taskbar (no title), Alt+Tab
 #: and File Explorer.  Only a File Explorer window - recognisable by its title, so
@@ -190,6 +199,7 @@ SKIP_NOT_LISTED = "not_listed"
 SKIP_NOT_GAME = "not_game"
 SKIP_UNKNOWN = "unknown"
 SKIP_AWAY = "away"
+SKIP_MUTED = "muted"  # an observer who could not say anything: no automatic frames
 
 #: Status line ("Чекає: ...") for each reason.
 SKIP_NOTES: dict[str, str] = {
@@ -202,6 +212,7 @@ SKIP_NOTES: dict[str, str] = {
     SKIP_NOT_GAME: "в ігровому режимі вона дивиться лише на ігри",
     SKIP_UNKNOWN: "не вдалося визначити, що за програма на передньому плані",
     SKIP_AWAY: "тебе немає за комп'ютером, тож вона не дивиться й не витрачає ресурси",
+    SKIP_MUTED: "сама вона зараз нічого не скаже, тож кадрів не знімає (причина — нижче)",
 }
 #: Her answer to "подивись на екран" when the window in front is skipped ("foreground" scope).
 LOOK_SKIP_MESSAGES: dict[str, str] = {
@@ -213,6 +224,33 @@ LOOK_SKIP_MESSAGES: dict[str, str] = {
 }
 #: Published observations remembered for :meth:`VisionIntegration.details_for`.
 DETAILS_LIMIT = 16
+#: Talking to her by voice counts as being at the PC for this long (hands-free: no
+#: keyboard or mouse input; the same as ``chibi.personality.observer``).
+VOICE_PRESENCE_SECONDS = 300.0
+#: Whether the observer can speak is re-checked at most this often (it reads the budget).
+OBSERVER_CHECK_SECONDS = 5.0
+
+#: Why she says nothing about the screen herself as an observer (VisionStatusView.observer_note).
+OBSERVER_MANUAL = ("Сама вона не коментує: у режимі «Лише за запитом» вона лише відповідає, "
+                   "коли попросиш подивитися.")
+OBSERVER_NO_AI_LINES = ("Сама вона мовчить і кадрів не знімає: на сторінці «AI» вимкнено «Формулювати "
+                        "через AI її власні репліки».")
+OBSERVER_AI_OFF = "Сама вона мовчить і кадрів не знімає, поки AI недоступний ({reason})."
+OBSERVER_BUDGET = ("Сама вона мовчить і кадрів не знімає: ліміт запитів до AI на цю годину "
+                   "вичерпано.")
+
+
+def observer_ai_reason(settings: Settings, status: tuple[bool, str], initiative_available: bool) -> str:
+    """Why the observer cannot ask the model now ("" if it can): the app passes the AI
+    service's ``status()`` and ``is_available(Purpose.INITIATIVE)``."""
+    if not settings.ai.use_for_reactions:
+        return OBSERVER_NO_AI_LINES
+    online, reason = status
+    if not online:
+        return OBSERVER_AI_OFF.format(reason=reason or "немає з'єднання")
+    if not initiative_available:
+        return OBSERVER_BUDGET
+    return ""
 
 
 def reactions_per_hour(reaction_frequency: int) -> int:
@@ -276,6 +314,9 @@ class VisionStatusView:
     #: Why the window in front is not being looked at (a Ukrainian clause for
     #: "Чекає: ..."), "" if it is, or if there is nothing to explain.
     skipped: str = ""
+    #: Commentary "observer": why she says nothing herself now (a Ukrainian sentence),
+    #: "" when she can comment.
+    observer_note: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,8 +443,11 @@ class VisionIntegration(QObject):
         own_windows: Callable[[], Iterable[int]] = tuple,
         own_pid: int | None = None,
         analyzer_factory: AnalyzerFactory | None = None,
+        observer_ai: Callable[[], str] | None = None,
         parent: QObject | None = None,
     ) -> None:
+        """*observer_ai* says why the observer cannot ask the model now ("" if it can;
+        see :func:`observer_ai_reason`); without it the observer is assumed able to."""
         super().__init__(parent)
         self._bus = bus
         self._settings = settings
@@ -423,6 +467,8 @@ class VisionIntegration(QObject):
         self._own_windows = own_windows
         self._own_pid = os.getpid() if own_pid is None else own_pid
         self._analyzer_factory: AnalyzerFactory = analyzer_factory or _provider_analyzer
+        self._observer_ai = observer_ai
+        self._observer_checked: tuple[float, str] | None = None
         self._closed = False
 
         self._invoker = QtInvoker(self)
@@ -435,6 +481,8 @@ class VisionIntegration(QObject):
         self._high_load = False
         #: The activity monitor said the user is idle (no UserReturned yet).
         self._user_away = False
+        #: When the user last talked to her by voice (monotonic): presence too.
+        self._voice_at: float | None = None
         self._rules = self._build_rules(self._read_settings())
         self._excluded: set[int] = set()
         #: Why the last window in front (not one of hers) was not looked at ("" = it was).
@@ -490,6 +538,7 @@ class VisionIntegration(QObject):
             bus.subscribe(GameEnded, self._on_game_ended),
             bus.subscribe(UserIdle, self._on_user_idle),
             bus.subscribe(UserReturned, self._on_user_returned),
+            bus.subscribe(VoiceTranscript, self._on_voice),
             bus.subscribe(AppShuttingDown, lambda _event: self.shutdown()),
         ]
         self.reconfigure()
@@ -655,13 +704,18 @@ class VisionIntegration(QObject):
         blocked = self._blocker(s)
         skipped = ""
         if s.vision.mode in (VisionMode.AUTO, VisionMode.GAME) and not blocked and state == VisionState.IDLE:
-            skip = SKIP_AWAY if self._service.away else self._skip
+            skip = SKIP_AWAY if self._service.away else SKIP_MUTED if self._service.muted else self._skip
             skipped = SKIP_NOTES.get(skip, "")
+        observer_note = ""
+        if s.vision.mode != VisionMode.OFF and s.vision.commentary == COMMENTARY_OBSERVER and not blocked:
+            observer_note = OBSERVER_MANUAL if s.vision.mode == VisionMode.MANUAL else self._observer_reason(
+                fresh=True)
         return VisionStatusView(
             mode=s.vision.mode, state=state.value,
             app_title=target.title if target is not None and watching else "",
             blocked=blocked, local=local, note=" ".join(notes),
             scope=s.vision.scope, commentary=s.vision.commentary, skipped=skipped,
+            observer_note=observer_note,
         )
 
     def exclude_windows(self) -> None:
@@ -999,6 +1053,11 @@ class VisionIntegration(QObject):
         self._user_away = False
         self._sync_pace(self._read_settings())
 
+    def _on_voice(self, _event: VoiceTranscript) -> None:
+        """The user talks to her (hands-free: no keyboard, no mouse): they are here."""
+        self._voice_at = self._clock.monotonic()
+        self._sync_away()
+
     def _on_load(self, event: SystemLoadChanged) -> None:
         self._high_load = bool(event.high or event.on_battery_saver)
         self._service.high_load = self._high_load and self._read_settings().vision.adapt_to_load
@@ -1059,9 +1118,37 @@ class VisionIntegration(QObject):
     def _sync_pace(self, s: Settings) -> None:
         """Any window in AUTO mode: pace like GAME mode, and no frames while the user
         is away.  The "allowed" scope keeps its fixed pace."""
-        paced = s.vision.scope == SCOPE_FOREGROUND and s.vision.mode == VisionMode.AUTO
-        self._service.paced = paced
-        self._service.away = paced and self._user_away
+        self._service.paced = s.vision.scope == SCOPE_FOREGROUND and s.vision.mode == VisionMode.AUTO
+        self._sync_away()
+
+    def _sync_away(self) -> None:
+        """Away: idle input and no voice lately (re-checked every tick: the voice expires)."""
+        voice = self._voice_at
+        talking = voice is not None and self._clock.monotonic() - voice <= VOICE_PRESENCE_SECONDS
+        self._service.away = self._service.paced and self._user_away and not talking
+
+    def _sync_muted(self, s: Settings) -> None:
+        """As an observer who could not say anything about them, take no automatic frames."""
+        self._service.muted = (s.vision.commentary == COMMENTARY_OBSERVER
+                               and s.vision.mode in (VisionMode.AUTO, VisionMode.GAME)
+                               and bool(self._observer_reason()))
+
+    def _observer_reason(self, *, fresh: bool = False) -> str:
+        """Why the observer cannot ask the model now ("" if it can), checked at most every
+        :data:`OBSERVER_CHECK_SECONDS` (it reads the budget) unless *fresh*."""
+        if self._observer_ai is None:
+            return ""
+        now = self._clock.monotonic()
+        checked = self._observer_checked
+        if not fresh and checked is not None and now - checked[0] < OBSERVER_CHECK_SECONDS:
+            return checked[1]
+        try:
+            reason = str(self._observer_ai() or "")
+        except Exception:
+            log.exception("checking whether the observer can speak failed")
+            reason = ""
+        self._observer_checked = (now, reason)
+        return reason
 
     def _blocker(self, s: Settings) -> str:
         """Why vision cannot run with these settings and permissions ("" = it can, or it is off)."""
@@ -1110,6 +1197,8 @@ class VisionIntegration(QObject):
             return
         self.exclude_windows()
         self._expire_manual()
+        self._sync_away()
+        self._sync_muted(self._read_settings())
         self._service.tick()
 
     def _request_now(self) -> bool:

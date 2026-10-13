@@ -152,7 +152,7 @@
       {"id": "vision.look.terminal.04", "text": "Бачу термінал у програмі «{app}». Чекаю, що він відповість.", "tone": "warm", "state": "curious", "portrait": "question", "requires": ["app"]}
     ],
     "vision.look.document": [
-      {"id": "vision.look.document.01", "text": "Бачу документ. Текст не читаю — просто тримаю за тебе кулачки.", "tone": "caring", "state": "shy", "portrait": "shy"},
+      {"id": "vision.look.document.01", "text": "Бачу документ. Подробиць не переказую — просто тримаю за тебе кулачки.", "tone": "caring", "state": "shy", "portrait": "shy"},
       {"id": "vision.look.document.02", "text": "Робота з текстом! Слово за словом — і буде готово.", "tone": "warm", "state": "happy", "portrait": "smile"},
       {"id": "vision.look.document.03", "text": "Документ у програмі «{app}». Пишемо щось важливе?", "tone": "playful", "state": "curious", "portrait": "question", "requires": ["app"]},
       {"id": "vision.look.document.04", "text": "Схоже на документ. Я поруч, якщо захочеш перепочити.", "tone": "caring", "state": "talk", "portrait": "calm"}
@@ -176,13 +176,13 @@
       {"id": "vision.look.video.04", "text": "Бачу відео. Не коментую — дивлюся уважно!", "tone": "caring", "state": "curious", "portrait": "calm"}
     ],
     "vision.look.chat": [
-      {"id": "vision.look.chat.01", "text": "Бачу листування. Що там — мене не стосується, я не читаю.", "tone": "caring", "state": "shy", "portrait": "shy"},
-      {"id": "vision.look.chat.02", "text": "Схоже на чат. Відвертаюся, щоб не підглядати!", "tone": "playful", "state": "shy", "portrait": "shy"},
-      {"id": "vision.look.chat.03", "text": "Це чиясь розмова — її я не розглядаю.", "tone": "warm", "state": "talk", "portrait": "calm"}
+      {"id": "vision.look.chat.01", "text": "Бачу листування. Що там — не переказую й не запам'ятовую.", "tone": "caring", "state": "shy", "portrait": "shy"},
+      {"id": "vision.look.chat.02", "text": "Схоже на чат. Це особисте — його я не переказую.", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "vision.look.chat.03", "text": "Це чиясь розмова — її подробиць я не переказую.", "tone": "warm", "state": "talk", "portrait": "calm"}
     ],
     "vision.look.email": [
-      {"id": "vision.look.email.01", "text": "Бачу пошту. Листи — справа особиста, я їх не читаю.", "tone": "caring", "state": "shy", "portrait": "shy"},
-      {"id": "vision.look.email.02", "text": "Схоже на пошту. Відвертаюся — це не для моїх очей.", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "vision.look.email.01", "text": "Бачу пошту. Листи — справа особиста: я їх не переказую й не запам'ятовую.", "tone": "caring", "state": "shy", "portrait": "shy"},
+      {"id": "vision.look.email.02", "text": "Схоже на пошту. Це не для моїх коментарів — нічого звідти не переказую.", "tone": "playful", "state": "shy", "portrait": "shy"},
       {"id": "vision.look.email.03", "text": "Пошта! Хай там будуть лише приємні листи.", "tone": "warm", "state": "happy", "portrait": "smile"}
     ],
     "vision.look.design": [

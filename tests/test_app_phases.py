@@ -21,6 +21,7 @@ from chibi.app import (
     CHAT_IN_FLIGHT_SECONDS,
     LOOKING_REPLY,
     MIC_PAUSE_PUSH_HINT,
+    MIC_PAUSE_STATE_KEY,
     MIC_PAUSE_TEXT,
     PENDING_TRANSCRIPT_SECONDS,
     ChibiApp,
@@ -65,6 +66,12 @@ def make_app(qapp, secrets):
 
 def menu_texts(menu):
     return [a.text() for a in menu.actions() if not a.isSeparator()]
+
+
+def allow_microphone(app):
+    """The microphone permission and recognition on (what a transcript needs)."""
+    app.permissions.grant(Permission.MICROPHONE)
+    app._settings.voice.stt_enabled = True
 
 
 def chat(app, text):
@@ -191,11 +198,11 @@ def test_transcripts_need_the_microphone_permission_and_go_to_the_chat(make_app,
     app = make_app()
     app.start()
     sent = []
-    monkeypatch.setattr(app, "send_chat_stream", lambda text, *_a: sent.append(text))
+    monkeypatch.setattr(app, "send_chat_stream", lambda text, *_a, **_k: sent.append(text))
     app.bus.publish(VoiceTranscript(text="Привіт, Міє"))
     pump(50)
     assert sent == []  # no permission (revoked meanwhile): dropped
-    app.permissions.grant(Permission.MICROPHONE)
+    allow_microphone(app)
     app.bus.publish(VoiceTranscript(text="  Привіт, Міє "))
     app.bus.publish(VoiceTranscript(text="   "))
     pump(50)
@@ -205,7 +212,7 @@ def test_transcripts_need_the_microphone_permission_and_go_to_the_chat(make_app,
 def test_transcript_with_the_chat_open_appears_there_and_keeps_the_draft(make_app):
     app = make_app()
     app.start()
-    app.permissions.grant(Permission.MICROPHONE)
+    allow_microphone(app)
     app.show_chat()
     chat_window = app._chat
     chat_window.input.setText("недописане")
@@ -219,7 +226,7 @@ def test_transcript_with_the_chat_open_appears_there_and_keeps_the_draft(make_ap
 def test_transcript_while_the_chat_is_still_answering(make_app, monkeypatch):
     app = make_app()
     app.start()
-    app.permissions.grant(Permission.MICROPHONE)
+    allow_microphone(app)
     app.show_chat()
     lines = []
     monkeypatch.setattr(app._chat, "is_waiting", lambda: True)
@@ -526,10 +533,11 @@ def held_chat(make_app, monkeypatch):
     app = make_app()
     app.start()
     pump(50)  # the greeting is said before the brain is replaced
-    app.permissions.grant(Permission.MICROPHONE)
+    allow_microphone(app)
     chats = []
     monkeypatch.setattr(app._brain, "available", lambda _purpose: True)
-    monkeypatch.setattr(app._brain, "chat", lambda text, _delta, on_done: chats.append((text, on_done)))
+    monkeypatch.setattr(app._brain, "chat",
+                        lambda text, _delta, on_done, **_kw: chats.append((text, on_done)))
     record_streams(app, monkeypatch)
     return app, chats
 
@@ -565,8 +573,8 @@ def test_waiting_voice_request_is_dropped_when_the_microphone_is_revoked(held_ch
 def test_waiting_voice_request_that_waited_too_long_is_dropped(held_chat):
     app, chats = held_chat
     hear(app, "перше", "друге")
-    text, heard_at = app._pending_transcript
-    app._pending_transcript = (text, heard_at - PENDING_TRANSCRIPT_SECONDS - 1)
+    text, heard_at, origin = app._pending_transcript
+    app._pending_transcript = (text, heard_at - PENDING_TRANSCRIPT_SECONDS - 1, origin)
     chats[0][1](ChatReply(text="Ок."))
     pump(50)
     assert len(chats) == 1
@@ -690,3 +698,120 @@ def test_forgetting_what_she_saw_includes_the_observer(make_app, monkeypatch):
     assert calls == ["clear"] * 2
     app.wipe_all()
     assert len(calls) >= 3
+
+
+# -- review fixes ---------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def heard_chat(make_app, monkeypatch):
+    """Like held_chat, recording whether each message may be mined for memories, with
+    the open microphone listening (no voice module needed)."""
+    app = make_app()
+    app.start()
+    pump(50)
+    allow_microphone(app)
+    chats = []
+    monkeypatch.setattr(app._brain, "available", lambda _purpose: True)
+    monkeypatch.setattr(app._brain, "chat", lambda text, _delta, on_done, remember=True:
+                        chats.append((text, on_done, remember)))
+    listening = {"open": True}
+    monkeypatch.setattr(app._voice, "transcript_allowed",
+                        lambda origin: origin == "push" or listening["open"])
+    record_streams(app, monkeypatch)
+    return app, chats, listening
+
+
+def test_what_the_open_microphone_overheard_is_never_mined_for_memories(heard_chat):
+    app, chats, _listening = heard_chat
+    app.bus.publish(VoiceTranscript(text="Моя донька Олена завтра їде до Львова", origin="heard"))
+    pump(50)
+    chats[0][1](ChatReply(text="Ого."))
+    app.bus.publish(VoiceTranscript(text="Мене звати Олег", origin="named"))
+    pump(50)
+    chats[1][1](ChatReply(text="Привіт, Олеже."))
+    app.bus.publish(VoiceTranscript(text="Я люблю каву", origin="push"))
+    pump(50)
+    assert [(text, remember) for text, _done, remember in chats] == [
+        ("Моя донька Олена завтра їде до Львова", False), ("Мене звати Олег", True), ("Я люблю каву", True)]
+
+
+def test_overheard_speech_through_the_open_chat_window_is_not_remembered_either(heard_chat):
+    app, chats, _listening = heard_chat
+    app.show_chat()
+    app.bus.publish(VoiceTranscript(text="мій брат лікар", origin="heard"))
+    pump(100)
+    assert [(text, remember) for text, _done, remember in chats] == [("мій брат лікар", False)]
+    assert app._chat_remember  # typed messages are remembered as before
+
+
+def test_a_waiting_request_from_the_open_microphone_is_dropped_when_it_pauses(heard_chat):
+    app, chats, listening = heard_chat
+    app.bus.publish(VoiceTranscript(text="перше", origin="named"))
+    app.bus.publish(VoiceTranscript(text="а це почула перед паузою", origin="heard"))
+    pump(50)
+    assert app._pending_transcript is not None
+    listening["open"] = False  # "Пауза мікрофона", DND, a call app, push-to-talk only...
+    app._sync_voice_ui()
+    assert app._pending_transcript is None
+    chats[0][1](ChatReply(text="Ок."))
+    pump(50)
+    assert [text for text, _done, _remember in chats] == ["перше"]
+
+
+def test_a_waiting_push_to_talk_request_survives_a_pause(heard_chat):
+    app, chats, listening = heard_chat
+    app.bus.publish(VoiceTranscript(text="перше", origin="push"))
+    app.bus.publish(VoiceTranscript(text="друге", origin="push"))
+    pump(50)
+    listening["open"] = False
+    app._sync_voice_ui()
+    chats[0][1](ChatReply(text="Ок."))
+    pump(50)
+    assert [text for text, _done, _remember in chats] == ["перше", "друге"]
+
+
+def test_talking_to_her_by_voice_counts_as_being_here(make_app):
+    app = make_app()
+    app.start()
+    allow_microphone(app)
+    pump(50)  # the permission change is dispatched first
+    app._set_away(True)
+    assert app._brain_context().user_away
+    app.bus.publish(VoiceTranscript(text="привіт", origin="named"))
+    pump(50)
+    assert not app._brain_context().user_away and not app._initiative_context().user_away
+    app._last_voice_at -= app_module.VOICE_PRESENCE_SECONDS + 1
+    assert app._brain_context().user_away
+
+
+def test_her_remark_the_user_may_answer_goes_with_the_next_message(make_app, monkeypatch):
+    app = make_app()
+    noted = []
+    monkeypatch.setattr(app._brain, "note_unprompted", noted.append)
+    monkeypatch.setattr(app._voice, "route", lambda event, show: None)
+    app._route_speech(SpeechRequested(text="Бачу помилку. Глянемо разом?", source="observer:ai"),
+                      lambda *_a: None)
+    app._route_speech(SpeechRequested(text="Ого!", source="vision.victory"), lambda *_a: None)
+    app._route_speech(SpeechRequested(text="Що?", solicited=True, source="chat"), lambda *_a: None)
+    assert noted == ["Бачу помилку. Глянемо разом?"]
+
+
+def test_what_she_saw_stays_out_of_an_answer_a_cloud_voice_would_read(make_app, monkeypatch):
+    app = make_app()
+    monkeypatch.setattr(app._vision, "latest_observation", lambda: "code/error_on_screen: помилка")
+    monkeypatch.setattr(app._voice, "screen_content_may_be_voiced", lambda: False)
+    assert app._brain_context().observation is None
+    monkeypatch.setattr(app._voice, "screen_content_may_be_voiced", lambda: True)
+    assert app._brain_context().observation == "code/error_on_screen: помилка"
+
+
+def test_the_microphone_pause_survives_a_restart(make_app):
+    app = make_app()
+    app._state.set(MIC_PAUSE_STATE_KEY, True)  # paused in the previous session
+    app.start()
+    assert app._voice.open_mic_paused
+    app._toggle_mic_pause()
+    assert not app._voice.open_mic_paused and app._state.get(MIC_PAUSE_STATE_KEY) is None
+    app._toggle_mic_pause()
+    assert app._voice.open_mic_paused and app._state.get(MIC_PAUSE_STATE_KEY) is True

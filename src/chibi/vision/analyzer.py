@@ -24,7 +24,8 @@ Why it is built this way:
   is reported once as "Ця модель не бачить зображень" with a long back-off;
   a server that is not running is *not* cached as "no vision".
 * **Errors become** :class:`AnalyzerError` with a back-off the service honours:
-  spent budget -> 1 h (``budget=True``), offline / missing permission or key ->
+  spent daily budget -> 1 h, a full hour (the hourly cap or vision's share of
+  it) -> 10 min (both ``budget=True``), offline / missing permission or key ->
   5 min, anything else -> 1 min.  Messages never contain request content.
 
 Nothing here logs the image, the prompt or the model's answer.
@@ -68,6 +69,8 @@ MAX_TOKENS = 300
 EXTRA_WAIT_SECONDS = 5.0
 #: Back-offs handed to the vision service (seconds).
 BUDGET_RETRY = 3600.0
+#: The rolling hour frees up bit by bit: look again sooner than after the daily limit.
+HOURLY_BUDGET_RETRY = 600.0
 OFFLINE_RETRY = 300.0
 DEFAULT_RETRY = 60.0
 NO_VISION_RETRY = 3600.0
@@ -83,6 +86,7 @@ TIMEOUT_USER_MESSAGE = "Модель не встигла роздивитися 
 CANCELLED_USER_MESSAGE = "Аналіз кадру скасовано."
 FAILED_USER_MESSAGE = "Аналіз кадру не вдався."
 BUDGET_USER_MESSAGE = "Ліміт AI на сьогодні вичерпано — на екран подивлюся пізніше."
+HOURLY_BUDGET_USER_MESSAGE = "Ліміт запитів до AI на цю годину вичерпано — на екран подивлюся трохи згодом."
 
 Post = Callable[[Callable[[], None]], None]
 
@@ -126,6 +130,9 @@ def to_analyzer_error(exc: BaseException) -> AnalyzerError:
         return exc
     reason = getattr(exc, "user_message", "")
     reason = reason.strip().rstrip(".") if isinstance(reason, str) else ""
+    if isinstance(exc, BudgetExceededError) and getattr(exc, "hourly", False):
+        return AnalyzerError("AI hourly budget used up", user_message=HOURLY_BUDGET_USER_MESSAGE,
+                             retry_after=HOURLY_BUDGET_RETRY, budget=True)
     if isinstance(exc, BudgetExceededError) or (isinstance(exc, AIOfflineError) and reason == REASON_LIMIT):
         return AnalyzerError("AI budget exhausted", user_message=BUDGET_USER_MESSAGE,
                              retry_after=BUDGET_RETRY, budget=True)

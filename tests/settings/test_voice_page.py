@@ -254,7 +254,7 @@ def test_privacy_note_and_how_she_listens(make_page):
     assert "Як слухати" in shown and "експериментально" not in shown
     assert [b.text() for b in page.listen_buttons.values()] == [
         "Клавіша або кнопка мікрофона", "Постійно, коли звертаюся на ім'я (рекомендовано)",
-        "Постійно — усе, що чую, для неї"]
+        "Постійно — усе, що вона чує, для неї"]
     assert all(isinstance(b, QRadioButton) for b in page.listen_buttons.values())
     assert page.listen_buttons["push"].isChecked()
     assert any("«Міє, котра година?»" in text for text in shown)
@@ -703,3 +703,15 @@ def test_keyboard_user_keeps_focus_on_the_model_row(vf, make_page):
     vf.finish_download(True)
     assert QApplication.focusWidget() is row.remove_button
     assert row.state_label.property("state") == "on"
+
+
+
+def test_open_microphone_confirmations_promise_only_what_the_app_does():
+    for text in (voice_page.OPEN_MIC_CONFIRM_NAME, voice_page.OPEN_MIC_CONFIRM_OPEN):
+        # Calls pause the microphone only while a call app is in front: say so.
+        assert "під час дзвінків" not in text
+        assert "на передньому плані програма для дзвінків" in text and "у фоні" in text
+        assert "після перезапуску" in text  # the pause is saved
+    assert "поки вона відповідає" in voice_page.OPEN_MIC_CONFIRM_NAME  # the pending answer, too
+    assert "не запам'ятовує" in voice_page.OPEN_MIC_CONFIRM_OPEN
+    assert "запам'ятовує лише" in voice_page.OPEN_MIC_CONFIRM_NAME

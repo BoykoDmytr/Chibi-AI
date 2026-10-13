@@ -78,6 +78,9 @@ class GenerationRequest:
     effort: str | None = None
     #: Model for this request only (e.g. a cheaper one for screen vision); None = settings.
     model: str | None = None
+    #: The request carries what she saw on the screen (a description, a frame): it runs
+    #: only on the provider it was checked for, and a cloud one only with cloud vision.
+    screen_data: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,11 +143,13 @@ class ProviderRefusalError(ProviderError):
 
 
 class BudgetExceededError(Exception):
-    """A request/day, request/hour or cost/day limit would be exceeded."""
+    """A request/day, request/hour or cost/day limit would be exceeded.
+    ``hourly``: only the rolling hour is full (it frees up within the hour)."""
 
-    def __init__(self, message: str, *, user_message: str = "") -> None:
+    def __init__(self, message: str, *, user_message: str = "", hourly: bool = False) -> None:
         super().__init__(message)
         self.user_message = user_message or message
+        self.hourly = hourly
 
 
 class CancelledError(Exception):

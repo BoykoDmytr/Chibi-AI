@@ -267,7 +267,10 @@ def describe_scope(view: VisionStatusView) -> str:
     else:
         text = "Бачить лише дозволені ігри й програми зі списків нижче."
     if getattr(view, "commentary", "events") == "observer":
-        text += " Коментує як спостерігач: сама вирішує, коли є що сказати."
+        # Why she says nothing herself now (manual mode, AI off for her own lines,
+        # offline, the limit) - never promise comments that cannot come.
+        note = getattr(view, "observer_note", "")
+        text += f" {note}" if note else " Коментує як спостерігач: сама вирішує, коли є що сказати."
     else:
         text += " Коментує лише помітні події в іграх."
     return text

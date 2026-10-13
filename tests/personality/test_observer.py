@@ -55,6 +55,7 @@ from chibi.personality.observer import (
     MIN_DECISION_SPACING_SECONDS,
     RESULT_MAX_AGE_SECONDS,
     SILENCE_GAP_SECONDS,
+    VOICE_PRESENCE_SECONDS,
     Observer,
     comment_cooldown,
     decision_cap,
@@ -436,19 +437,28 @@ def test_a_new_scene_or_vision_interest_is_worth_asking(make, clock):
     assert h.asks == 3
 
 
-def test_unconfirmed_or_unsure_events_are_logged_as_other(make, clock):
+def test_unconfirmed_deaths_and_victories_are_neither_logged_nor_asked_about(make, clock):
     h = make()
     h.settings.gaming.reaction_frequency = 100
-    h.see(scene="gameplay", event="player_death", description="персонаж упав", app="Гра", confirmed=False)
-    call = h.brain.calls[-1]
-    assert call.moments[-1].event == "other"
-    h.brain.silent()
-    clock.advance(10)
+    # Frame one: vision still wants its confirmation frame.
+    h.see(scene="death_screen", event="player_death", description="На екрані напис YOU DIED", app="Гра",
+          confirmed=False)
+    assert h.asks == 0 and h.observer.moments == 0  # never "Ой, тебе вбили!" off one frame
+    h.see(scene="death_screen", event="none", description="На екрані напис YOU DIED", app="Гра")
+    h.see(scene="gameplay", event="victory", description="салют", app="Гра", confirmed=True, confidence=0.3)
+    assert h.asks == 0 and h.observer.moments == 0
+    clock.advance(3)
+    h.see(scene="death_screen", event="player_death", description="На екрані напис YOU DIED", app="Гра",
+          confirmed=True)
+    assert h.asks == 1 and h.brain.calls[-1].moments[-1].event == "player_death"
+    assert h.observer.decisions_last_hour() == 1  # one death, one decision
+
+
+def test_unsure_events_are_logged_as_other(make, clock):
+    h = make()
+    h.settings.gaming.reaction_frequency = 100
     h.see(scene="gameplay", event="loot", description="скриня", app="Гра", confidence=0.2)
-    assert h.observer.moments == 2 and h.asks == 1  # "other" again, nothing new
-    clock.advance(10)
-    h.see(scene="gameplay", event="player_death", description="персонаж упав", app="Гра", confirmed=True)
-    assert h.asks == 2 and h.brain.calls[-1].moments[-1].event == "player_death"
+    assert h.brain.calls[-1].moments[-1].event == "other"
 
 
 # -- the rolling log -------------------------------------------------------------------------------
@@ -892,3 +902,16 @@ def test_with_the_real_brain_she_speaks_and_silence_stays_silent(qapp, bus, cloc
     finally:
         observer.close()
         service.shutdown()
+
+
+def test_talking_to_her_hands_free_counts_as_being_here(make, clock):
+    h = make()
+    h.publish(UserIdle(idle_seconds=300))  # no keyboard or mouse: the monitor says idle
+    h.publish(VoiceTranscript(text="слухай, а що це за помилка?", origin="heard"))
+    clock.advance(120)  # past the chat pause after talking
+    h.see(description="червоний текст помилки в терміналі")
+    assert h.asks == 1
+    h.brain.silent()
+    clock.advance(VOICE_PRESENCE_SECONDS)  # silent for a long while: away again
+    h.see(scene="terminal", description="інша помилка", app="Термінал")
+    assert h.asks == 1

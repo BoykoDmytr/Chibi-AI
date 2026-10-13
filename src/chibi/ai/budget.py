@@ -60,6 +60,10 @@ FREE_PROVIDERS = frozenset({"ollama", "fake"})
 
 #: CHAT may go this far over the hourly request cap: the user is waiting for her.
 CHAT_HOURLY_OVERDRAFT = 0.2
+#: Screen vision may use at most this share of the hourly request cap (counting its own
+#: requests): a window that changes all the time (a game, a video) would otherwise use
+#: up the whole hour in half an hour and leave nothing for the chat and her own lines.
+VISION_HOURLY_SHARE = 0.5
 
 _HOUR = 3600.0
 
@@ -103,8 +107,8 @@ class UsageLedger:
     def __init__(self, db: Database, clock: Clock) -> None:
         self._db = db
         self._clock = clock
-        #: Monotonic timestamps of requests recorded in the last hour (this session).
-        self._recent: deque[float] = deque()
+        #: (monotonic time, purpose) of requests recorded in the last hour (this session).
+        self._recent: deque[tuple[float, Purpose]] = deque()
 
     def _day(self) -> str:
         # Local calendar day: "today" resets at the user's midnight, not UTC's.
@@ -127,7 +131,7 @@ class UsageLedger:
                 "cost_usd = cost_usd + excluded.cost_usd",
                 (self._day(), provider, model[:120], Purpose(purpose).value, tokens_in, tokens_out, cost),
             )
-        self._recent.append(self._clock.monotonic())
+        self._recent.append((self._clock.monotonic(), Purpose(purpose)))
         self._prune()
 
     def today(self) -> UsageSummary:
@@ -149,14 +153,17 @@ class UsageLedger:
                 known = False
         return UsageSummary(requests, input_tokens, output_tokens, round(cost, 6), known)
 
-    def requests_last_hour(self) -> int:
-        """Requests recorded during the last 60 minutes of this session."""
+    def requests_last_hour(self, purpose: Purpose | None = None) -> int:
+        """Requests recorded during the last 60 minutes of this session (of *purpose* only,
+        when given)."""
         self._prune()
-        return len(self._recent)
+        if purpose is None:
+            return len(self._recent)
+        return sum(1 for _at, kind in self._recent if kind == purpose)
 
     def _prune(self) -> None:
         cutoff = self._clock.monotonic() - _HOUR
-        while self._recent and self._recent[0] <= cutoff:
+        while self._recent and self._recent[0][0] <= cutoff:
             self._recent.popleft()
 
 
@@ -186,6 +193,14 @@ class BudgetGuard:
             raise BudgetExceededError(
                 "hourly request limit reached",
                 user_message="Забагато запитів до AI за останню годину — трохи перепочину.",
+                hourly=True,
+            )
+        if purpose == Purpose.VISION and \
+                self._ledger.requests_last_hour(Purpose.VISION) >= self.vision_hourly_limit(ai):
+            raise BudgetExceededError(
+                "hourly vision share reached",
+                user_message="Бачення екрана вже використало свою частку запитів до AI на цю годину.",
+                hourly=True,
             )
 
     def daily_exhausted(self) -> bool:
@@ -200,3 +215,8 @@ class BudgetGuard:
         if purpose == Purpose.CHAT:
             limit += max(1, round(limit * CHAT_HOURLY_OVERDRAFT))
         return limit
+
+    @staticmethod
+    def vision_hourly_limit(ai: AISettings) -> int:
+        """Screen-vision requests allowed per rolling hour (its share of the hourly cap)."""
+        return max(1, int(ai.max_requests_per_hour * VISION_HOURLY_SHARE))

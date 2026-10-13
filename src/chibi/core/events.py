@@ -375,9 +375,16 @@ class VoiceStateChanged(Event):
 
 @dataclass(frozen=True, slots=True)
 class VoiceTranscript(Event):
-    """What the user said to her, recognised locally.  Never logged."""
+    """What the user said to her, recognised locally.  Never logged.
+
+    ``origin`` says how it reached her: ``"push"`` (push-to-talk), ``"named"``
+    (the open microphone, addressed by her name) or ``"heard"`` (the open
+    microphone without her name: "open" mode, the conversation window) - that
+    may be the TV or someone else in the room, so it is never mined for
+    long-term memories."""
 
     text: str
+    origin: str = "push"
 
     @property
     def priority(self) -> Priority:

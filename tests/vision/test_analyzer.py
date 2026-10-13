@@ -39,6 +39,8 @@ from chibi.vision.analysis import SYSTEM_PROMPT, AnalysisError, Observation, use
 from chibi.vision.analyzer import (
     BUDGET_RETRY,
     DEFAULT_RETRY,
+    HOURLY_BUDGET_RETRY,
+    HOURLY_BUDGET_USER_MESSAGE,
     MAX_TOKENS,
     NO_VISION_MESSAGE,
     OFFLINE_RETRY,
@@ -189,6 +191,7 @@ def test_unusable_answer_raises_analysis_error():
 
 @pytest.mark.parametrize(("error", "retry", "budget"), [
     (BudgetExceededError("day limit", user_message="Ліміт"), BUDGET_RETRY, True),
+    (BudgetExceededError("hour limit", user_message="Ліміт", hourly=True), HOURLY_BUDGET_RETRY, True),
     (AIOfflineError("offline", user_message=REASON_LIMIT), BUDGET_RETRY, True),
     (AIOfflineError("offline", user_message=REASON_PERMISSION), OFFLINE_RETRY, False),
     (AIOfflineError("offline", user_message="AI вимкнено"), OFFLINE_RETRY, False),
@@ -424,3 +427,9 @@ def test_end_to_end_through_ai_service_and_qt_invoker(qapp, db, clock, bus, monk
     finally:
         service.shutdown()
         invoker.close()
+
+
+def test_a_full_hour_is_not_called_a_spent_day():
+    mapped = to_analyzer_error(BudgetExceededError("hour", user_message="x", hourly=True))
+    assert mapped.user_message == HOURLY_BUDGET_USER_MESSAGE and "сьогодні" not in mapped.user_message
+    assert mapped.retry_after == HOURLY_BUDGET_RETRY < BUDGET_RETRY

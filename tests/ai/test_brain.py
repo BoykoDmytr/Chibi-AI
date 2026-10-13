@@ -914,3 +914,103 @@ def test_similarity_of_short_texts():
     assert similarity("у терміналі червона помилка", "у терміналі червону помилку") == 1.0
     assert similarity("пише код", "дивиться відео") == 0.0
     assert similarity("", "") == 1.0 and similarity("", "текст") == 0.0
+
+
+# -- review fixes -----------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("reply", [
+    "<<state=happy;action=none>>\nМія: Привіт, радий тебе чути! Сьогодні чудовий день для прогулянки. "
+    "Ходімо?",
+    "<<state=happy;action=none>>\nМія — Привіт! Ходімо?",
+    "<<state=talk;action=none>>\nЦе <b>дуже</b> важливо для тебе.<br>Подумай.",
+    "<<state=talk;action=none>>\n<b>Мія:</b> Привіт <3 і <i>ще</i> <span class=\"x\">дещо</span>.",
+    "<<state=talk;action=none>>\nМіяу! Мама каже <ні.",
+    "<<state=talk;action=none>>\nМія",
+])
+@pytest.mark.parametrize("size", [1, 2, 3, 5, 200])
+def test_the_streamed_body_is_the_final_answer_text(make, reply, size):
+    # Her voice speaks the streamed sentences: a "Мія:" label or <b> the final text
+    # drops would otherwise be said, and the sentence repeated at the end.
+    h = make(provider=ChunkProvider([reply], size=size, default_reply=None))
+    h.settings.ai.remember_facts = False
+    deltas, final = h.chat("Привіт")
+    assert final is not None
+    assert "".join(deltas).strip() == final.text
+
+
+def test_the_speaker_label_is_held_until_it_can_be_decided():
+    out: list[str] = []
+    stream = ReplyStream(out.append, name="Мія")
+    stream.feed("<<state=happy;action=none>>\nМі")
+    assert out == []
+    stream.feed("я: При")
+    assert "".join(out) == "При"
+    stream.feed("віт <b")
+    assert "".join(out) == "Привіт "  # "<b" may become a tag
+    stream.feed(">так</b>!")
+    stream.finish()
+    assert "".join(out) == "Привіт так!"
+
+
+def test_overheard_speech_is_never_mined_for_memories(make):
+    h = make(["<<state=happy;action=none>>\nОго.", "<<state=happy;action=none>>\nКлас.",
+              memories_json(("fact", "Брат користувача лікар"))])
+    out: list = []
+    h.brain.chat("Я живу в Одесі, мій брат лікар", lambda _d: None, out.append, remember=False)
+    assert pump(h.qapp, lambda: bool(out))
+    h.settle()
+    assert [r.purpose for r in h.submitted] == [Purpose.CHAT]  # no extraction request, no cost
+    h.chat("Мій брат лікар")  # said to her: remembered as before
+    h.settle()
+    assert [r.purpose for r in h.submitted] == [Purpose.CHAT, Purpose.CHAT, Purpose.MEMORY]
+
+
+def test_requests_that_carry_what_she_saw_are_marked(make):
+    from chibi.ai.brain import WatchContext
+
+    h = make(["<<state=talk;action=none>>\nТак.", "<<state=talk;action=none>>\nТак.",
+              "<<state=talk;action=none>>\nО!", "<<state=talk;action=none>>\nОго!"])
+    h.settings.ai.remember_facts = False
+    h.chat("як справи")
+    h.context = BrainContext(observation="code/error_on_screen: червоний текст")
+    h.chat("що там у мене")
+    consider(h, moments_for_test("помилка"), WatchContext())
+    h.phrase(("vision.error_on_screen",), {"app": "VS Code"})
+    assert [r.screen_data for r in h.submitted] == [False, True, True, True]
+
+
+def test_her_unprompted_line_goes_with_the_next_message(make, clock):
+    h = make(["<<state=happy;action=none>>\nПривіт!", "<<state=happy;action=none>>\nТоді дивимось!",
+              "<<state=talk;action=none>>\nОк.", "<<state=talk;action=none>>\nОк."])
+    h.settings.ai.remember_facts = False
+    h.chat("привіт")
+    h.brain.note_unprompted("Бачу помилку. Глянемо разом?")
+    h.chat("Так, давай")
+    turn = h.submitted[1].turns[-1].text
+    assert "<example>Бачу помилку. Глянемо разом?</example>" in turn
+    assert turn.index("Глянемо разом") < turn.index("<user>Так, давай</user>")
+    h.chat("а що далі")  # once only - it is in the conversation's history now
+    third = h.submitted[2]
+    assert "<example>" not in third.turns[-1].text
+    history = [t.text for t in third.turns[:-1]]
+    assert any("Глянемо разом" in text for text in history)
+    assert history.index(next(t for t in history if "Глянемо разом" in t)) < \
+        history.index(next(t for t in history if "Так, давай" in t))
+    h.brain.note_unprompted("Чим займаєшся?")
+    clock.advance(600)  # too long ago: no longer context
+    h.chat("привіт ще раз")
+    assert "Чим займаєшся" not in h.submitted[3].turns[-1].text
+
+
+def test_the_observer_may_use_words_from_the_persona_and_the_nickname(make):
+    from chibi.ai.brain import OUTCOME_SPOKE
+
+    h = make(["<<state=laugh;action=none>>\nЦе тобі не Dark Souls, але біль той самий!",
+              "<<state=talk;action=none>>\nNeo, бачу помилку. Допомогти?"])
+    h.settings.personality.persona = "Дотепна геймерка, обожнює RPG і Dark Souls."
+    h.settings.character.user_nickname = "Neo"
+    decision, _ = consider(h, moments_for_test("гравець знову загинув", scene="gameplay"))
+    assert decision.outcome == OUTCOME_SPOKE
+    decision, _ = consider(h, moments_for_test("червоний текст помилки"))
+    assert decision.outcome == OUTCOME_SPOKE

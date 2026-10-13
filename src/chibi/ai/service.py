@@ -18,7 +18,13 @@ Threading model:
 
 Privacy: ``Permission.CLOUD_AI`` is re-checked on the worker right before
 every attempt; revoking it drops queued cloud requests at once and aborts the
-running one.  Nothing from a request or a reply is logged.
+running one.  A request that carries what she saw on the screen (a frame, or
+``GenerationRequest.screen_data``: a description in an observer decision, a
+chat turn or a line) runs only on the provider that was current when it was
+submitted - its sender checked that one - and goes to a cloud provider only
+while ``Permission.CLOUD_VISION`` is granted and "Лише локальний аналіз" is
+off (re-checked on the worker; revoking cloud vision drops such requests at
+once).  Nothing from a request or a reply is logged.
 
 Resilience: retryable errors are retried twice (1 s, then 3 s; a server's
 ``Retry-After`` is honoured up to 10 s) unless cancelled or already streamed
@@ -161,8 +167,8 @@ class _Job:
     provider: TextProvider | None = None
     #: Delivered instead of CancelledError when the service aborted the job.
     abort_error: Exception | None = None
-    #: A request with images (a screen frame) runs only on the provider that was current
-    #: when it was submitted: its sender checked that one, not one configured later.
+    #: A request with screen data (a frame, a description) runs only on the provider that
+    #: was current when it was submitted: its sender checked that one, not one configured later.
     bound_provider: TextProvider | None = None
 
 
@@ -270,7 +276,7 @@ class AIService(QObject):
             seq=next(self._seq), kind="generate", rank=purpose.rank, request=request,
             on_done=on_done, on_error=on_error, on_delta=on_delta, token=_JobToken(caller_token),
             stream=on_delta is not None and self._settings().ai.stream, cache_key=cache_key,
-            bound_provider=provider if any(t.images for t in request.turns) else None,
+            bound_provider=provider if _screen_data(request) else None,
         )
         self._enqueue(job)
         return caller_token
@@ -459,32 +465,45 @@ class AIService(QObject):
             return self._clock.monotonic() < self._breaker_until
 
     def _on_permission_changed(self, event: PermissionChanged) -> None:
-        if self._closed or event.permission != Permission.CLOUD_AI:
+        if self._closed or event.granted:
+            if not self._closed and event.permission == Permission.CLOUD_AI:
+                self._refresh_status()
             return
-        if not event.granted:
+        if event.permission == Permission.CLOUD_AI:
             self._abort_cloud_jobs()
-        self._refresh_status()
+            self._refresh_status()
+        elif event.permission == Permission.CLOUD_VISION:
+            self._abort_cloud_jobs(screen_only=True)
 
-    def _abort_cloud_jobs(self) -> None:
-        """CLOUD_AI was revoked: nothing more may leave the PC."""
+    def _abort_cloud_jobs(self, *, screen_only: bool = False) -> None:
+        """CLOUD_AI was revoked: nothing more may leave the PC (*screen_only*: CLOUD_VISION
+        was revoked - nothing taken from the screen may)."""
         dropped: list[_Job] = []
+
+        def affected(job: _Job) -> bool:
+            return (job.kind == "generate" and job.provider is None
+                    and (not screen_only or (job.request is not None and _screen_data(job.request))))
+
         with self._cond:
             provider = self._provider
             if provider is None or provider.is_local:
                 return
             keep: list[_Job] = []
             for job in self._queue:
-                (dropped if job.kind == "generate" and job.provider is None else keep).append(job)
+                (dropped if affected(job) else keep).append(job)
             self._queue[:] = keep
             running = self._running
-            if running is not None and running.kind == "generate" and running.provider is None:
-                running.abort_error = AIOfflineError("cloud permission revoked",
-                                                     user_message=REASON_PERMISSION)
+            if running is not None and affected(running):
+                running.abort_error = (CancelledError("cloud vision revoked") if screen_only else
+                                       AIOfflineError("cloud permission revoked",
+                                                      user_message=REASON_PERMISSION))
                 running.token.cancel()
         if dropped:
-            log.info("cloud AI permission revoked: dropped %d queued request(s)", len(dropped))
+            log.info("cloud %s permission revoked: dropped %d queued request(s)",
+                     "vision" if screen_only else "AI", len(dropped))
         for job in dropped:
-            error = AIOfflineError("cloud permission revoked", user_message=REASON_PERMISSION)
+            error: Exception = (CancelledError("cloud vision revoked") if screen_only else
+                                AIOfflineError("cloud permission revoked", user_message=REASON_PERMISSION))
             self._post(lambda job=job, error=error: _call(job.on_error, error))
 
     # -- queue ----------------------------------------------------------------------------
@@ -575,7 +594,7 @@ class AIService(QObject):
             self._fail(job, AIOfflineError("AI off", user_message=reason))
             return
         if job.bound_provider is not None and provider is not job.bound_provider:
-            log.info("AI provider changed while an image request waited; it was dropped")
+            log.info("AI provider changed while a request with screen data waited; it was dropped")
             self._fail(job, CancelledError("provider changed"))
             return
         attempt = 0
@@ -586,6 +605,10 @@ class AIService(QObject):
             if not provider.is_local and not self._permissions.is_granted(Permission.CLOUD_AI):
                 log.info("cloud AI permission missing: request dropped before sending")
                 self._fail(job, AIOfflineError("cloud permission missing", user_message=REASON_PERMISSION))
+                return
+            if not provider.is_local and _screen_data(job.request) and not self._screen_may_leave():
+                log.info("screen data may not go to the cloud: request dropped before sending")
+                self._fail(job, CancelledError("cloud vision not allowed"))
                 return
             if not job.bypass_breaker and self._breaker_open():
                 self._fail(job, AIOfflineError("circuit open", user_message=REASON_DOWN))
@@ -632,6 +655,16 @@ class AIService(QObject):
                      time.monotonic() - started, result.usage.input_tokens, result.usage.output_tokens)
             self._succeed(job, result)
             return
+
+    def _screen_may_leave(self) -> bool:
+        """Worker thread: what she saw may go to a cloud provider (``CLOUD_VISION`` and not
+        "Лише локальний аналіз").  Fails closed."""
+        if not self._permissions.is_granted(Permission.CLOUD_VISION):
+            return False
+        try:
+            return not self._settings().vision.local_only
+        except Exception:
+            return False
 
     @staticmethod
     def _retry_delay(exc: ProviderError, attempt: int) -> float | None:
@@ -801,6 +834,11 @@ def _close_own(job: _Job) -> None:
     """Close a job's throwaway provider (model listing) when the job never runs."""
     if job.provider is not None:
         _close(job.provider)
+
+
+def _screen_data(request: GenerationRequest) -> bool:
+    """The request carries something taken from the screen (a frame or a description)."""
+    return request.screen_data or any(t.images for t in request.turns)
 
 
 def _purpose_name(job: _Job) -> str:

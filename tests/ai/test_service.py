@@ -833,3 +833,69 @@ def test_a_queued_screen_frame_never_runs_on_a_provider_configured_after_it(make
     h.wait(frame, text_line)
     assert isinstance(frame.error, CancelledError)
     assert [r.turns[0].text for r in other.requests] == ["без картинок"]  # text requests carry on
+
+
+# -- what she saw on the screen (review fix: screen data bound to the provider that was checked) --------
+
+
+def test_a_queued_screen_description_never_reaches_a_provider_configured_after_it(make):
+    # The observer checked a local provider; the user switches to a cloud one while
+    # the decision waits behind a chat answer: it must not go there.
+    gate = threading.Event()
+    local = FakeProvider(["chat"], gate=gate)
+    h = make(local)
+    h.permissions.grant(Permission.CLOUD_AI)
+    h.submit(Purpose.CHAT, "running")
+    wait_started(local)
+    decision, _ = h.submit(Purpose.INITIATIVE, "<observation>лист до лікаря про діагноз</observation>",
+                           screen_data=True)
+    text_line, _ = h.submit(Purpose.REACTION, "без екрана")
+    cloud = FakeProvider(["ok"] * 3, local=False)
+    h.provider = cloud
+    h.settings.ai.provider = "anthropic"
+    h.secrets.set("anthropic_api_key", "sk-ant")
+    h.service.reconfigure()
+    gate.set()
+    h.wait(decision, text_line)
+    assert isinstance(decision.error, CancelledError)
+    assert [r.turns[0].text for r in cloud.requests] == ["без екрана"]
+
+
+def test_screen_data_goes_to_a_cloud_provider_only_with_cloud_vision(make):
+    cloud = FakeProvider(["ok"] * 4, local=False)
+    h = make(cloud, ai_provider="anthropic", cloud=True, key="sk-ant")
+    out = h.run(Purpose.INITIATIVE, "<observation>помилка</observation>", screen_data=True)
+    assert isinstance(out.error, CancelledError) and cloud.requests == []
+    h.permissions.grant(Permission.SCREEN_CAPTURE)
+    h.permissions.grant(Permission.CLOUD_VISION)
+    h.settings.vision.local_only = True
+    out = h.run(Purpose.INITIATIVE, "<observation>помилка</observation>", screen_data=True)
+    assert isinstance(out.error, CancelledError) and cloud.requests == []
+    h.settings.vision.local_only = False
+    seen = "<observation>помилка</observation>"
+    assert h.run(Purpose.INITIATIVE, seen, screen_data=True).result.text == "ok"
+    assert h.run(Purpose.REACTION, "без екрана").result.text == "ok"  # other requests: CLOUD_AI only
+
+
+def test_revoking_cloud_vision_drops_queued_screen_data(make):
+    gate = threading.Event()
+    cloud = FakeProvider(["chat", "ok", "ok"], gate=gate, local=False)
+    h = make(cloud, ai_provider="anthropic", cloud=True, key="sk-ant")
+    h.permissions.grant(Permission.SCREEN_CAPTURE)
+    h.permissions.grant(Permission.CLOUD_VISION)
+    h.submit(Purpose.CHAT, "running")
+    wait_started(cloud)
+    decision, _ = h.submit(Purpose.INITIATIVE, "<observation>помилка</observation>", screen_data=True)
+    text_line, _ = h.submit(Purpose.REACTION, "без екрана")
+    h.permissions.revoke(Permission.CLOUD_VISION)
+    h.dispatch()
+    gate.set()
+    h.wait(decision, text_line)
+    assert isinstance(decision.error, CancelledError)
+    assert [r.turns[0].text for r in cloud.requests] == ["running", "без екрана"]
+
+
+def test_screen_data_runs_on_a_local_provider_without_cloud_vision(make):
+    h = make(FakeProvider(["ok"]))
+    seen = "<observation>помилка</observation>"
+    assert h.run(Purpose.INITIATIVE, seen, screen_data=True).result.text == "ok"

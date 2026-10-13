@@ -526,6 +526,15 @@ def test_describe_scope():
     assert "будь-яке вікно" in text and "спостерігач" in text
 
 
+def test_describe_scope_says_why_the_observer_is_silent():
+    from chibi.vision.integration import OBSERVER_MANUAL, OBSERVER_NO_AI_LINES
+
+    for note in (OBSERVER_NO_AI_LINES, OBSERVER_MANUAL):
+        text = describe_scope(VisionStatusView("auto", "idle", "", "", True, commentary="observer",
+                                               observer_note=note))
+        assert note in text and "сама вирішує" not in text  # no promise of comments that cannot come
+
+
 def test_status_card_shows_what_she_may_see(make_page, vfacade):
     vfacade.vision_view = VisionStatusView("auto", "idle", "", "", True, scope="foreground",
                                            skipped="вікно на передньому плані приватне")

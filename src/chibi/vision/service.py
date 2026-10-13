@@ -143,6 +143,9 @@ class VisionService:
         #: frames.  A request from the user still works - they are obviously back.
         #: (A locked screen needs no flag: there is no window in front to resolve.)
         self.away = False
+        #: Nobody would use an automatic frame now (an observer who cannot speak): none
+        #: are taken.  A request from the user still works.
+        self.muted = False
         self._state = VisionState.OFF
         self._gen = 0
         self._busy = False
@@ -231,12 +234,12 @@ class VisionService:
         now = self._clock()
         if self._state == VisionState.PAUSED and now < self._backoff_until:
             return
-        if self.away and self.mode != VisionMode.MANUAL:
-            # Nobody to watch: no frames (and no cost) until the user is back.
+        if (self.away or self.muted) and self.mode != VisionMode.MANUAL:
+            # Nobody to watch (or nothing to do with it): no frames, and no cost.
             self._target = None
             self._confirm_due = None
             if self._state in (VisionState.WATCHING, VisionState.PAUSED):
-                self._set_state(VisionState.IDLE, "user away")
+                self._set_state(VisionState.IDLE, "user away" if self.away else "not needed")
             return
         if self.mode == VisionMode.MANUAL:
             # Only the confirmation frame of a manual request is ever automatic.

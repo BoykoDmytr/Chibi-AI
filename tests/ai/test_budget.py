@@ -199,3 +199,37 @@ def test_guard_reads_settings_live(db, clock):
         guard.check(Purpose.CHAT)
     ai.max_requests_per_day = 5
     guard.check(Purpose.CHAT)
+
+
+def test_screen_vision_never_uses_more_than_its_share_of_the_hour(db, clock):
+    # Defaults: 60 requests an hour; a game in front changes every frame (one every 30 s).
+    guard, ledger = guard_for(db, clock, max_requests_per_hour=60, max_requests_per_day=1000)
+    frames = 0
+    for _ in range(120):
+        try:
+            guard.check(Purpose.VISION)
+        except BudgetExceededError as exc:
+            assert exc.hourly
+            assert "Бачення екрана" in exc.user_message and "сьогодні" not in exc.user_message
+            break
+        ledger.record("ollama", "m", Purpose.VISION, Usage(), 0.0)
+        frames += 1
+        clock.advance(30)
+    assert frames == BudgetGuard.vision_hourly_limit(AISettings()) == 30
+    guard.check(Purpose.INITIATIVE)  # her own lines and the chat keep their headroom
+    guard.check(Purpose.CHAT)
+    assert ledger.requests_last_hour(Purpose.VISION) == 30 and ledger.requests_last_hour() == 30
+
+
+def test_hourly_and_daily_limits_say_which_one(db, clock):
+    guard, ledger = guard_for(db, clock, max_requests_per_hour=2, max_requests_per_day=1000)
+    for _ in range(2):
+        ledger.record("ollama", "m", Purpose.REACTION, Usage(), 0.0)
+    with pytest.raises(BudgetExceededError) as err:
+        guard.check(Purpose.REACTION)
+    assert err.value.hourly
+    guard, ledger = guard_for(db, clock, max_requests_per_hour=1000, max_requests_per_day=1)
+    ledger.record("ollama", "m", Purpose.REACTION, Usage(), 0.0)
+    with pytest.raises(BudgetExceededError) as err:
+        guard.check(Purpose.REACTION)
+    assert not err.value.hourly

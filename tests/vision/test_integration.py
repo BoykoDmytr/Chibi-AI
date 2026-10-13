@@ -29,6 +29,7 @@ from chibi.core.events import (
     UserReturned,
     VisionObserved,
     VisionStateChanged,
+    VoiceTranscript,
 )
 from chibi.gaming.games_db import GameDatabase, title_from_exe
 from chibi.memory.repositories import PermissionRepository
@@ -40,6 +41,10 @@ from chibi.vision.integration import (
     LOOK_FAILED_MESSAGE,
     LOOK_SKIP_MESSAGES,
     MEMORY_EVENT_FORMS,
+    OBSERVER_AI_OFF,
+    OBSERVER_BUDGET,
+    OBSERVER_MANUAL,
+    OBSERVER_NO_AI_LINES,
     OWN_WINDOW_MESSAGE,
     OWN_WINDOW_RETRY_MS,
     REASON_LOCAL_ONLY,
@@ -48,14 +53,17 @@ from chibi.vision.integration import (
     REASON_OFF,
     SKIP_AWAY,
     SKIP_BROWSER,
+    SKIP_MUTED,
     SKIP_NOT_GAME,
     SKIP_NOT_LISTED,
     SKIP_NOTES,
     SKIP_PRIVATE,
     SKIP_SYSTEM,
     SYSTEM_PROCESSES,
+    VOICE_PRESENCE_SECONDS,
     VisionIntegration,
     is_look_request,
+    observer_ai_reason,
     reactions_per_hour,
     session_summary,
 )
@@ -177,7 +185,7 @@ class FakeMemory:
 class H:
     def __init__(self, qapp, db, bus, clock, monkeypatch, *, mode="game", provider="ollama",
                  allowed_games=("stalker2",), allowed_processes=(), grant=True, local_only=False,
-                 scope="allowed", commentary="events", titles=False):
+                 scope="allowed", commentary="events", titles=False, observer_ai=None):
         monkeypatch.setattr(permissions_module, "AVAILABLE", frozenset(Permission))
         self.excluded: list[int] = []
         monkeypatch.setattr(integration_module, "exclude_from_capture",
@@ -219,6 +227,7 @@ class H:
             on_spoken=lambda: self.spoken.append(1), notify=self.notices.append,
             backend=self.backend, capture=self.capture, worker=self.worker,
             own_windows=lambda: self.own, own_pid=OWN_PID, analyzer_factory=self._factory,
+            observer_ai=observer_ai,
         )
         self.dispatch()
 
@@ -1319,3 +1328,82 @@ def test_any_window_frame_in_flight_when_its_app_becomes_private_is_dropped(make
     h.step(300)
     assert h.capture.calls == [444]
     assert h.integ.status_view().skipped == SKIP_NOTES[SKIP_PRIVATE]
+
+
+# --- review fixes -----------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("process", ["Microsoft.AAD.BrokerPlugin.exe", "WWAHost.exe", "UserOOBEBroker.exe",
+                                     "CredentialEnrollmentManager.exe"])
+def test_sign_in_windows_are_never_captured(make, process):
+    h = make(mode="auto", scope="foreground")
+    h.backend.fg = info(process, hwnd=777)
+    h.step(1)
+    h.step(5)
+    assert h.integ.resolve_target(info(process)) is None
+    assert h.capture.calls == [] and h.integ.status_view().skipped == SKIP_NOTES[SKIP_SYSTEM]
+
+
+def test_talking_to_her_hands_free_keeps_her_looking(make):
+    h = make(mode="auto", scope="foreground")
+    h.backend.fg = info("code.exe", hwnd=444)
+    h.first_frame()
+    h.bus.publish(UserIdle(idle_seconds=600.0))  # no keyboard or mouse...
+    h.bus.publish(VoiceTranscript(text="а що тут не так?", origin="named"))  # ... but talking to her
+    h.dispatch()
+    h.step(1)
+    assert not h.integ.service.away
+    h.step(30)
+    assert len(h.capture.calls) == 2
+    h.step(VOICE_PRESENCE_SECONDS)  # silent since: away
+    assert h.integ.service.away
+
+
+def test_observer_reasons():
+    s = Settings()
+    assert observer_ai_reason(s, (True, ""), True) == ""
+    assert observer_ai_reason(s, (True, ""), False) == OBSERVER_BUDGET
+    assert observer_ai_reason(s, (False, "сервіс недоступний"), False) == \
+        OBSERVER_AI_OFF.format(reason="сервіс недоступний")
+    s.ai.use_for_reactions = False
+    assert observer_ai_reason(s, (True, ""), True) == OBSERVER_NO_AI_LINES
+
+
+def test_an_observer_who_cannot_speak_takes_no_automatic_frames_and_says_why(make):
+    reason = [OBSERVER_NO_AI_LINES]
+    h = make(mode="auto", scope="foreground", commentary="observer", observer_ai=lambda: reason[0])
+    h.backend.fg = info("code.exe", hwnd=444)
+    for _ in range(40):
+        h.step(1)
+    assert h.capture.calls == []  # nothing would use the frames: none are paid for
+    view = h.integ.status_view()
+    assert view.observer_note == OBSERVER_NO_AI_LINES and view.skipped == SKIP_NOTES[SKIP_MUTED]
+    assert h.integ.request()  # the user may still ask
+    h.worker.run()
+    h.dispatch()
+    assert h.capture.calls == [444]
+    reason[0] = ""
+    for _ in range(40):
+        h.step(1)
+    assert len(h.capture.calls) >= 2
+    assert h.integ.status_view().observer_note == ""
+    h.change(mode="manual")
+    assert h.integ.status_view().observer_note == OBSERVER_MANUAL
+
+
+def test_events_commentary_never_waits_for_the_observer(make):
+    h = make(mode="auto", scope="foreground", observer_ai=lambda: OBSERVER_NO_AI_LINES)
+    h.backend.fg = info("code.exe", hwnd=444)
+    h.first_frame()
+    assert h.capture.calls == [444] and h.integ.status_view().observer_note == ""
+
+
+def test_her_answers_about_private_windows_never_claim_she_did_not_look():
+    # The frame was analysed (perhaps by a cloud model): "я не читаю" would be untrue.
+    from chibi.personality.phrases import PhraseBank
+
+    bank = PhraseBank.load()
+    untrue = ("не читаю", "не читаю.", "відвертаюся", "не підглядати", "не розглядаю", "не для моїх очей")
+    for key in ("vision.look.chat", "vision.look.email", "vision.look.document"):
+        for phrase in bank.phrases(key):
+            assert not any(claim in phrase.text.casefold() for claim in untrue), phrase.id

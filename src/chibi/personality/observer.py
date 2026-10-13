@@ -14,8 +14,11 @@ and silence is kept cheap.
 same as the newest moment updates it instead of adding a copy, so the log
 says "the same error for 7 minutes" rather than repeating it.  Someone's
 correspondence (``chat`` / ``email`` scenes) is never logged.  An event that
-needs a second frame (a "death", a "victory") counts only once confirmed, and
-an event below ``vision.min_confidence`` is logged as ``other``.  The log is
+needs a second frame (a "death", a "victory") is neither logged nor asked
+about until vision confirms it - nor is a death or victory screen without
+such a confirmed event: a single misread frame must never become "Ой, тебе
+вбили!".  Another event below ``vision.min_confidence`` is logged as
+``other``.  The log is
 forgotten on the kill switch, when ``SCREEN_CAPTURE`` / ``CLOUD_VISION`` /
 ``CLOUD_AI`` is revoked, when the commentary leaves ``"observer"``, when the
 vision, activity or AI settings change (allowed apps, exclusions, another
@@ -30,10 +33,12 @@ configured AI provider.
   (:data:`FRESH_SECONDS`);
 * no decision is in flight (single-flight);
 * not a game while ``gaming.reaction_frequency`` is 0 ("silent in games");
-* the user is present (not between ``UserIdle`` and ``UserReturned``), she
-  is not asleep, no do-not-disturb, no quiet mode, nobody chatted or talked
-  to her in the last :data:`CHAT_QUIET_SECONDS`, and a line would be seen or
-  heard (not hidden over a fullscreen app without a voice);
+* the user is present (not between ``UserIdle`` and ``UserReturned``, unless
+  they talked to her by voice in the last :data:`VOICE_PRESENCE_SECONDS` - a
+  hands-free conversation touches no keyboard), she is not asleep, no
+  do-not-disturb, no quiet mode, nobody chatted or talked to her in the last
+  :data:`CHAT_QUIET_SECONDS`, and a line would be seen or heard (not hidden
+  over a fullscreen app without a voice);
 * it is not a near-repeat of what she last commented on (within the log's
   age) or last asked about (within :data:`RECONSIDER_SECONDS`), and it is
   interesting: a notable event, the vision model's "interesting", a new
@@ -127,6 +132,9 @@ LOG_MAX_AGE_SECONDS = 15 * MINUTE
 FRESH_SECONDS = 60.0
 #: After the user wrote or talked to her she does not start commenting for this long.
 CHAT_QUIET_SECONDS = 60.0
+#: Talking to her by voice counts as being at the PC for this long (no keyboard or
+#: mouse input in a hands-free conversation; the activity monitor would say "idle").
+VOICE_PRESENCE_SECONDS = 5 * MINUTE
 #: Her pause after saying something, by frequency (see comment_cooldown).
 MIN_COOLDOWN_SECONDS = 2 * MINUTE
 MAX_COOLDOWN_SECONDS = 10 * MINUTE
@@ -167,6 +175,8 @@ NOTABLE_EVENTS = frozenset({"player_death", "victory", "level_up", "boss_fight",
                             "tests_passed"})
 #: Events vision only trusts after a second frame (VisionObserved.confirmed).
 CONFIRM_EVENTS = frozenset({"player_death", "victory", "boss_fight", "achievement", "level_up"})
+#: Scenes that claim an outcome: only together with a confirmed event.
+VERDICT_SCENES = frozenset({"death_screen", "victory_screen"})
 EMPTY_EVENTS = frozenset({"none", "other"})
 
 #: Settings sections whose change may make what she saw off limits (allowed apps,
@@ -397,16 +407,21 @@ class Observer:
         self._ask(moment, settings, now)
 
     def _moment(self, event: VisionObserved, info: Any, settings: Settings, now: float) -> _Moment | None:
-        """The log entry for *event*, or None when it must not be kept (correspondence)."""
+        """The log entry for *event*, or None when it must not be kept (correspondence,
+        or a death / victory not confirmed by a second frame yet)."""
         scene = event.scene if isinstance(event.scene, str) else ""
         if not scene or scene in PRIVATE_SCENES:
             return None
         kind = event.event if isinstance(event.event, str) and event.event else "none"
         confidence = event.confidence if isinstance(event.confidence, (int, float)) else 0.0
-        if kind not in EMPTY_EVENTS and (confidence < settings.vision.min_confidence
-                                         or (kind in CONFIRM_EVENTS and not event.confirmed)):
-            # Not sure enough (or still waiting for its second frame): never claimed as seen.
-            kind = "other"
+        sure = confidence >= settings.vision.min_confidence
+        if kind in CONFIRM_EVENTS or scene in VERDICT_SCENES:
+            if not (kind in CONFIRM_EVENTS and event.confirmed is True and sure):
+                # Waiting for its second frame (or never confirmed): not even its
+                # description ("YOU DIED") goes to the model - never claimed as seen.
+                return None
+        elif kind not in EMPTY_EVENTS and not sure:
+            kind = "other"  # not sure enough: never claimed as seen
         description = event.description.strip() if isinstance(event.description, str) else ""
         app_title = event.app_title.strip() if isinstance(event.app_title, str) else ""
         is_game = getattr(info, "is_game", None)
@@ -694,7 +709,8 @@ class Observer:
         self.clear()
 
     def _on_voice(self, _event: VoiceTranscript) -> None:
-        # The user is talking to her: no comment of her own now.  The text is not kept.
+        # The user is talking to her: no comment of her own now, and they are here
+        # (hands-free: no keyboard or mouse).  The text is not kept.
         self._last_voice = self._clock.monotonic()
         self._invalidate("user talking")
 
@@ -735,6 +751,9 @@ class Observer:
             return None
 
     def _user_away(self) -> bool:
+        voice = self._last_voice
+        if voice is not None and self._clock.monotonic() - voice <= VOICE_PRESENCE_SECONDS:
+            return False  # talking to her hands-free: present, whatever the idle timer says
         if self._away:
             return True
         context = self._brain_context()
