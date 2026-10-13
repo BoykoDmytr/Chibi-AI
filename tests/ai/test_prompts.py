@@ -238,6 +238,10 @@ def test_every_phase_3_5_phrase_key_has_its_own_description():
     assert "переміг" in describe_event("vision.victory")
     assert "<observation>" in describe_event("vision.look.combat")
     assert describe_event("gift.plush_cat") == describe_event("gift.cake")
+    # GameResult verdicts are the user's: "win" = the user won (the phrase bank agrees).
+    assert describe_event("game.rps.win").startswith("користувач виграв")
+    assert describe_event("game.rps.lose").startswith("ти виграла")
+    assert describe_event("game.guess.win").startswith("користувач відгадав")
 
 
 def test_purpose_for_keys():
