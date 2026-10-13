@@ -124,8 +124,21 @@ class PhraseBank:
 
     @classmethod
     def load(cls, path: Path | None = None) -> PhraseBank:
-        """Load the bank from ``path`` (default: the packaged Ukrainian bank)."""
-        source = path or DEFAULT_PATH
+        """Load the bank from ``path``.
+
+        Default: the packaged Ukrainian bank ``phrases_uk.json`` merged with
+        every ``phrases_*_uk.json`` next to it (feature banks such as vision
+        or mini-games keep their lines in their own file).
+        """
+        if path is not None:
+            return cls._load_file(path)
+        bank = cls._load_file(DEFAULT_PATH)
+        for extra in sorted(DEFAULT_PATH.parent.glob("phrases_*_uk.json")):
+            bank = bank.merged(cls._load_file(extra), source=extra.name)
+        return bank
+
+    @classmethod
+    def _load_file(cls, source: Path) -> PhraseBank:
         try:
             data = json.loads(source.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -133,6 +146,20 @@ class PhraseBank:
                       source.name, exc)
             return cls()
         return cls.from_dict(data, source=source.name)
+
+    def merged(self, other: PhraseBank, source: str = "<bank>") -> PhraseBank:
+        """A new bank with *other*'s phrases added; a duplicate id keeps the first."""
+        result: dict[str, list[Phrase]] = {key: list(items) for key, items in self._by_key.items()}
+        skipped = 0
+        for key in other._by_key:
+            for phrase in other.phrases(key):
+                if phrase.id in self._by_id:
+                    skipped += 1
+                    continue
+                result.setdefault(key, []).append(phrase)
+        if skipped:
+            log.warning("phrase bank %s: %d phrases skipped (duplicate ids)", source, skipped)
+        return PhraseBank(result)
 
     @classmethod
     def from_dict(cls, data: Any, source: str = "<dict>") -> PhraseBank:
