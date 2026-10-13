@@ -19,11 +19,15 @@ Windows / timers ──► producers ──► EventBus (bounded, thread-safe) �
 * **Main (Qt) thread**: all widgets, the state machine, reactions, tamagotchi,
   SQLite.  The SQLite connection is created with `check_same_thread=True`, so
   touching it from another thread raises instead of corrupting data.
-* **Worker threads** (activity monitor): never touch Qt or SQLite.  They only
-  call `EventBus.publish()` and `PermissionManager.is_granted()` (both
-  thread-safe) and must stop within ~1 s of `stop()`.
-* Heavy or blocking work (future AI calls, capture, TTS) never runs on the main
-  thread.
+* **Worker threads** (activity monitor, AI service worker, voice worker,
+  vision worker, hotkey thread, PortAudio callbacks): never touch Qt widgets or
+  SQLite.  They call `EventBus.publish()`, `PermissionManager.is_granted()`
+  (both thread-safe) or post a callable back to the main thread through a
+  queued Qt signal, and they stop within ~1-2 s.
+* Heavy or blocking work (AI calls, screen capture and analysis, speech
+  recognition and synthesis, model downloads) never runs on the main thread.
+  Every asynchronous result carries a *generation* number; cancelling or
+  reconfiguring bumps it, so late results are dropped.
 
 ## Privacy by construction
 
@@ -56,11 +60,14 @@ Windows / timers ──► producers ──► EventBus (bounded, thread-safe) �
 | `gaming`       | games database, game session tracking |
 | `tamagotchi`   | needs model (hunger, energy, ...), offline catch-up, interactions |
 | `personality`  | Ukrainian phrase bank, reaction engine (cooldowns, budget, quiet mode), offline chat |
-| `settings`     | Qt windows: settings, status, chat, first run; dark theme |
+| `settings`     | Qt windows: settings (AI, memory, voice, vision, gaming, privacy pages), status, chat, first run; dark theme |
+| `ai`           | providers (Claude via the official SDK, OpenAI-compatible, Ollama), secrets, budget, AIService worker, prompts, AIBrain |
+| `emotion`      | EmotionEngine (eight emotions, decay, persistence) |
+| `voice`        | TTS text normaliser, Piper voices on onnxruntime, Whisper STT, VAD, audio I/O, models, push-to-talk hotkey, VoiceService |
+| `vision`       | window capture, frame processing, analysis contract, reaction policy, VisionService |
+| `games`        | mini-games (Phase 5) |
+| `selftest.py`  | `--self-test`: checks an installation (used by CI on the frozen build) |
 | `app.py`       | composition root: builds everything, wires events, lifecycle |
-
-Future phases add `ai`, `emotion`, `vision`, `voice` packages behind the same
-bus; see `PLAN.md`.
 
 ---
 
@@ -472,3 +479,77 @@ class DecisionEngine:   # replaces ReactionEngine's idle chatter when wired
                  context: Callable[[], InitiativeContext], can_speak: Callable[[], bool])
     def tick(self) -> None        # called every ~10 s; picks the best candidate above threshold or nothing
 ```
+
+
+---
+
+## As built: Phase 2 contract extensions
+
+Recorded from the implementation (the signatures above are the original
+contract; these are additions, all keyword-only unless noted):
+
+* `AIBrain(..., bank: PhraseBank | None = None, rng=None)` - style examples
+  come from the phrase bank, not the selector (no history is written).
+* `SpeechComposer(..., schedule=None)`; `set_brain()`, `pending`,
+  `abandon_pending()`, `close()`.  At most 2 lines wait for the model; a line
+  the user asked for waits at most 5 s; quiet / DND / shutdown abandon pending
+  lines.
+* `ReactionEngine(..., composer=None, idle_chatter=True)`, `note_unsolicited()`:
+  with the decision engine wired, idle chatter is off and both engines share
+  the unsolicited budget through `note_unsolicited`.
+* `DecisionEngine(..., on_spoken=None, candidates=None)`; `InitiativeContext`
+  has `game_title`, `activity_minutes`, `seconds_since_return`; `Candidate`
+  has `relevance`, `spontaneous`, `variables`.
+* Model replies never set a posture (sleep/walk...), and a chat action from
+  the model is ignored when the user's own message contains control syntax.
+
+## Phase 4: voice
+
+```
+push-to-talk (RegisterHotKey thread) / mic button ──► VoiceService.listen()
+microphone (PortAudio thread) ──► EnergyVAD ──► utterance ──► voice worker: WhisperSTT
+        ──► main: VoiceTranscript ──► chat (brain) ──► reply ──► route() ──► voice worker: TTS
+        ──► AudioOutput ──► SpeechPlayback(True, duration) + bubble for the audio's duration
+```
+
+* `voice/tts_text.py` turns any line into what the Ukrainian Piper voice can
+  pronounce (lower case, numbers in words agreeing with the noun, clock times,
+  game titles and acronyms from `data/pronunciations_uk.json`, transliteration).
+* `voice/piper_onnx.py` runs Piper "text" voices directly on onnxruntime (MIT);
+  the GPL `piper-tts` package is not used.  Phoneme ids were verified identical.
+* `voice/stt.py`: faster-whisper on numpy arrays (no file decoding), int8 CPU,
+  subtitle-credit hallucinations dropped.
+* `voice/vad.py`: energy VAD with a minimum-statistics noise floor, hysteresis,
+  stuck detection and re-confirmation; the floor carries over between sessions.
+* `voice/models.py`: catalog pinned to repository revisions with SHA-256,
+  resumable verified downloads into `%LOCALAPPDATA%\ChibiCompanion\models`.
+* `voice/hotkey_win.py`: `RegisterHotKey` (no keyboard hook); hold mode polls
+  `GetAsyncKeyState` for that key only while it is held.
+* `voice/service.py` `VoiceService`: states off / idle / standby (wake phrase) /
+  listening / transcribing / speaking.  The microphone is open only while
+  listening or in standby, never while she speaks; `mic_allowed()` is checked
+  each time it would open and `revoke_microphone()` closes it immediately.
+
+## Phase 3: screen vision
+
+Pipeline (`vision/service.py`), in this order: permission -> the foreground
+window is an *allowed* app and not private -> due (mode, interval, back-off) ->
+capture that one window (`PrintWindow`, foreground-only `BitBlt` fallback) ->
+privacy re-check (same window, still allowed, permission still granted) ->
+downscale to 1024 px, dHash dedup -> analysis by a local model, or a cloud
+model only with `CLOUD_VISION` -> strict parsing into closed vocabularies
+(`vision/analysis.py`) -> `VisionReactionPolicy` (two-frame confirmation for
+important events, cooldowns, hourly budget, quiet mode, spoilers, novelty).
+Frames live in memory only; the last few observations (scene, event, short
+sanitised description) are context for her chat, nothing is stored on disk.
+Windows Graphics Capture is not used (it needs a Direct3D 11 interop layer);
+`CaptureBackend` is the seam for it.
+
+## Packaging
+
+`packaging/ChibiCompanion.spec` (PyInstaller, one folder, windowed, no UPX),
+`packaging/installer.iss` (Inno Setup, per-user, no admin).  CI builds both on
+windows-latest, runs `ChibiCompanion.exe --self-test` and a 10-second
+start/quit, and uploads the installer as an artifact.  Logs are redacted by
+`core.logging_setup.RedactingFormatter` (keys, tokens, e-mails, card/phone
+numbers, URL queries, user names in paths).
