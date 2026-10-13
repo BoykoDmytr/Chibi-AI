@@ -545,6 +545,53 @@ sanitised description) are context for her chat, nothing is stored on disk.
 Windows Graphics Capture is not used (it needs a Direct3D 11 interop layer);
 `CaptureBackend` is the seam for it.
 
+Vision analysis may use its own model (`VisionSettings.model`): it travels as
+`GenerationRequest.model`, which every provider honours (`request.model or
+self.model`) for the model id, Claude effort/fallback decisions, the result's
+`model` (so the ledger prices the right model) and the response cache key.
+`vision/integration.py` (`VisionIntegration`) owns the 1 s timer, the analyzer
+(rebuilt on settings/permission changes, never created while the frames could
+not legally be sent), the manual "подивись на екран" request, notices, the
+session summary memory and `latest_observation()` for the brain.
+
+## Phase 5: character polish, gifts, mini-games
+
+* `CharacterState` gains transient actions JUMP, DANCE, EXCITED, PROUD and
+  STRETCH (not postures); the renderer has the `jump`, `bounce`, `squash`,
+  `sway` and `stretch` effects, a landing squash after a fall, and
+  `FramePlayer.ms_to_next_change()` keeps blinks exact at low frame rates.
+* The controller handles `InitiativeAction` (wave, jump, dance, sit, sleep,
+  approach_cursor) at BEHAVIOR priority with guards (no nap unless tired and
+  idle for minutes; in eco mode no dance and a shorter jump) and adds idle variety.
+* `tamagotchi/gifts.py`: `Wallet` (daily +5 start bonus stored with its day,
+  daily earning cap), `GiftCatalog` (`data/gifts.json`), `GiftService`
+  (buy / give, consumables apply needs effects through
+  `TamagotchiService.apply_effect`, keepsakes kept in a separate `collection`
+  and remembered).  `games/`: pure game logic (`rps`, `cookies`, `guess`),
+  Qt windows, `GameRewards` (stars + effects + her reaction once per game)
+  and `GamesHub` (opens/closes the windows and the shop).
+
+## App wiring (Phases 3-5)
+
+* Every `SpeechRequested` goes through `CharacterController.set_speech_router`
+  -> `ChibiApp._route_speech` -> `VoiceIntegration.route`, which voices it (if
+  enabled and allowed) and calls `show(event, seconds)` exactly once, when the
+  audio starts; the bubble then lasts as long as the audio.  Chat replies take
+  the same route.  In gaming companion mode a voiced unsolicited line over a
+  running game is shown without its bubble.
+* `VoiceTranscript` is dropped unless `MICROPHONE` is granted at dispatch time;
+  otherwise it goes to the open chat window (keeping the user's draft) or
+  straight to `send_chat_stream`.  The tray shows a red dot while the microphone
+  is open and names the window she is looking at.
+* "Подивись на екран" in the chat calls `VisionIntegration.request()`; the
+  reply is "Зараз гляну!" or the real reason she cannot look - never a
+  description the model made up.  The answer arrives later as a solicited line.
+* Shutdown stops vision and voice before the AI service (an analysis or a
+  voiced line in flight would otherwise wait for a callback that never comes);
+  wipe-all also deletes the Azure key, the wallet/inventory and what she saw.
+* Interface feedback keys (`voice.*`, `game.start`) never go to the model
+  (`prompts.BANK_ONLY_PREFIXES`): "Слухаю!" must be instant and free.
+
 ## Packaging
 
 `packaging/ChibiCompanion.spec` (PyInstaller, one folder, windowed, no UPX),

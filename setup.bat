@@ -11,7 +11,9 @@ if not exist .venv\Scripts\python.exe (
     )
 )
 .venv\Scripts\python.exe -m pip install --upgrade pip
-.venv\Scripts\python.exe -m pip install -e .
+rem The voice extra (Whisper, onnxruntime, sounddevice) is ~300 MB; models are downloaded later
+rem from Settings - Voice.  Without it everything except voice works.
+.venv\Scripts\python.exe -m pip install -e ".[voice]"
 if errorlevel 1 (
     echo Installing dependencies failed.
     exit /b 1
