@@ -237,3 +237,14 @@ def test_request_model_override_skips_model_resolution():
     result = p.generate(req(model="llava:7b"))
     assert server.bodies("/api/chat")[0]["model"] == "llava:7b" and result.model == "llava:7b"
     assert not server.bodies("/api/tags") and p.model == ""
+
+
+def test_reasoning_blocks_are_removed():
+    server = Server(api_chat=[httpx2.Response(200, content=b"".join(
+        ndjson(["<think>", "hmm, a greeting", "</think>", "\n\nПривіт!"]))),
+        chat_json("<think>hmm</think>\nПривіт!")])
+    p = make(server)
+    pieces: list[str] = []
+    assert p.stream(req(), pieces.append).text == "Привіт!"
+    assert "".join(pieces) == "Привіт!"
+    assert p.generate(req()).text == "Привіт!"

@@ -32,6 +32,7 @@ from urllib.parse import urlsplit
 
 import httpx2
 
+from chibi.ai.providers.reasoning import ReasoningFilter, strip_reasoning
 from chibi.ai.types import (
     CancelledError,
     CancelToken,
@@ -344,7 +345,7 @@ class OpenAIProvider:
         text = message.get("content") or ""
         if not isinstance(text, str):
             raise self._bad_payload()
-        return self._result(text, finish, data.get("usage"), request)
+        return self._result(strip_reasoning(text), finish, data.get("usage"), request)
 
     def stream(self, request: GenerationRequest, on_delta: Callable[[str], None],
                cancel: CancelToken | None = None) -> GenerationResult:
@@ -352,6 +353,7 @@ class OpenAIProvider:
             cancel.raise_if_cancelled()
         body = self._body(request, stream=True)
         parts: list[str] = []
+        reasoning = ReasoningFilter()
         finish = ""
         usage: Any = None
         refusal = ""
@@ -387,13 +389,18 @@ class OpenAIProvider:
                         refusal += str(delta["refusal"])
                     if isinstance(piece, str) and piece:
                         parts.append(piece)
-                        on_delta(piece)
+                        visible = reasoning.feed(piece)
+                        if visible:
+                            on_delta(visible)
                     if choices[0].get("finish_reason"):
                         finish = str(choices[0]["finish_reason"])
         except httpx2.HTTPError as exc:
             raise transport_error(exc, service=self.SERVICE) from None
         self._check_refusal(finish, refusal)
-        return self._result("".join(parts), finish, usage, request)
+        tail = reasoning.finish()
+        if tail:
+            on_delta(tail)
+        return self._result(strip_reasoning("".join(parts)), finish, usage, request)
 
     def list_models(self) -> list[str]:
         try:

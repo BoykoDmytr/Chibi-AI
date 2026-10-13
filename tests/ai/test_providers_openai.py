@@ -338,3 +338,21 @@ def test_request_model_override():
     result = p.generate(req(model="gpt-5-nano"))
     assert server.body["model"] == "gpt-5-nano" and result.model == "gpt-5-nano"
     assert p.model == "gpt-5-mini"
+
+
+def test_reasoning_blocks_of_local_models_are_removed():
+    raw = "<think>The user says hi. Answer briefly.</think>\n\nПривіт!"
+    server = Server(sse_response(sse_chunks(["<thi", "nk>The user says hi.", " Answer briefly.</th",
+                                             "ink>\n\nПри", "віт!"])), completion(raw))
+    p = make(server, base_url="http://127.0.0.1:8080/v1", model="qwen3-8b", key=None)
+    pieces: list[str] = []
+    result = p.stream(req(), pieces.append)
+    assert "".join(pieces) == "Привіт!" and result.text == "Привіт!"
+    assert p.generate(req()).text == "Привіт!"
+
+
+def test_reasoning_before_json_does_not_break_json_mode():
+    server = Server(completion('<think>A boss fight.</think>{"scene": "combat"}'))
+    result = make(server, base_url="http://127.0.0.1:8080/v1", model="local", key=None).generate(
+        req(purpose=Purpose.VISION, json_mode=True))
+    assert json.loads(result.text) == {"scene": "combat"}

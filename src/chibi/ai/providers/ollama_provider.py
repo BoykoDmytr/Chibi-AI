@@ -28,6 +28,7 @@ from chibi.ai.providers.openai_provider import (
     require_user_turn,
     status_error,
 )
+from chibi.ai.providers.reasoning import ReasoningFilter, strip_reasoning
 from chibi.ai.types import (
     CancelToken,
     GenerationRequest,
@@ -155,7 +156,7 @@ class OllamaProvider:
             raise self._bad_payload()
         if cancel is not None:
             cancel.raise_if_cancelled()
-        return self._result(text, data, model, request)
+        return self._result(strip_reasoning(text), data, model, request)
 
     def stream(self, request: GenerationRequest, on_delta: Callable[[str], None],
                cancel: CancelToken | None = None) -> GenerationResult:
@@ -164,6 +165,7 @@ class OllamaProvider:
         model = (request.model or "").strip() or self._ensure_model()
         body = self._body(request, model, stream=True)
         parts: list[str] = []
+        reasoning = ReasoningFilter()
         final: dict[str, Any] = {}
         try:
             with self._client.stream("POST", f"{self.base_url}/api/chat", json=body,
@@ -190,13 +192,18 @@ class OllamaProvider:
                     piece = message.get("content") if isinstance(message, dict) else None
                     if isinstance(piece, str) and piece:
                         parts.append(piece)
-                        on_delta(piece)
+                        visible = reasoning.feed(piece)
+                        if visible:
+                            on_delta(visible)
                     if chunk.get("done"):
                         final = chunk
                         break
         except httpx2.HTTPError as exc:
             raise self._transport_error(exc) from None
-        return self._result("".join(parts), final, model, request)
+        tail = reasoning.finish()
+        if tail:
+            on_delta(tail)
+        return self._result(strip_reasoning("".join(parts)), final, model, request)
 
     def list_models(self) -> list[str]:
         try:
