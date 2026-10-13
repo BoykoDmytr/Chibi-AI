@@ -91,7 +91,14 @@ def raw():
 
 @pytest.fixture(scope="module")
 def entries(raw):
-    return [(key, entry) for key, items in raw["phrases"].items() for entry in items]
+    """Every entry of the main bank and of the feature banks (phrases_*_uk.json),
+    so the style rules below apply to all of them and duplicate ids across files
+    make test_every_entry_loads fail."""
+    found = [(key, entry) for key, items in raw["phrases"].items() for entry in items]
+    for extra in sorted(DEFAULT_PATH.parent.glob("phrases_*_uk.json")):
+        data = json.loads(extra.read_text(encoding="utf-8"))
+        found += [(key, entry) for key, items in data["phrases"].items() for entry in items]
+    return found
 
 
 @pytest.fixture(scope="module")

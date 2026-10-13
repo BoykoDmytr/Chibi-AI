@@ -805,7 +805,8 @@ class AIBrain:
 
 
 _BREAK_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
-_MARKUP_TAG = re.compile(r"</?(?:b|i|u|em|strong|p|span|div|br|s|small|big|font)\b[^<>]{0,60}>", re.IGNORECASE)
+_MARKUP_TAG = re.compile(r"</?(?:b|i|u|em|strong|p|span|div|br|s|small|big|font)\b[^<>]{0,60}>",
+                         re.IGNORECASE)
 
 
 def _strip_markup(text: str) -> str:
