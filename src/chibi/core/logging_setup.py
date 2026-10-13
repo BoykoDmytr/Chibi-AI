@@ -111,7 +111,16 @@ def install_exception_hooks() -> None:
               QtMsgType.QtWarningMsg: logging.WARNING, QtMsgType.QtCriticalMsg: logging.ERROR,
               QtMsgType.QtFatalMsg: logging.CRITICAL}
 
+    seen: dict[str, int] = {}
+
     def qt_handler(mode, _context, message):
-        qt_log.log(levels.get(mode, logging.WARNING), "%s", message)
+        # Some platform warnings repeat every animation frame: log the first
+        # few, then only every 1000th, so they can't flood the capped log.
+        count = seen.get(message, 0) + 1
+        if len(seen) < 500 or message in seen:
+            seen[message] = count
+        if count <= 3 or count % 1000 == 0:
+            suffix = f" (x{count})" if count > 3 else ""
+            qt_log.log(levels.get(mode, logging.WARNING), "%s%s", message, suffix)
 
     qInstallMessageHandler(qt_handler)

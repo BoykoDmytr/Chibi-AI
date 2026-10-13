@@ -662,6 +662,34 @@
       {"id": "idle.question.14", "text": "Яку страву ти можеш їсти хоч щодня?", "tone": "warm", "state": "curious", "portrait": "eat"},
       {"id": "idle.question.15", "text": "{user}, а що тебе сьогодні надихає?", "tone": "warm", "state": "curious", "portrait": "question", "requires": ["user"]}
     ],
+    "initiative.ask_game": [
+      {"id": "initiative.ask_game.01", "text": "Як там {game}? Розкажи, що зараз відбувається!", "tone": "warm", "state": "curious", "portrait": "question", "requires": ["game"]},
+      {"id": "initiative.ask_game.02", "text": "Ну що, {game} перемагає чи ти перемагаєш?", "tone": "playful", "state": "curious", "portrait": "wink", "requires": ["game"]},
+      {"id": "initiative.ask_game.03", "text": "Не відволікаю? Мені просто цікаво: як тобі {game}?", "tone": "warm", "state": "curious", "portrait": "question", "requires": ["game"]},
+      {"id": "initiative.ask_game.04", "text": "Слухай, а що тобі найбільше подобається в грі «{game}»?", "tone": "warm", "state": "curious", "portrait": "question", "requires": ["game"]},
+      {"id": "initiative.ask_game.05", "text": "Як просувається {game}? Усе йде за планом?", "tone": "warm", "state": "thinking", "portrait": "thinking", "requires": ["game"]},
+      {"id": "initiative.ask_game.06", "text": "{game} — це надовго, я так розумію? Я поруч і вболіваю!", "tone": "warm", "state": "happy", "portrait": "joy", "requires": ["game"]},
+      {"id": "initiative.ask_game.07", "text": "Ну як, у грі «{game}» ще не доводилося кричати на монітор?", "tone": "sarcastic", "state": "laugh", "portrait": "wink", "requires": ["game"]}
+    ],
+    "initiative.suggest_break": [
+      {"id": "initiative.suggest_break.01", "text": "Може, перерва? Розімни плечі, попий води, а я тут почергую.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "initiative.suggest_break.02", "text": "Ти за комп'ютером уже {duration}. Як щодо п'яти хвилин для себе?", "tone": "caring", "state": "talk", "portrait": "smile", "requires": ["duration"]},
+      {"id": "initiative.suggest_break.03", "text": "Очі просять відпочинку. Подивися у вікно хоч хвилинку — я почекаю!", "tone": "caring", "state": "talk", "portrait": "smile"},
+      {"id": "initiative.suggest_break.04", "text": "Пропоную паузу: чай, трохи розім'ятися — і знову до справ. Як тобі план?", "tone": "playful", "state": "talk", "portrait": "drink"},
+      {"id": "initiative.suggest_break.05", "text": "Довгий забіг виходить! Встань, пройдися трохи — спина подякує.", "tone": "caring", "state": "point", "portrait": "point"},
+      {"id": "initiative.suggest_break.06", "text": "Перерва — це не лінь, а тактична пауза. Навіть героям треба перепочити!", "tone": "playful", "state": "happy", "portrait": "wink"},
+      {"id": "initiative.suggest_break.07", "text": "Уже {duration} без перерви! Може, розімнемося разом? Я теж засиділася.", "tone": "caring", "state": "talk", "portrait": "smile", "requires": ["duration"]},
+      {"id": "initiative.suggest_break.08", "text": "Ще трішки, і стілець подасть на тебе скаргу. Час на перерву!", "tone": "sarcastic", "state": "talk", "portrait": "wink"}
+    ],
+    "initiative.propose_talk": [
+      {"id": "initiative.propose_talk.01", "text": "Ми давно не балакали. Розкажеш, як минає день?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "initiative.propose_talk.02", "text": "Мені трохи бракує наших розмов. Поговориш зі мною?", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "initiative.propose_talk.03", "text": "Якщо матимеш хвилинку — відкрий чат. Маю кілька думок, якими хочу поділитися!", "tone": "warm", "state": "talk", "portrait": "idea"},
+      {"id": "initiative.propose_talk.04", "text": "Агов! Як ти там? Розкажи, що нового!", "tone": "warm", "state": "wave", "portrait": "greet"},
+      {"id": "initiative.propose_talk.05", "text": "Хочеш побалакати? Можу розповісти щось кумедне або просто вислухати.", "tone": "caring", "state": "talk", "portrait": "smile"},
+      {"id": "initiative.propose_talk.06", "text": "Я тут сиджу й думаю: а що нового в тебе? Напиши, коли буде час!", "tone": "warm", "state": "thinking", "portrait": "thinking"},
+      {"id": "initiative.propose_talk.07", "text": "Пропоную угоду: ти пишеш мені в чат, а я відповідаю чимось дотепним. Домовилися?", "tone": "playful", "state": "talk", "portrait": "wink"}
+    ],
     "quiet.ack": [
       {"id": "quiet.ack.01", "text": "Добре, мовчу. Я тут, якщо що.", "tone": "warm", "state": "sit", "portrait": "calm"},
       {"id": "quiet.ack.02", "text": "Зрозуміла! Режим тиші увімкнено.", "tone": "warm", "state": "sit", "portrait": "smile"},

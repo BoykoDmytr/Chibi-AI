@@ -26,6 +26,8 @@ import signal
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QLockFile, QObject, QPoint, Qt, QTimer
@@ -36,6 +38,12 @@ from chibi import __version__
 from chibi.activity.backend import ActivityBackend, default_backend
 from chibi.activity.classifier import ActivityClassifier
 from chibi.activity.monitor import ActivityMonitor
+from chibi.ai.brain import AIBrain, BrainContext
+from chibi.ai.budget import UsageLedger
+from chibi.ai.providers.factory import DEFAULT_MODELS, is_cloud, stored_key
+from chibi.ai.secrets import KEY_NAMES, default_secret_store
+from chibi.ai.service import AIService
+from chibi.ai.types import Purpose
 from chibi.character.animation import CharacterPack, PackError
 from chibi.character.states import CharacterState, StatePriority
 from chibi.core import paths
@@ -43,25 +51,33 @@ from chibi.core.clock import Clock, SystemClock
 from chibi.core.config import Settings
 from chibi.core.event_bus import EventBus
 from chibi.core.events import (
+    ActivityCategory,
+    AIStatusChanged,
     AppShuttingDown,
     AppStarted,
     CharacterInteraction,
     DoNotDisturbChanged,
+    ForegroundAppChanged,
+    FullscreenChanged,
     InteractionKind,
     ObservationStopped,
     Permission,
     PermissionChanged,
     QuietModeChanged,
     SettingsChanged,
+    UserIdle,
+    UserReturned,
 )
 from chibi.core.logging_setup import setup_logging
 from chibi.desktop.controller import CharacterController
 from chibi.desktop.qt_bridge import QtEventPump
 from chibi.desktop.screen_service import ScreenService
 from chibi.desktop.tray import TrayIcon, make_icon_from_pixmap, vector_icon
+from chibi.emotion.engine import EmotionEngine
 from chibi.gaming.games_db import GameDatabase
 from chibi.gaming.sessions import GameSessionTracker
 from chibi.memory.database import Database
+from chibi.memory.longterm import MemoryStore, ShortTermMemory
 from chibi.memory.repositories import (
     GameSessionRepository,
     GameTotals,
@@ -70,13 +86,16 @@ from chibi.memory.repositories import (
     SettingsRepository,
     StateRepository,
 )
-from chibi.personality.chat_offline import OfflineChatResponder
+from chibi.personality.chat_offline import SUCCESS_OUTCOMES, OfflineChatResponder
+from chibi.personality.composer import SpeechComposer
+from chibi.personality.initiative import DecisionEngine, InitiativeContext
 from chibi.personality.phrases import PhraseBank, PhraseSelector
 from chibi.personality.reactions import ReactionEngine
+from chibi.personality.text_uk import time_of_day
 from chibi.privacy.filters import PrivacyFilter
 from chibi.privacy.permissions import PermissionManager
 from chibi.settings.chat_window import ChatWindow
-from chibi.settings.facade import ChatReply, NeedsView, StatusView
+from chibi.settings.facade import AIStatusView, ChatReply, MemoryView, NeedsView, StatusView
 from chibi.settings.first_run import FirstRunDialog
 from chibi.settings.settings_dialog import SettingsDialog
 from chibi.settings.status_window import StatusWindow
@@ -141,9 +160,36 @@ class ChibiApp(QObject):
             PhraseBank.load(), PhraseHistoryRepository(self._db),
             lambda: self._settings, self._clock, self._rng,
         )
+        # -- AI brain (Phase 2): rules decide *when* she speaks, the model only *how* ------
+        self._activity: tuple[str, str | None, float] | None = None  # category, app, since
+        self._user_away = False
+        self._fullscreen = False
+        self._last_chat: float | None = None
+        self._ai_model = ""
+        self.bus.subscribe(AIStatusChanged, self._on_ai_status)
+        self._secrets = default_secret_store(paths.data_dir())
+        self._ledger = UsageLedger(self._db, self._clock)
+        self._ai = AIService(self.bus, lambda: self._settings, self.permissions, self._secrets,
+                             self._ledger, self._clock, parent=self)
+        self._memory = MemoryStore(self._db, self.bus, self._clock)
+        self._short_term = ShortTermMemory(max_turns=60)
+        self._emotion = EmotionEngine(self.bus, self._state, self._clock,
+                                      needs=lambda: self._tamagotchi.needs, settings=lambda: self._settings)
+        self._emotion.load()
+        self._brain = AIBrain(self._ai, self._memory, self._short_term, self._emotion,
+                              lambda: self._settings, self._clock, self._brain_context,
+                              self._needs_mapping, rng=self._rng)
+        self._composer = SpeechComposer(self.bus, self._selector, self._brain, lambda: self._settings,
+                                        self._clock)
         self._reactions = ReactionEngine(
             self.bus, self._selector, lambda: self._settings, self._clock, self._rng,
             game_genre=self._game_genre, sleeping=self._is_sleeping, permissions=self.permissions,
+            composer=self._composer, idle_chatter=False,
+        )
+        self._decisions = DecisionEngine(
+            self.bus, self._composer, lambda: self._settings, self._clock, self._rng, self._emotion,
+            self._initiative_context, self._reactions.can_speak_unsolicited,
+            on_spoken=self._reactions.note_unsolicited,
         )
         self._responder = OfflineChatResponder(
             self._selector, self._reactions, lambda: self._settings, self._clock,
@@ -179,6 +225,11 @@ class ChibiApp(QObject):
         self.bus.subscribe(PermissionChanged, lambda _e: self._sync_observation())
         self.bus.subscribe(ObservationStopped, lambda _e: self._sync_observation())
         self.bus.subscribe(QuietModeChanged, self._on_quiet_changed)
+        self.bus.subscribe(ForegroundAppChanged, self._on_foreground)
+        self.bus.subscribe(UserIdle, lambda _e: self._set_away(True))
+        self.bus.subscribe(UserReturned, lambda _e: self._set_away(False))
+        self.bus.subscribe(FullscreenChanged, self._on_fullscreen)
+        self.bus.subscribe(ObservationStopped, lambda _e: self._forget_activity())
         self._controller.state_changed.connect(self._on_state_changed)
         self._controller.context_menu_requested.connect(self._show_context_menu)
         self._controller.window.scale_requested.connect(self._on_scale_requested)
@@ -186,9 +237,11 @@ class ChibiApp(QObject):
         self._tamagotchi_timer = QTimer(self)
         self._tamagotchi_timer.setTimerType(Qt.TimerType.VeryCoarseTimer)
         self._tamagotchi_timer.timeout.connect(self._tamagotchi.tick)
+        self._tamagotchi_timer.timeout.connect(self._emotion.tick)
         self._reactions_timer = QTimer(self)
         self._reactions_timer.setTimerType(Qt.TimerType.VeryCoarseTimer)
         self._reactions_timer.timeout.connect(self._reactions.tick)
+        self._reactions_timer.timeout.connect(self._decisions.tick)
 
         qt_app.aboutToQuit.connect(self.shutdown)
 
@@ -231,7 +284,11 @@ class ChibiApp(QObject):
             self._tamagotchi_timer.stop,
             self._reactions_timer.stop,
             self._sessions.flush,
+            self._decisions.close,
+            self._composer.close,
+            self._ai.shutdown,  # joins the worker (<= 2 s) before the database closes
             self._tamagotchi.save,
+            self._emotion.save,
             self._controller.shutdown,
             lambda: self._state.set(LAST_SHUTDOWN_KEY, self._clock.now()),
             lambda: self._tray.hide() if self._tray else None,
@@ -273,8 +330,12 @@ class ChibiApp(QObject):
             log.info("character pack change takes effect after restart")
         self._settings = new
         self._settings_repo.save(new)
-        changed = [name for name in ("character", "behavior", "personality", "activity")
+        changed = [name for name in ("character", "behavior", "personality", "activity", "ai",
+                                     "voice", "vision", "gaming")
                    if getattr(new, name) != getattr(old, name)]
+        if new.ai != old.ai:
+            # Synchronously: the AI page tests the connection right after applying.
+            self._ai.reconfigure()
         if new.activity != old.activity:
             privacy = PrivacyFilter(new.activity.excluded_processes)
             if new.activity.excluded_processes != old.activity.excluded_processes:
@@ -305,7 +366,7 @@ class ChibiApp(QObject):
             state=self._controller.state.value,
             observing=self.permissions.any_observation_active(),
             activity_supported=self._backend.is_supported(),
-            ai_connected=False,
+            ai_connected=self._ai.status()[0],
             quiet_until=quiet,
             do_not_disturb=self._settings.behavior.do_not_disturb,
         )
@@ -327,6 +388,94 @@ class ChibiApp(QObject):
         if reply.text or reply.state:
             self._controller.say(reply.text, reply.state, reply.portrait, solicited=True)
         return reply
+
+    def send_chat_stream(self, text: str, on_delta: Callable[[str], None],
+                         on_done: Callable[[ChatReply], None]) -> None:
+        """Chat with the AI brain when it is available, the offline responder otherwise
+        (also when the AI fails mid-reply).  *on_done* runs exactly once."""
+        self._tamagotchi.interact(InteractionKind.TALK, announce=False)
+        self._last_chat = self._clock.monotonic()
+
+        def finish(reply: ChatReply | None) -> None:
+            reply = self._responder.respond(text) if reply is None else self._apply_chat_action(reply)
+            if reply.text or reply.state:
+                self._controller.say(reply.text, reply.state, reply.portrait, solicited=True)
+            on_done(reply)
+
+        if self._brain.available(Purpose.CHAT):
+            self._brain.chat(text, on_delta, finish)
+        else:
+            finish(None)
+
+    def _apply_chat_action(self, reply: ChatReply) -> ChatReply:
+        """Carry out what the model asked for ("поїж", "помовч"); the reply's action
+        becomes what really happened, so the chat never claims a refused action."""
+        action = reply.action
+        done = ""
+        if action in ("feed", "pet", "rest"):
+            outcome = self._perform(action)
+            if outcome in SUCCESS_OUTCOMES[action]:
+                done = {"feed": "fed", "pet": "petted", "rest": "rest"}[action]
+        elif action == "quiet_on":
+            self._reactions.set_quiet(self._settings.behavior.quiet_minutes)
+            done = action
+        elif action == "quiet_off":
+            self._reactions.clear_quiet()
+            done = action
+        return replace(reply, action=done)
+
+    def ai_status(self) -> AIStatusView:
+        online, reason = self._ai.status()
+        ai = self._settings.ai
+        usage = self._ai.usage_today()
+        return AIStatusView(
+            provider=ai.provider,
+            model=self._ai_model or ai.model or DEFAULT_MODELS.get(ai.provider, ""),
+            online=online, reason=reason, cloud=is_cloud(ai),
+            requests_today=usage.requests, requests_limit_day=ai.max_requests_per_day,
+            cost_today_usd=usage.cost_usd, cost_limit_usd=ai.max_cost_per_day_usd,
+            cost_known=usage.cost_known,
+        )
+
+    def ai_has_key(self, provider: str) -> bool:
+        return provider in KEY_NAMES and stored_key(self._secrets, provider) is not None
+
+    def ai_set_key(self, provider: str, key: str) -> None:
+        """Store (or with "" delete) an API key in the OS credential store.  Errors
+        propagate to the AI page, which reports them without the key."""
+        if provider not in KEY_NAMES:
+            raise ValueError(f"no key for provider {provider!r}")
+        self._secrets.set(KEY_NAMES[provider], key.strip())
+        self._ai.reconfigure()
+
+    def ai_test(self, on_done: Callable[[bool, str], None]) -> None:
+        self._ai.test(on_done)
+
+    def ai_list_models(self, on_done: Callable[[list[str], str], None]) -> None:
+        self._ai.list_models(on_done)
+
+    def list_memories(self, kind: str | None = None, query: str = "") -> list[MemoryView]:
+        return [MemoryView(id=m.id, kind=m.kind, text=m.text, source=m.source, pinned=m.pinned,
+                           created_at=m.created_at, updated_at=m.updated_at)
+                for m in self._memory.list(kind or None, query)]
+
+    def add_memory(self, kind: str, text: str) -> None:
+        self._memory.add(kind, text, source="user")
+
+    def update_memory(self, memory_id: int, text: str) -> None:
+        self._memory.update(memory_id, text)  # MemoryRejectedError -> shown by the viewer
+
+    def set_memory_pinned(self, memory_id: int, pinned: bool) -> None:
+        self._memory.set_pinned(memory_id, pinned)
+
+    def delete_memory(self, memory_id: int) -> None:
+        self._memory.delete(memory_id)
+
+    def clear_memories(self, kind: str | None = None) -> None:
+        self._memory.clear(kind)
+
+    def emotion(self) -> dict[str, float]:
+        return self._emotion.values()
 
     def game_totals(self) -> list[GameTotals]:
         return self._game_repo.totals()
@@ -359,9 +508,17 @@ class ChibiApp(QObject):
         self._monitor.stop(timeout=2.0)
         self._sessions.close()
         self._db.wipe_all()
+        self._memory.clear()  # drops the in-process search cache of deleted texts
+        self._short_term.clear()
+        for name in KEY_NAMES.values():  # "everything" includes the API keys
+            try:
+                self._secrets.set(name, "")
+            except Exception as exc:
+                log.error("could not delete a stored API key: %s", type(exc).__name__)
         self._selector.reload_history()
         self._reactions.clear_quiet()
         self._tamagotchi.load()  # nothing stored any more -> fresh defaults
+        self._emotion.load()
         self._sessions = GameSessionTracker(self.bus, self._game_repo, self._clock, self.permissions)
         self._first_run = True
         self.apply_settings(Settings())
@@ -461,6 +618,7 @@ class ChibiApp(QObject):
         self._action(menu, "Поговорити", self.show_chat)
         self._action(menu, "Подивитися стан", self.show_status)
         self._action(menu, "Налаштування", self.show_settings)
+        self._action(menu, "Пам'ять", lambda: self.show_settings("memory"))
         self._action(menu, "Приватність і дозволи", lambda: self.show_settings("privacy"))
         menu.addSeparator()
         self._act_tray_dnd = self._action(menu, "Не турбувати", self._toggle_dnd, checkable=True)
@@ -539,11 +697,75 @@ class ChibiApp(QObject):
             self._monitor.start()
         elif not wanted and self._monitor.is_running():
             self._monitor.stop(timeout=2.0)
+        if not wanted:
+            self._forget_activity()
         # While the monitor runs she can tell an active user from an idle one.
         self._controller.set_input_monitoring(self._monitor.is_running())
         if self._tray is not None:
             self._tray.set_observing(self.permissions.any_observation_active())
         self._refresh_menus()
+
+    # -- what she knows about the moment (for the AI brain and the decision engine) ----
+
+    def _on_ai_status(self, event: AIStatusChanged) -> None:
+        self._ai_model = event.model
+
+    def _on_foreground(self, event: ForegroundAppChanged) -> None:
+        private = event.app.private or event.category is ActivityCategory.PRIVATE
+        category = ActivityCategory.PRIVATE.value if private else event.category.value
+        app = None if private else (event.app.display_name or None)
+        since = self._clock.monotonic()
+        if self._activity is not None and self._activity[0] == category:
+            since = self._activity[2]
+        self._activity = (category, app, since)
+
+    def _set_away(self, away: bool) -> None:
+        self._user_away = away
+
+    def _on_fullscreen(self, event: FullscreenChanged) -> None:
+        self._fullscreen = event.active
+
+    def _forget_activity(self) -> None:
+        """Kill switch: what she knew about the user's apps goes too."""
+        self._activity = None
+        self._user_away = False
+
+    def _current_game(self) -> tuple[str, float] | None:
+        """(title, minutes) of a running game, if the monitor reports one."""
+        sessions = self._sessions.open_sessions()
+        if not sessions:
+            return None
+        session = sessions[-1]
+        since = session.measured_from if session.measured_from is not None else session.started_at
+        return session.title, max(0.0, (self._clock.now() - since) / 60)
+
+    def _brain_context(self) -> BrainContext:
+        category, app, _since = self._activity or (None, None, 0.0)
+        game = self._current_game()
+        return BrainContext(
+            activity_category=category, activity_app=app,
+            game_title=game[0] if game else None, game_minutes=game[1] if game else None,
+            observation=None, user_away=self._user_away,
+        )
+
+    def _initiative_context(self) -> InitiativeContext:
+        now = self._clock.monotonic()
+        category, _app, since = self._activity or (None, None, now)
+        game = self._current_game()
+        return InitiativeContext(
+            now=now,
+            posture=self._controller.posture.value,
+            activity_category=category,
+            game_running=game is not None,
+            game_minutes=game[1] if game else None,
+            fullscreen=self._fullscreen,
+            user_away=self._user_away,
+            minutes_since_last_chat=(now - self._last_chat) / 60 if self._last_chat is not None else None,
+            time_of_day=time_of_day(datetime.fromtimestamp(self._clock.now())),
+            ai_available=self._brain.available(Purpose.INITIATIVE),
+            game_title=game[0] if game else None,
+            activity_minutes=(now - since) / 60 if category is not None else None,
+        )
 
     def _on_state_changed(self, _state: str) -> None:
         sleeping = self._controller.posture is CharacterState.SLEEP

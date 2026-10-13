@@ -86,3 +86,13 @@ def test_thread_exceptions_are_logged(caplog):
         thread.start()
         thread.join()
     assert "chibi-test-worker" in caplog.text
+
+
+def test_repeated_qt_messages_are_throttled(caplog, qapp):
+    from PySide6.QtCore import qWarning
+
+    install_exception_hooks()
+    with caplog.at_level(logging.WARNING, logger="qt"):
+        for _ in range(50):
+            qWarning("same warning every frame")
+    assert caplog.text.count("same warning every frame") == 3

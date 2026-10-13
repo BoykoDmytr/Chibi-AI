@@ -32,6 +32,15 @@ Solicited lines (``InteractionOutcome`` - the user clicked, petted, fed her)
 bypass the gate entirely.  In quiet mode they become *state-only* speech
 (empty text): she still reacts with a gesture, silently.
 
+Every spoken line goes through a :class:`~chibi.personality.composer.SpeechComposer`:
+with an AI brain wired it may be phrased by the model (with a phrase-bank
+fallback), without one it is the Phase 1 phrase-bank line, published at
+once.  The budget and the cooldowns count a line when it is composed, not
+when it is shown, so a line still waiting for the model cannot be doubled.
+When the :class:`~chibi.personality.initiative.DecisionEngine` is wired it
+takes over idle chatter (``idle_chatter=False``) and reports its own lines
+through :meth:`ReactionEngine.note_unsolicited`, so both share one budget.
+
 Nothing self-initiated (needs hints, late-night care, idle chatter) is said
 before ``AppStarted``: the needs restored at launch are published before it,
 and a "я голодна" must not open the session ahead of the greeting.
@@ -82,6 +91,7 @@ from chibi.core.events import (
     UserIdle,
     UserReturned,
 )
+from chibi.personality.composer import SpeechComposer
 from chibi.personality.phrases import PhraseSelector
 from chibi.personality.text_uk import format_clock, format_duration, time_of_day
 
@@ -205,15 +215,27 @@ class ReactionEngine:
         sleeping: Callable[[], bool] | None = None,
         *,
         permissions: PermissionChecker | None = None,
+        composer: SpeechComposer | None = None,
+        idle_chatter: bool = True,
     ) -> None:
         """``game_genre`` maps a game id to its genre (``"shooter"``) for
         ``game_start.genre.<genre>`` lines; without it only game-specific and
         generic lines are used.  ``sleeping`` tells whether she is asleep, so
         she does not wake herself up to tell a joke.  ``permissions`` is
         checked for ``APP_METADATA`` whenever an activity event is dispatched
-        (None: trust the events, as in tests)."""
+        (None: trust the events, as in tests).  ``composer`` says the lines
+        (None: a phrase-bank-only composer, the Phase 1 behaviour);
+        ``idle_chatter=False`` leaves idle jokes / thoughts / questions to the
+        decision engine."""
         self._bus = bus
         self._selector = selector
+        self._owns_composer = composer is None
+        self._composer = composer if composer is not None else SpeechComposer(
+            bus, selector, None, settings, clock)
+        self._idle_chatter_enabled = idle_chatter
+        #: Epoch seconds of the last late-night line composed this session: an AI-phrased
+        #: line leaves no phrase-history entry for ``last_used_at`` to find.
+        self._late_night_said: float | None = None
         self._settings = settings
         self._clock = clock
         self._rng = rng
@@ -258,6 +280,8 @@ class ReactionEngine:
 
     def close(self) -> None:
         """Unsubscribe from the bus (app shutdown, tests)."""
+        if self._owns_composer:
+            self._composer.close()
         for unsubscribe in self._unsubscribers:
             unsubscribe()
         self._unsubscribers.clear()
@@ -322,6 +346,18 @@ class ReactionEngine:
         """Would an unsolicited line be allowed right now (ignoring per-rule cooldowns)?"""
         return self._blocked_reason(self._settings(), ignore_gap=ignore_gap) is None
 
+    def note_unsolicited(self) -> None:
+        """Count an unsolicited line said by another component (the decision engine)
+        against the shared hourly budget and minimum gap."""
+        now = self._clock.monotonic()
+        self._spoken.append(now)
+        self._last_unsolicited = now
+
+    @property
+    def composer(self) -> SpeechComposer:
+        """The composer every line goes through (shared with the decision engine)."""
+        return self._composer
+
     def _blocked_reason(self, settings: Settings, *, ignore_gap: bool = False) -> str | None:
         self._expire_quiet()
         if settings.behavior.do_not_disturb or self._dnd_override:
@@ -359,15 +395,11 @@ class ReactionEngine:
         if reason is not None:
             log.debug("not saying %s: %s", keys[0], reason)
             return False
-        speech = self._selector.say(*keys, solicited=False, **variables)
-        if speech is None:
+        if not self._composer.compose(*keys, solicited=False, **variables):
             log.debug("no usable phrase for %s", keys)
             return False
-        now = self._clock.monotonic()
-        self._spoken.append(now)
-        self._last_unsolicited = now
-        self._bus.publish(speech)
-        log.debug("unsolicited line from %s", speech.source)
+        self.note_unsolicited()
+        log.debug("unsolicited line for %s", keys[0])
         return True
 
     # -- environment ----------------------------------------------------------------------
@@ -592,12 +624,10 @@ class ReactionEngine:
                 gesture = SpeechRequested(text="", state=picked.phrase.state, solicited=True, source=key)
                 self._bus.publish(gesture)
             return
-        speech = self._selector.say(key, solicited=True)
-        if speech is None:
+        if not self._composer.compose(key, solicited=True):
             log.debug("no phrase for %s", key)
             return
         self._last_solicited = self._clock.monotonic()
-        self._bus.publish(speech)
 
     def _on_needs(self, event: NeedsChanged) -> None:
         self._needs = event
@@ -645,12 +675,18 @@ class ReactionEngine:
         local = self._local_now()
         if not LATE_NIGHT_START_HOUR <= local.hour < LATE_NIGHT_END_HOUR:
             return False
-        last = self._selector.last_used_at("late_night")
-        if last is not None and 0 <= self._clock.now() - last < LATE_NIGHT_REPEAT_SECONDS:
+        now = self._clock.now()
+        for last in (self._selector.last_used_at("late_night"), self._late_night_said):
+            if last is not None and 0 <= now - last < LATE_NIGHT_REPEAT_SECONDS:
+                return False
+        if not self._speak(settings, ["late_night"], time=format_clock(local)):
             return False
-        return self._speak(settings, ["late_night"], time=format_clock(local))
+        self._late_night_said = now
+        return True
 
     def _idle_chatter(self, settings: Settings, dt: float) -> bool:
+        if not self._idle_chatter_enabled:
+            return False  # the decision engine owns autonomous chatter
         if self._fullscreen or self._games or self._foreground is ActivityCategory.GAMING:
             return False
         rates = idle_chatter_rates(settings.personality)
