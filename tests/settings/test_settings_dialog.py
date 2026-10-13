@@ -16,7 +16,6 @@ from chibi.settings.settings_dialog import (
 )
 
 
-
 class Confirm:
     """Scripted stand-in for the consent / are-you-sure dialog."""
 
@@ -274,13 +273,13 @@ def page_widget(dialog, key: str):
     return dialog.stack.widget([k for k, _ in PAGES].index(key))
 
 
-def test_ai_page_is_the_real_one_with_later_features_labelled(make_dialog):
+def test_ai_page_is_the_real_one_and_points_to_voice_and_vision(make_dialog):
     dialog = make_dialog()
     assert [t for k, t in PAGES if k in ("ai", "memory")] == ["AI", "Пам'ять"]
     page = page_widget(dialog, "ai")
     assert page.isAncestorOf(dialog.ai_page)
     text = labels_text(page)
-    assert "з'явиться у фазі 3" in text and "з'явиться у фазі 4" in text
+    assert "розділ «Голос»" in text and "з'явиться у фазі" not in text
     dialog.show_page("ai")
     assert dialog.current_page() == "ai"
 

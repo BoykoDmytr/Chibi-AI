@@ -3,7 +3,6 @@ import threading
 import pytest
 
 import chibi.privacy.permissions as permissions_module
-
 from chibi.core.event_bus import EventBus
 from chibi.core.events import ObservationStopped, Permission, PermissionChanged
 from chibi.memory.repositories import PermissionRepository
