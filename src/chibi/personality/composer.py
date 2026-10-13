@@ -24,7 +24,16 @@ Guards:
   :data:`SOLICITED_TIMEOUT_SECONDS` - they are watching for her reaction;
 * when quiet mode or do-not-disturb is switched on, or the app shuts down,
   every pending line is abandoned (neither the AI line nor its fallback is
-  said): a line chosen before "помовч" must not be said after it.
+  said): a line chosen before "помовч" must not be said after it;
+* a line given up (abandoned, or its timeout fell back to the phrase bank)
+  withdraws its AI request (the token ``brain.phrase`` returns), so the AI
+  service never runs - and the model never works on - a line nobody waits for;
+* **the conversation comes first**: while the user is talking with her
+  (``ConversationActive``) her own lines (not ``solicited``) never ask the
+  model - they come from the phrase bank, so they never take a place in the AI
+  queue ahead of (or next to) her answer; when a conversation starts, her own
+  lines still waiting for the model are abandoned (the moment for them has
+  passed - she listens now).  Lines the user asked for keep the AI path.
 
 The return value of :meth:`SpeechComposer.compose` tells the caller whether
 a line is on its way, so budgets and cooldowns count it at once.  On the AI
@@ -50,7 +59,13 @@ from chibi.ai.types import Purpose
 from chibi.core.clock import Clock
 from chibi.core.config import Settings
 from chibi.core.event_bus import EventBus
-from chibi.core.events import AppShuttingDown, DoNotDisturbChanged, QuietModeChanged, SpeechRequested
+from chibi.core.events import (
+    AppShuttingDown,
+    ConversationActive,
+    DoNotDisturbChanged,
+    QuietModeChanged,
+    SpeechRequested,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from chibi.personality.phrases import PhraseSelector
@@ -67,12 +82,14 @@ Schedule = Callable[[int, Callable[[], None]], None]
 
 
 class PhraseBrain(Protocol):
-    """What the composer needs from :class:`~chibi.ai.brain.AIBrain`."""
+    """What the composer needs from :class:`~chibi.ai.brain.AIBrain`.  ``phrase`` may
+    return the request's cancel token (anything with ``cancel()``): the composer
+    cancels it when it gives the line up."""
 
     def available(self, purpose: Purpose) -> bool: ...
 
     def phrase(self, keys: Sequence[str], variables: Mapping[str, str], solicited: bool,
-               on_done: Callable[[SpeechRequested | None], None]) -> None: ...
+               on_done: Callable[[SpeechRequested | None], None]) -> Any: ...
 
 
 def qt_schedule(msec: int, callback: Callable[[], None]) -> None:
@@ -91,6 +108,8 @@ class _Pending:
     done: bool = False
     #: Why it ended: "ai", "fallback", "abandoned".
     outcome: str = field(default="")
+    #: The AI request's cancel token (from ``brain.phrase``), if it returned one.
+    request: Any = None
 
 
 class SpeechComposer:
@@ -108,9 +127,12 @@ class SpeechComposer:
         self._schedule = schedule or qt_schedule
         self._pending: dict[int, _Pending] = {}
         self._ids = itertools.count(1)
+        #: The user is talking with her (the last ConversationActive).
+        self._conversation = False
         self._unsubscribers: list[Callable[[], None]] = [
             bus.subscribe(QuietModeChanged, self._on_quiet),
             bus.subscribe(DoNotDisturbChanged, self._on_quiet),
+            bus.subscribe(ConversationActive, self._on_conversation),
             bus.subscribe(AppShuttingDown, lambda _event: self.abandon_pending()),
         ]
 
@@ -127,6 +149,11 @@ class SpeechComposer:
         """Lines currently waiting for the model."""
         return len(self._pending)
 
+    @property
+    def conversation(self) -> bool:
+        """The user is talking with her: her own lines come from the phrase bank."""
+        return self._conversation
+
     def close(self) -> None:
         """Unsubscribe from the bus and abandon pending lines (shutdown, tests)."""
         for unsubscribe in self._unsubscribers:
@@ -142,25 +169,28 @@ class SpeechComposer:
         keys = tuple(key for key in keys if key)
         if not keys:
             return False
-        if self._use_ai(keys):
+        if self._use_ai(keys, solicited):
             return self._compose_ai(keys, solicited, variables)
         return self._say_offline(keys, solicited, variables)
 
-    def abandon_pending(self) -> None:
-        """Forget every line still waiting for the model: nothing is said for them."""
-        if not self._pending:
+    def abandon_pending(self, *, unsolicited_only: bool = False) -> None:
+        """Forget every line still waiting for the model (only her own ones with
+        *unsolicited_only*): nothing is said for them."""
+        dropped = [p for p in self._pending.values() if not (unsolicited_only and p.solicited)]
+        if not dropped:
             return
-        log.debug("abandoning %d pending AI line(s)", len(self._pending))
-        for pending in self._pending.values():
-            pending.done = True
-            pending.outcome = "abandoned"
-        self._pending.clear()
+        log.debug("abandoning %d pending AI line(s)", len(dropped))
+        for pending in dropped:
+            self._finish(pending, "abandoned")
 
     # -- internals --------------------------------------------------------------------------
 
-    def _use_ai(self, keys: tuple[str, ...]) -> bool:
+    def _use_ai(self, keys: tuple[str, ...], solicited: bool) -> bool:
         brain = self._brain
         if brain is None or keys[0].startswith(BANK_ONLY_PREFIXES):
+            return False
+        if self._conversation and not solicited:
+            log.debug("%s from the phrase bank: the user is talking with her", keys[0])
             return False
         try:
             if not self._settings().ai.use_for_reactions:
@@ -191,10 +221,15 @@ class SpeechComposer:
         texts = {name: str(value) for name, value in variables.items()
                  if value is not None and str(value).strip()}
         try:
-            self._brain.phrase(keys, texts, solicited, lambda speech: self._on_ai(pending, speech))
+            request = self._brain.phrase(keys, texts, solicited, lambda speech: self._on_ai(pending, speech))
         except Exception:
             log.exception("brain.phrase failed; using the phrase bank")
             self._on_ai(pending, None)
+            return True
+        if pending.done:
+            _withdraw(request)  # answered (or given up) already
+        else:
+            pending.request = request
         return True
 
     def _on_ai(self, pending: _Pending, speech: SpeechRequested | None) -> None:
@@ -224,6 +259,11 @@ class SpeechComposer:
         pending.done = True
         pending.outcome = outcome
         self._pending.pop(pending.id, None)
+        # Given up (timeout, abandoned): its request must not run - and occupy the
+        # model - for a line nobody waits for any more.
+        request, pending.request = pending.request, None
+        if outcome != "ai":
+            _withdraw(request)
 
     def _fallback(self, pending: _Pending) -> bool:
         if not self._say_offline(pending.keys, pending.solicited, pending.variables):
@@ -241,3 +281,23 @@ class SpeechComposer:
     def _on_quiet(self, event: QuietModeChanged | DoNotDisturbChanged) -> None:
         if event.enabled:
             self.abandon_pending()
+
+    def _on_conversation(self, event: ConversationActive) -> None:
+        active = bool(event.active)
+        if active == self._conversation:
+            return
+        self._conversation = active
+        if active:
+            # Her own lines still waiting for the model: the user started talking, the
+            # moment for them has passed (and their requests must not delay the answer).
+            self.abandon_pending(unsolicited_only=True)
+
+
+def _withdraw(request: Any) -> None:
+    """Cancel an AI request handed back by ``brain.phrase`` (None: nothing was sent)."""
+    cancel = getattr(request, "cancel", None)
+    if callable(cancel):
+        try:
+            cancel()
+        except Exception:
+            log.exception("cancelling an AI line request failed")

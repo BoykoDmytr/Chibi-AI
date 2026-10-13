@@ -80,11 +80,11 @@ def test_chat_body_and_result():
     assert p.name == "ollama" and p.is_local is True
     result = p.generate(req(context="Настрій: весела.", max_tokens=123))
     body = server.bodies("/api/chat")[0]
+    # The volatile operator context opens the last user turn (prefix reuse), never a system message.
     assert body == {
         "model": "gemma3:4b",
         "messages": [{"role": "system", "content": "Ти — Мія."},
-                     {"role": "system", "content": "Настрій: весела."},
-                     {"role": "user", "content": "Привіт"}],
+                     {"role": "user", "content": "Настрій: весела.\n\nПривіт"}],
         "stream": False,
         "options": {"num_predict": 123},
     }
@@ -100,8 +100,10 @@ def test_images_and_json_format():
     result = make(server).generate(request)
     body = server.bodies("/api/chat")[0]
     assert body["format"] == "json"
-    assert "JSON" in body["messages"][1]["content"]
-    assert body["messages"][2]["images"] == [base64.b64encode(b"\x89PNG-bytes").decode()]
+    assert [m["role"] for m in body["messages"]] == ["system", "user"]
+    assert body["messages"][1]["content"].startswith("Reply with exactly one JSON object")
+    assert body["messages"][1]["content"].endswith("\n\nЩо тут?")
+    assert body["messages"][1]["images"] == [base64.b64encode(b"\x89PNG-bytes").decode()]
     assert json.loads(result.text) == {"ok": True}
 
 
@@ -248,3 +250,102 @@ def test_reasoning_blocks_are_removed():
     assert p.stream(req(), pieces.append).text == "Привіт!"
     assert "".join(pieces) == "Привіт!"
     assert p.generate(req()).text == "Привіт!"
+
+
+# -- keeping the model loaded, prompt layout, timing ------------------------------------------------
+
+
+def test_keep_alive_goes_with_every_request_and_none_leaves_ollamas_default():
+    lines = b"".join(ndjson(["ok"]))
+    server = Server(api_chat=[chat_json("ok"), httpx2.Response(200, content=lines)],
+                    api_generate=[httpx2.Response(200, json={"model": "gemma3:4b", "done": True,
+                                                             "done_reason": "load"})])
+    p = make(server)
+    p.keep_alive = "45m"
+    p.generate(req())
+    p.stream(req(), lambda piece: None)
+    p.warm_up()
+    assert [b["keep_alive"] for b in server.bodies("/api/chat")] == ["45m", "45m"]
+    assert server.bodies("/api/generate") == [{"model": "gemma3:4b", "keep_alive": "45m"}]
+    default = Server(api_chat=[chat_json("ok")])
+    make(default).generate(req())
+    assert "keep_alive" not in default.bodies("/api/chat")[0]
+    assert OllamaProvider("http://localhost:11434", "m", keep_alive="30m").keep_alive == "30m"
+
+
+def test_warm_up_loads_without_a_prompt_and_reports_the_load_time():
+    server = Server(api_tags=[httpx2.Response(200, json=TAGS)],
+                    api_generate=[httpx2.Response(200, json={"model": "gemma3:4b", "done": True,
+                                                             "load_duration": 4_250_000_000})])
+    p = make(server, model="")
+    p.warm_up(CancelToken())
+    body = server.bodies("/api/generate")[0]
+    assert body == {"model": "gemma3:4b"}  # no prompt, no messages: nothing is generated
+    assert p.last_load_seconds == pytest.approx(4.25)
+
+
+def test_warm_up_errors_are_the_usual_ones():
+    missing = Server(api_generate=[httpx2.Response(404, json={"error": "model not found"})])
+    with pytest.raises(ProviderRequestError) as err:
+        make(missing, model="qwen3:8b").warm_up()
+    assert "ollama pull qwen3:8b" in err.value.user_message
+
+    def refused(request):
+        raise httpx2.ConnectError("refused", request=request)
+
+    with pytest.raises(ProviderUnavailableError):
+        make(Server(api_generate=[refused])).warm_up()
+    token = CancelToken()
+    token.cancel()
+    with pytest.raises(CancelledError):
+        make(Server(api_generate=[refused])).warm_up(token)
+
+
+def test_where_the_time_went_is_read_from_the_final_object():
+    final = {"load_duration": 2_000_000_000, "prompt_eval_duration": 1_500_000_000}
+    server = Server(api_chat=[chat_json("ok", **final), chat_json("ok")])
+    p = make(server)
+    p.generate(req())
+    assert (p.last_load_seconds, p.last_prompt_seconds) == (2.0, 1.5)
+    p.generate(req())  # not reported: unknown, not the previous request's numbers
+    assert (p.last_load_seconds, p.last_prompt_seconds) == (None, None)
+    lines = [*ndjson(["a"])[:-1], json.dumps({"done": True, "done_reason": "stop", "load_duration": 0,
+                                               "prompt_eval_duration": 250_000_000}).encode() + b"\n"]
+    streamed = make(Server(api_chat=[httpx2.Response(200, content=b"".join(lines))]))
+    streamed.stream(req(), lambda piece: None)
+    assert (streamed.last_load_seconds, streamed.last_prompt_seconds) == (0.0, 0.25)
+
+
+def test_operator_context_opens_the_last_user_turn_so_the_prefix_stays_the_same():
+    history = (ChatTurn(Role.USER, "<user>Привіт</user>"),
+               ChatTurn(Role.ASSISTANT, "<<state=talk>>\nПривіт!"))
+
+    def request(context: str, text: str) -> GenerationRequest:
+        return GenerationRequest(system="Ти — Мія.", purpose=Purpose.CHAT, context=context,
+                                 turns=(*history, ChatTurn(Role.USER, text)))
+
+    server = Server(api_chat=[chat_json("ok")])
+    p = make(server)
+    p.generate(request("Зараз 10:01, настрій: весела.", "<user>Як справи?</user>"))
+    p.generate(request("Зараз 10:02, настрій: сонна.", "<user>А погода?</user>"))
+    first, second = (body["messages"] for body in server.bodies("/api/chat"))
+    assert first[:3] == second[:3]  # system prompt and history: an unchanged prefix
+    assert first[0] == {"role": "system", "content": "Ти — Мія."}
+    assert [m["role"] for m in first] == ["system", "user", "assistant", "user"]
+    assert first[3]["content"] == "Зараз 10:01, настрій: весела.\n\n<user>Як справи?</user>"
+    assert not any(m["role"] == "system" for m in first[1:])
+
+
+def test_an_answer_that_arrived_complete_is_returned_although_cancelled_meanwhile():
+    """The answer was read in full before the cancellation was looked at: it is returned
+    (the AI service delivers it to a caller merely put aside for a conversation instead of
+    computing it again, and records it either way)."""
+    token = CancelToken()
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        token.cancel()  # e.g. the user started talking while the last bytes arrived
+        return chat_json("Ось.", load_duration=1_000_000_000)
+
+    p = make(Server(api_chat=[answer]))
+    result = p.generate(req(), token)
+    assert result.text == "Ось." and p.last_load_seconds == 1.0

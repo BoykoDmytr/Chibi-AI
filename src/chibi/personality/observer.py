@@ -36,8 +36,11 @@ configured AI provider.
 * the user is present (not between ``UserIdle`` and ``UserReturned``, unless
   they talked to her by voice in the last :data:`VOICE_PRESENCE_SECONDS` - a
   hands-free conversation touches no keyboard), she is not asleep, no
-  do-not-disturb, no quiet mode, nobody chatted or talked to her in the last
-  :data:`CHAT_QUIET_SECONDS`, and a line would be seen or heard (not hidden
+  do-not-disturb, no quiet mode, the user is not talking with her right now
+  (``ConversationActive``: one AI worker - and, for a local model, one server -
+  would otherwise make her answer wait behind the decision), nobody chatted or
+  talked to her in the last :data:`CHAT_QUIET_SECONDS` and no conversation
+  with her ended in that time, and a line would be seen or heard (not hidden
   over a fullscreen app without a voice);
 * it is not a near-repeat of what she last commented on (within the log's
   age) or last asked about (within :data:`RECONSIDER_SECONDS`), and it is
@@ -58,11 +61,12 @@ configured AI provider.
   the configured provider (``may_share``, checked right before sending).
 
 **Stale answers are dropped**: a newer, different observation, a foreground
-app change, the user going away or talking to her, quiet mode / DND, a
-revoked permission or a settings change cancel the decision in flight
-(generation number + cancel token).  When an answer arrives the presence,
-quiet, chat and gate checks run again, and an answer older than
-:data:`RESULT_MAX_AGE_SECONDS` is not said.
+app change, the user going away or talking to her (a ``VoiceTranscript``, or
+a conversation starting), quiet mode / DND, a revoked permission or a
+settings change cancel the decision in flight (generation number + cancel
+token); none of them counts as a failure (no back-off).  When an answer
+arrives the presence, quiet, chat and gate checks run again, and an answer
+older than :data:`RESULT_MAX_AGE_SECONDS` is not said.
 
 **When she speaks** the line is published as
 ``SpeechRequested(solicited=False, source="observer:ai")`` with the state
@@ -103,6 +107,7 @@ from chibi.core.clock import Clock
 from chibi.core.config import Settings
 from chibi.core.event_bus import EventBus
 from chibi.core.events import (
+    ConversationActive,
     DoNotDisturbChanged,
     ForegroundAppChanged,
     FullscreenChanged,
@@ -130,7 +135,8 @@ LOG_LIMIT = OBSERVER_MAX_MOMENTS
 LOG_MAX_AGE_SECONDS = 15 * MINUTE
 #: An observation older than this when it arrives is logged but never asked about.
 FRESH_SECONDS = 60.0
-#: After the user wrote or talked to her she does not start commenting for this long.
+#: After the user wrote or talked to her - or a conversation with her ended - she does
+#: not start commenting for this long.
 CHAT_QUIET_SECONDS = 60.0
 #: Talking to her by voice counts as being at the PC for this long (no keyboard or
 #: mouse input in a hands-free conversation; the activity monitor would say "idle").
@@ -322,6 +328,10 @@ class Observer:
         self._last_commented: tuple[_Moment, float] | None = None
         self._last_comment_at: float | None = None
         self._last_voice: float | None = None
+        #: The user is talking with her (ConversationActive), and when the last
+        #: conversation ended (monotonic).
+        self._conversation = False
+        self._conversation_ended: float | None = None
 
         self._away = False
         self._fullscreen = False
@@ -343,6 +353,7 @@ class Observer:
             bus.subscribe(SettingsChanged, self._on_settings_changed),
             bus.subscribe(GameEnded, self._on_game_ended),
             bus.subscribe(VoiceTranscript, self._on_voice),
+            bus.subscribe(ConversationActive, self._on_conversation),
         ]
 
     # -- public API ------------------------------------------------------------------------
@@ -496,6 +507,8 @@ class Observer:
 
     def _presence_blocked(self, settings: Settings, now: float) -> str | None:
         """Conditions checked both before asking and before saying the answer."""
+        if self._conversation:
+            return "conversation"
         if self._user_away():
             return "away"
         if self._is_sleeping():
@@ -708,6 +721,20 @@ class Observer:
         # Also a game made private while running (forgotten): nothing of it stays.
         self.clear()
 
+    def _on_conversation(self, event: ConversationActive) -> None:
+        """The user started or stopped talking with her.  While they talk no decision is
+        asked for and the one in flight is dropped (its request withdrawn, so her answer
+        never waits behind it); afterwards the pause after talking applies
+        (:data:`CHAT_QUIET_SECONDS` from the end of the conversation)."""
+        active = bool(event.active)
+        if active == self._conversation:
+            return
+        self._conversation = active
+        if active:
+            self._invalidate("conversation")
+        else:
+            self._conversation_ended = self._clock.monotonic()
+
     def _on_voice(self, _event: VoiceTranscript) -> None:
         # The user is talking to her: no comment of her own now, and they are here
         # (hands-free: no keyboard or mouse).  The text is not kept.
@@ -774,8 +801,8 @@ class Observer:
         return self._quiet_until is None or self._clock.now() < self._quiet_until
 
     def _last_talk(self) -> float | None:
-        """Monotonic time the user last wrote or talked to her."""
-        times = [self._last_voice]
+        """Monotonic time the user last wrote or talked to her (or a conversation ended)."""
+        times = [self._last_voice, self._conversation_ended]
         if self._last_chat is not None:
             try:
                 times.append(self._last_chat())

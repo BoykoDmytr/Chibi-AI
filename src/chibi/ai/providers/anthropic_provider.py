@@ -193,8 +193,8 @@ class AnthropicProvider:
             if "authentication" in str(exc).lower():
                 raise ProviderAuthError("no Anthropic credentials", user_message=_NO_KEY) from None
             raise
-        if cancel is not None:
-            cancel.raise_if_cancelled()
+        # A complete answer is returned even if the token was cancelled after its last
+        # event: it was billed in full; the AI service records it and decides.
         # Check the stop reason before touching the content: a refused answer may
         # be empty or a partial that must be discarded.
         if final.stop_reason == "refusal":

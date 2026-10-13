@@ -12,7 +12,14 @@ from chibi.activity.backend import ForegroundInfo
 from chibi.vision.analysis import Observation
 from chibi.vision.capture_win import CaptureError, Frame
 from chibi.vision.policy import PolicyConfig, VisionReactionPolicy
-from chibi.vision.service import AnalyzerError, Target, VisionMode, VisionService, VisionState
+from chibi.vision.service import (
+    CONVERSATION_GRACE_SECONDS,
+    AnalyzerError,
+    Target,
+    VisionMode,
+    VisionService,
+    VisionState,
+)
 
 GAME = ForegroundInfo(pid=1, process_name="stalker2.exe", hwnd=111)
 BANK = ForegroundInfo(pid=2, process_name="mybank.exe", hwnd=222)
@@ -53,14 +60,16 @@ class Analyzer:
     def __init__(self, results=None, local=True):
         self.results = list(results or [obs()])
         self.calls = []
+        self.urgent = []
         self.local = local
 
     @property
     def is_local(self):
         return self.local
 
-    def analyze(self, image, media_type, app_title, previous):
+    def analyze(self, image, media_type, app_title, previous, *, urgent=False, wanted=None):
         self.calls.append((image, media_type, app_title, previous))
+        self.urgent.append(urgent)
         result = self.results.pop(0) if len(self.results) > 1 else self.results[0]
         if isinstance(result, Exception):
             raise result
@@ -78,6 +87,7 @@ class H:
         self.capture_ok = capture_ok
         self.cloud_ok = cloud_ok
         self.quiet = False
+        self.cancels = 0
         self.states, self.seen, self.errors = [], [], []
         rng = random.Random(0)
         self.hashes = (rng.getrandbits(64) for _ in range(10**5))  # distinct frames by default
@@ -96,9 +106,13 @@ class H:
             on_observation=lambda o, d: self.seen.append((o, d)),
             on_error=self.errors.append,
             process_frame=lambda frame: (b"jpeg", "image/jpeg", next(self.hashes)),
+            cancel=self._cancel,
         )
         self.service.configure(mode, interval=30, analyzer=self.analyzer)
         self.service.tick()  # sees the window in front; first frame ~2 s later
+
+    def _cancel(self):
+        self.cancels += 1
 
     def _foreground(self):
         if self.front_during_capture is not None and self.capture.calls:
@@ -182,9 +196,9 @@ def test_permission_revoked_after_analysis_discards_the_result():
     h = H()
 
     class Revoking(Analyzer):
-        def analyze(self, *args):
+        def analyze(self, *args, **kwargs):
             h.capture_ok = False
-            return super().analyze(*args)
+            return super().analyze(*args, **kwargs)
 
     h = H(analyzer=Revoking())
     h.advance(3)
@@ -473,10 +487,10 @@ def test_a_result_no_longer_allowed_is_dropped_before_it_is_used():
     allowed = {"ok": True}
 
     class Revoking(Analyzer):
-        def analyze(self, *args):
+        def analyze(self, *args, **kwargs):
             if not self.calls:
                 allowed["ok"] = False  # e.g. the app became private while the model looked
-            return super().analyze(*args)
+            return super().analyze(*args, **kwargs)
 
     h = H(mode=VisionMode.AUTO, analyzer=Revoking())
     targets = []
@@ -504,3 +518,144 @@ def test_a_failing_recheck_fails_closed():
     h.service._still_allowed = broken
     h.advance(3)
     assert len(h.analyzer.calls) == 1 and h.seen == []
+
+
+# --- the user's conversation comes first ------------------------------------------------------------
+
+
+def test_no_automatic_frames_during_a_conversation_and_a_grace_after_it():
+    h = H()
+    h.advance(3)
+    assert len(h.capture.calls) == 1
+    h.service.set_conversation(True)
+    assert h.service.conversation and h.service.holding
+    h.advance(100)
+    assert len(h.capture.calls) == 1  # long overdue, but she is talking with the user
+    h.service.set_conversation(False)
+    h.advance(CONVERSATION_GRACE_SECONDS - 1)
+    assert len(h.capture.calls) == 1  # the next sentence must not run into a frame
+    h.advance(1)
+    assert len(h.capture.calls) == 2 and not h.service.holding  # overdue: taken at once
+    assert h.errors == [] and h.service.state == VisionState.WATCHING
+
+
+def test_a_frame_in_flight_is_abandoned_without_a_notice_or_a_back_off():
+    h = H()
+    h.now += 3
+    h.service.tick()  # the frame's job is queued; it has not run yet
+    assert h.service.state == VisionState.ANALYZING
+    h.service.set_conversation(True)
+    assert h.cancels == 1  # its analysis request is withdrawn
+    assert h.service.state == VisionState.WATCHING
+    h.worker.run()  # the abandoned job notices before it captures anything
+    assert h.capture.calls == [] and h.analyzer.calls == [] and h.seen == []
+    h.service.set_conversation(False)
+    h.advance(CONVERSATION_GRACE_SECONDS)
+    assert h.capture.calls == [111] and len(h.seen) == 1  # no back-off: right after the grace
+    assert h.errors == [] and VisionState.PAUSED not in h.states
+
+
+def test_an_analysis_cut_short_by_a_conversation_is_not_an_error():
+    h = H()
+
+    class Interrupted(Analyzer):
+        def analyze(self, *args, **kwargs):
+            if not self.calls:
+                # The conversation starts while the model looks; the AI service then
+                # reports the withdrawn request as cancelled.
+                h.service.set_conversation(True)
+                self.calls.append(args)
+                raise AnalyzerError("analysis cancelled", user_message="Аналіз кадру скасовано.")
+            return super().analyze(*args, **kwargs)
+
+    h = H(analyzer=Interrupted())
+    h.advance(3)
+    assert len(h.analyzer.calls) == 1 and h.cancels == 1
+    assert h.errors == [] and h.seen == [] and h.service.state != VisionState.PAUSED
+    h.service.set_conversation(False)
+    h.advance(CONVERSATION_GRACE_SECONDS)
+    assert len(h.analyzer.calls) == 2 and len(h.seen) == 1  # back to normal, no 60 s pause
+
+
+def test_a_result_arriving_after_the_conversation_started_is_dropped():
+    h = H()
+    h.now += 3
+    h.service.tick()
+    job = h.worker.jobs.pop()
+    posted = []
+    h.service._post = posted.append  # the answer waits for the main thread...
+    job()
+    h.service.set_conversation(True)  # ...while the conversation starts
+    for fn in posted:
+        fn()
+    assert h.seen == [] and h.errors == []
+
+
+def test_the_users_request_during_a_conversation_runs_at_once_as_urgent():
+    h = H(mode=VisionMode.AUTO)
+    h.service.set_conversation(True)
+    assert h.service.request()
+    h.worker.run()
+    assert h.capture.calls == [111] and h.analyzer.urgent == [True]
+    assert len(h.seen) == 1 and h.errors == []
+    h.advance(100)
+    assert len(h.capture.calls) == 1  # nothing automatic while the conversation lasts
+
+
+def test_a_request_in_flight_is_kept_when_a_conversation_starts():
+    h = H(mode=VisionMode.MANUAL)
+    assert h.service.request()
+    h.service.set_conversation(True)
+    assert h.cancels == 0
+    h.worker.run()
+    assert h.analyzer.urgent == [True] and len(h.seen) == 1
+
+
+def test_the_confirmation_frame_of_a_request_is_taken_during_a_conversation():
+    h = H(mode=VisionMode.AUTO, analyzer=Analyzer([obs("player_death", "death_screen")]))
+    h.service.set_conversation(True)
+    assert h.service.request()
+    h.worker.run()
+    assert h.seen[-1][1].action == "confirm"
+    h.advance(3.5)
+    assert len(h.capture.calls) == 2 and h.analyzer.urgent == [True, True]
+    assert h.seen[-1][1].action == "react"
+
+
+def test_an_automatic_events_confirmation_is_dropped_by_a_conversation():
+    h = H(analyzer=Analyzer([obs("player_death", "death_screen"), obs()]))
+    h.advance(3)
+    assert h.seen[-1][1].action == "confirm"
+    h.service.set_conversation(True)
+    h.advance(3.5)
+    assert len(h.capture.calls) == 1  # no second frame while the user talks with her
+    h.service.set_conversation(False)
+    h.advance(CONVERSATION_GRACE_SECONDS)
+    assert len(h.capture.calls) == 1  # the next regular frame starts over, at its interval
+    h.advance(30)
+    assert len(h.capture.calls) == 2 and h.analyzer.urgent == [False, False]
+    assert all(decision.action != "react" for _obs, decision in h.seen)  # never confirmed
+
+
+def test_a_request_that_rode_on_an_automatic_frame_is_restarted_as_the_users_own():
+    h = H(mode=VisionMode.AUTO)
+    h.now += 3
+    h.service.tick()  # an automatic frame is queued
+    assert h.service.request()  # the user's request rides on it
+    h.service.set_conversation(True)
+    assert h.cancels == 1  # the automatic request is withdrawn...
+    h.worker.run()
+    # ...and the user's frame is taken again, as theirs: the AI service must not hold it.
+    assert h.capture.calls == [111] and h.analyzer.urgent == [True]
+    assert len(h.seen) == 1 and h.errors == []
+
+
+def test_conversation_flag_survives_reconfiguration():
+    h = H()
+    h.service.set_conversation(True)
+    h.service.configure(VisionMode.GAME, interval=30, analyzer=h.analyzer)
+    h.advance(100)
+    assert h.capture.calls == []
+    h.service.set_conversation(False)
+    h.advance(CONVERSATION_GRACE_SECONDS)
+    assert h.capture.calls == [111]

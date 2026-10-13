@@ -14,6 +14,7 @@ import pytest
 
 from chibi.ai.brain import (
     OBSERVER_SOURCE,
+    OUTCOME_CANCELLED,
     OUTCOME_FAILED,
     OUTCOME_SILENT,
     OUTCOME_SPOKE,
@@ -27,6 +28,7 @@ from chibi.core.config import Settings
 from chibi.core.events import (
     ActivityCategory,
     AppInfo,
+    ConversationActive,
     DoNotDisturbChanged,
     ForegroundAppChanged,
     FullscreenChanged,
@@ -263,6 +265,10 @@ def _voice(h: Harness) -> None:
     h.publish(VoiceTranscript(text="привіт"))
 
 
+def _conversation(h: Harness) -> None:
+    h.publish(ConversationActive(active=True))
+
+
 def _gate(h: Harness) -> None:
     h.gate = False
 
@@ -284,7 +290,8 @@ def _games_silent(h: Harness) -> None:
 
 
 @pytest.mark.parametrize("block", [_away, _context_away, _asleep, _dnd_setting, _dnd_event, _quiet, _chat,
-                                   _voice, _gate, _no_ai, _no_capture, _hidden_without_voice])
+                                   _voice, _conversation, _gate, _no_ai, _no_capture,
+                                   _hidden_without_voice])
 def test_each_gate_stops_the_request(make, block):
     h = make()
     block(h)
@@ -669,7 +676,7 @@ def _kill_switch(h: Harness) -> None:
 
 @pytest.mark.parametrize("make_stale", [
     _revoke, _revoke_cloud_vision, _settings_changed, _gaming_changed, _quiet_now, _dnd_now, _user_idle,
-    _talking, _foreground, _kill_switch,
+    _talking, _conversation, _foreground, _kill_switch,
 ])
 def test_stale_decisions_are_cancelled_and_never_said(make, make_stale):
     h = make()
@@ -914,4 +921,49 @@ def test_talking_to_her_hands_free_counts_as_being_here(make, clock):
     h.brain.silent()
     clock.advance(VOICE_PRESENCE_SECONDS)  # silent for a long while: away again
     h.see(scene="terminal", description="інша помилка", app="Термінал")
+    assert h.asks == 1
+
+
+# -- the user's conversation comes first ------------------------------------------------------------
+
+
+def test_no_decisions_while_the_user_talks_with_her_and_a_pause_after_it(make, clock):
+    h = make()
+    h.publish(ConversationActive(active=True))
+    clock.advance(600)  # however long they talk
+    h.see()
+    h.see(scene="terminal", event="error_on_screen", description="червоний текст помилки", app="Термінал")
+    assert h.asks == 0  # not even for a notable event
+    h.publish(ConversationActive(active=False))
+    clock.advance(CHAT_QUIET_SECONDS - 5)
+    h.see(scene="browser", description="читає новини", app="Браузер")
+    assert h.asks == 0  # she does not jump in the moment the conversation ends
+    clock.advance(6)
+    h.see(scene="document", description="текст звіту", app="Word")
+    assert h.asks == 1
+
+
+def test_a_decision_dropped_for_a_conversation_is_not_a_failure(make, clock):
+    h = make()
+    h.see()
+    call = h.brain.calls[0]
+    h.publish(ConversationActive(active=True))
+    assert call.token.cancelled and not h.observer.pending  # the request is withdrawn
+    # The AI service reports the withdrawn request; her answer would come too late anyway.
+    call.on_done(CommentDecision(None, OUTCOME_CANCELLED))
+    call.on_done(CommentDecision(SpeechRequested(text="Запізніла репліка", solicited=False), OUTCOME_SPOKE))
+    h.bus.dispatch_pending()
+    assert h.speech == [] and h.spoken == 0
+    clock.advance(20)
+    h.publish(ConversationActive(active=False))
+    clock.advance(CHAT_QUIET_SECONDS + 1)
+    h.see(scene="browser", description="читає новини", app="Браузер")
+    assert h.asks == 2  # no failure back-off (that would be minutes)
+    assert FAILURE_BACKOFF_SECONDS > 20 + CHAT_QUIET_SECONDS + 1
+
+
+def test_a_conversation_that_ends_without_starting_changes_nothing(make, clock):
+    h = make()
+    h.publish(ConversationActive(active=False))  # e.g. the app's first state
+    h.see()
     assert h.asks == 1

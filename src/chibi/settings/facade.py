@@ -10,13 +10,16 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from PySide6.QtGui import QPixmap
 
 from chibi.core.config import Settings
 from chibi.memory.repositories import GameTotals
 from chibi.privacy.permissions import PermissionManager
+
+if TYPE_CHECKING:  # pragma: no cover - typing only; the windows never import the AI service
+    from chibi.ai.service import RequestTiming
 
 
 @dataclass(frozen=True)
@@ -144,6 +147,11 @@ class AppFacade(Protocol):
 
     def ai_list_models(self, on_done: Callable[[list[str], str], None]) -> None:
         """Ask the provider which models exist; on_done(models, error message or "")."""
+        ...
+
+    def ai_last_timing(self) -> RequestTiming | None:
+        """Where the time of her last chat answer went (queue, model load, first words,
+        whole answer - seconds, numbers only), or None before the first one."""
         ...
 
     def send_chat_stream(self, text: str, on_delta: Callable[[str], None],

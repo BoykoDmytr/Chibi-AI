@@ -21,6 +21,7 @@ import argparse
 import contextlib
 import logging
 import logging.handlers
+import math
 import random
 import signal
 import sys
@@ -42,7 +43,7 @@ from chibi.ai.brain import AIBrain, BrainContext
 from chibi.ai.budget import UsageLedger
 from chibi.ai.providers.factory import DEFAULT_MODELS, is_cloud, stored_key
 from chibi.ai.secrets import KEY_NAMES, default_secret_store
-from chibi.ai.service import AIService
+from chibi.ai.service import AIService, RequestTiming
 from chibi.ai.types import Purpose
 from chibi.character.animation import CharacterPack, PackError
 from chibi.character.states import CharacterState, StatePriority
@@ -56,6 +57,7 @@ from chibi.core.events import (
     AppShuttingDown,
     AppStarted,
     CharacterInteraction,
+    ConversationActive,
     DoNotDisturbChanged,
     ForegroundAppChanged,
     FullscreenChanged,
@@ -121,6 +123,7 @@ from chibi.vision.integration import (
 from chibi.voice.integration import (
     AZURE_KEY_NAME,
     DownloadProgress,
+    SpeechStart,
     VoiceIntegration,
     VoiceStatus,
     invites_reply,
@@ -146,6 +149,9 @@ BUSY_REPLY = "Почула, але ще відповідаю на поперед
 PENDING_TRANSCRIPT_SECONDS = 60.0
 #: A chat answer that never arrived stops holding back voice requests after this long.
 CHAT_IN_FLIGHT_SECONDS = 90.0
+#: ``ConversationActive(False)`` follows this long after the conversation went quiet, so
+#: the next turn of a back-and-forth does not find a screen analysis in its way.
+CONVERSATION_HOLD_SECONDS = 2.0
 #: Menu item: the user's switch for the always-open microphone (push-to-talk keeps working).
 MIC_PAUSE_TEXT = "Пауза мікрофона"
 #: Its tooltip while she listens only on push-to-talk (there is nothing to pause).
@@ -213,8 +219,17 @@ class ChibiApp(QObject):
         #: The next chat message may be mined for memories (False while a request the open
         #: microphone overheard goes through the chat window).
         self._chat_remember = True
+        #: The message the chat window sends now is a voice request (see send_chat_stream).
+        self._chat_spoken = False
         #: When the user last talked to her by voice (monotonic): hands-free is presence too.
         self._last_voice_at: float | None = None
+        #: ConversationActive as last published, and since when (monotonic) nothing has kept
+        #: it up: False follows CONVERSATION_HOLD_SECONDS later (see _sync_conversation).
+        self._conversation = False
+        self._conversation_quiet_since: float | None = None
+        self._conversation_timer = QTimer(self)
+        self._conversation_timer.setSingleShot(True)
+        self._conversation_timer.timeout.connect(self._sync_conversation)
         self._ai_model = ""
         self.bus.subscribe(AIStatusChanged, self._on_ai_status)
         self._secrets = default_secret_store(paths.data_dir())
@@ -269,6 +284,7 @@ class ChibiApp(QObject):
             notify=self._notify_voice, on_change=self._sync_voice_ui, is_visible=self._controller.is_visible,
             clock=self._clock, parent=self,
         )
+        self._voice.add_speech_start_listener(self._on_speech_start)
         self._controller.set_speech_router(self._route_speech)
 
         # -- screen vision (Phase 3): only allowed game windows, only with permission ----------
@@ -365,6 +381,9 @@ class ChibiApp(QObject):
         if self._tray is not None:
             self._tray.show()
         self._sync_observation()
+        # No model warm-up here: a local model is loaded when the user starts talking to
+        # her or opens the chat - one loaded now would sit in video memory (keep-alive)
+        # even if they only start a game.
         self.bus.publish(AppStarted(first_run=self._first_run, away_seconds=away))
         if self._first_run:
             # Let her appear and greet first; the dialog is not modal to the desktop.
@@ -397,6 +416,7 @@ class ChibiApp(QObject):
             self._tamagotchi_timer.stop,
             self._reactions_timer.stop,
             self._transcript_timer.stop,
+            self._conversation_timer.stop,
             self._games_hub.close_all,
             self._gifts.close,
             self._sessions.flush,
@@ -509,14 +529,19 @@ class ChibiApp(QObject):
         return reply
 
     def send_chat_stream(self, text: str, on_delta: Callable[[str], None],
-                         on_done: Callable[[ChatReply], None], *, remember: bool | None = None) -> None:
+                         on_done: Callable[[ChatReply], None], *, remember: bool | None = None,
+                         spoken: bool | None = None) -> None:
         """Chat with the AI brain when it is available, the offline responder otherwise
         (also when the AI fails mid-reply).  *on_done* runs exactly once.  While the
         answer is in flight, voice requests wait for it (:meth:`_on_transcript`).
         *remember* False: the message is not mined for long-term memories (what the open
-        microphone overheard); None: as set for this message (typed text: True)."""
+        microphone overheard); None: as set for this message (typed text: True).
+        *spoken*: the message is a voice request (its answer is timed to her voice);
+        None: as set for this message (typed text: False)."""
         if remember is None:
             remember = self._chat_remember
+        if spoken is None:
+            spoken = self._chat_spoken
         self._tamagotchi.interact(InteractionKind.TALK, announce=False)
         self._last_chat = self._clock.monotonic()
         self._chat_ids += 1
@@ -531,14 +556,17 @@ class ChibiApp(QObject):
                 self._chat_finished()
 
         try:
-            self._answer_chat(text, on_delta, done, remember=remember)
+            self._answer_chat(text, on_delta, done, remember=remember, spoken=spoken)
         except BaseException:
             if self._chats_in_flight.pop(chat_id, None) is not None:
                 self._chat_finished()
             raise
+        # After the request is queued: a warm-up for this conversation would only delay it.
+        self._sync_conversation()
 
     def _answer_chat(self, text: str, on_delta: Callable[[str], None],
-                     on_done: Callable[[ChatReply], None], *, remember: bool = True) -> None:
+                     on_done: Callable[[ChatReply], None], *, remember: bool = True,
+                     spoken: bool = False) -> None:
         look = self._look_reply(text)
         if look is not None:
             # The answer about the screen comes from vision once the frame is analysed.
@@ -552,7 +580,7 @@ class ChibiApp(QObject):
             return
         # She starts talking at the first complete sentence while the model writes on;
         # the stream hands the answer to her voice / bubble exactly once in total.
-        stream = self._voice.begin_reply("chat", show=self._show_routed)
+        stream = self._voice.begin_reply("chat", show=self._show_routed, voice_request=spoken)
 
         def delta(piece: str) -> None:
             try:
@@ -587,6 +615,55 @@ class ChibiApp(QObject):
         if self._pending_transcript is not None and not self._chat_busy() and not self._shut_down:
             # Later, not from inside the finished answer's callback.
             self._transcript_timer.start(0)
+        self._sync_conversation()
+
+    def _sync_conversation(self) -> None:
+        """Publish ``ConversationActive`` whenever it changes, so background AI work
+        (screen analysis, observer decisions, memory extraction, AI-phrased lines) never
+        delays her answer.  The user is talking with her while the voice says so
+        (``VoiceIntegration.conversation_active``: speaking, being recognised, waiting for
+        or hearing her answer, the follow-up window) or a chat answer is in flight (typed
+        or spoken, from :meth:`send_chat_stream` until it is finished - one lost for
+        :data:`CHAT_IN_FLIGHT_SECONDS` stops counting).  ``False`` follows only after
+        :data:`CONVERSATION_HOLD_SECONDS` of quiet, so back-to-back turns do not flap.
+        Starting a conversation also warms the chat model up (a no-op unless it is
+        likely unloaded)."""
+        if self._shut_down:
+            return
+        now = self._clock.monotonic()
+        active = self._voice.conversation_active or self._chat_busy()
+        wake: float | None = None
+        if active:
+            self._conversation_quiet_since = None
+            if not self._conversation:
+                self._conversation = True
+                self.bus.publish(ConversationActive(active=True))
+                self._ai.warm_up()
+            if self._chats_in_flight:  # look again when a lost answer stops counting
+                wake = min(self._chats_in_flight.values()) + CHAT_IN_FLIGHT_SECONDS
+        elif self._conversation:
+            if self._conversation_quiet_since is None:
+                self._conversation_quiet_since = now
+            wake = self._conversation_quiet_since + CONVERSATION_HOLD_SECONDS
+            if now >= wake:
+                self._conversation = False
+                self._conversation_quiet_since = None
+                self.bus.publish(ConversationActive(active=False))
+                wake = None
+        if wake is None:
+            self._conversation_timer.stop()
+        else:
+            # A little late rather than early: the clock must have passed the moment.
+            self._conversation_timer.start(min(2**31 - 1, max(0, math.ceil((wake - now) * 1000)) + 20))
+
+    def _on_speech_start(self, event: SpeechStart) -> None:
+        """The user started talking: get the chat model ready while they speak (loading
+        takes seconds, about as long as recognising the phrase).  Speech the open
+        microphone cannot yet tell is for her ("name" mode: maybe the TV) does not count -
+        it would keep the model in video memory all evening; her name, once recognised,
+        starts the conversation and warms it up then (:meth:`_sync_conversation`)."""
+        if event.for_her:
+            self._ai.warm_up()
 
     def _look_reply(self, text: str) -> ChatReply | None:
         """"Подивись на екран" in the chat: ask vision to look.  Her reply says she is
@@ -661,6 +738,9 @@ class ChibiApp(QObject):
             cost_known=usage.cost_known,
         )
 
+    def ai_last_timing(self) -> RequestTiming | None:
+        return self._ai.last_chat_timing
+
     def ai_has_key(self, provider: str) -> bool:
         return provider in KEY_NAMES and stored_key(self._secrets, provider) is not None
 
@@ -696,6 +776,10 @@ class ChibiApp(QObject):
         self._memory.delete(memory_id)
 
     def clear_memories(self, kind: str | None = None) -> None:
+        if kind in (None, "", "fact", "preference"):  # what memory extraction would store
+            # Extraction waits while the user talks with her: what was said before this
+            # must not come back as a memory afterwards.
+            self._brain.discard_pending_memories()
         self._memory.clear(kind)
 
     def emotion(self) -> dict[str, float]:
@@ -797,6 +881,7 @@ class ChibiApp(QObject):
                 self.permissions.revoke(permission)
         self._monitor.stop(timeout=2.0)
         self._sessions.close()
+        self._brain.discard_pending_memories()  # nothing said before comes back as a memory
         self._db.wipe_all()
         self._memory.clear()  # drops the in-process search cache of deleted texts
         self._short_term.clear()
@@ -841,6 +926,7 @@ class ChibiApp(QObject):
             self._sync_voice_ui()
         self.bus.publish(CharacterInteraction(kind=InteractionKind.TALK))
         self._raise(self._chat)
+        self._ai.warm_up()  # the model loads while the user types
 
     def show_status(self) -> None:
         if self._status is None:
@@ -1069,8 +1155,10 @@ class ChibiApp(QObject):
 
     def _sync_voice_ui(self) -> None:
         """The voice integration reconfigured or changed state (or the open microphone
-        paused / resumed): microphone button, tray "listening" badge and tooltip, the
-        microphone pause items."""
+        paused / resumed, or the user started / stopped talking with her): microphone
+        button, tray "listening" badge and tooltip, the microphone pause items,
+        ``ConversationActive``."""
+        self._sync_conversation()
         st = self._voice.status()
         # Paused, switched to push-to-talk or recognition off: a request the open
         # microphone heard before that is dropped, not sent once the answer is done.
@@ -1141,17 +1229,20 @@ class ChibiApp(QObject):
             draft = chat.input.text()  # what the user was typing stays
             chat.input.setText(text)
             self._chat_remember = remember
+            self._chat_spoken = True
             try:
                 chat.send()
             finally:
                 self._chat_remember = True
+                self._chat_spoken = False
             chat.input.setText(draft)
         elif self._chat_busy():
             # In "name" / "open" mode she can hear the next request before the answer
             # to the previous one is complete: no second answer in parallel.
             self._pending_transcript = (text, self._clock.monotonic(), origin)
         else:
-            self.send_chat_stream(text, lambda _delta: None, lambda _reply: None, remember=remember)
+            self.send_chat_stream(text, lambda _delta: None, lambda _reply: None, remember=remember,
+                                  spoken=True)
 
     def _flush_transcript(self) -> None:
         """The answer in flight is complete: send the request that waited for it."""

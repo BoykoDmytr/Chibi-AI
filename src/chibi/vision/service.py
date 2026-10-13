@@ -23,6 +23,22 @@ the one the spec prescribes, in this order:
 
 Frames are never written to disk; the last few *observations* (scene, event,
 short description) are kept in memory as context for her chat answers.
+
+**The conversation comes first** (:meth:`VisionService.set_conversation`,
+driven by ``ConversationActive``).  One AI worker - and, for a local model,
+one server - answers both her chat replies and screen analyses, and an image
+prompt on a local model takes many seconds.  So while the user is talking
+with her no automatic frame is taken, a frame in flight is abandoned (its
+analysis request is cancelled through ``cancel``; whatever it ends with -
+also an error the AI service reports for it - is ignored: no notice, no
+back-off) and a pending confirmation frame of an
+automatic event is dropped.  Automatic frames resume
+:data:`CONVERSATION_GRACE_SECONDS` after the conversation ends, so the next
+sentence does not run into one.  A frame the user asked for ("подивись на
+екран", and its confirmation frame) is never held back: it is analysed at
+once with ``urgent=True`` (the analyzer marks it as a request the user is
+waiting for).  An automatic frame a user's request rode on is restarted as
+the user's own when a conversation abandons it.
 """
 
 from __future__ import annotations
@@ -67,13 +83,19 @@ class Target:
 
 
 class FrameAnalyzer(Protocol):
-    """Sends one encoded frame to a vision model; called on the worker thread."""
+    """Sends one encoded frame to a vision model; called on the worker thread.
+
+    ``urgent``: the user asked for this frame and is waiting for the answer (it
+    must not wait behind their conversation).  ``wanted`` turns False once the
+    frame was abandoned, stopped or reconfigured (any thread; authoritative on
+    the main thread, where the analyzer checks it right before the request
+    leaves): such a frame must not be sent."""
 
     @property
     def is_local(self) -> bool: ...
 
-    def analyze(self, image: bytes, media_type: str, app_title: str,
-                previous: Observation | None) -> Observation: ...
+    def analyze(self, image: bytes, media_type: str, app_title: str, previous: Observation | None, *,
+                urgent: bool = False, wanted: Callable[[], bool] | None = None) -> Observation: ...
 
 
 class AnalyzerError(RuntimeError):
@@ -94,6 +116,9 @@ CONFIRM_DELAY = 3.0
 MAX_CAPTURE_FAILURES = 4
 #: Paced AUTO mode: each identical frame in a row stretches the interval by this much (up to 3x).
 SAME_FRAME_SLOWDOWN = 0.5
+#: After a conversation with her ends, automatic frames wait this long (the user's
+#: next sentence must not find a screen analysis in its way).
+CONVERSATION_GRACE_SECONDS = 5.0
 
 
 class VisionService:
@@ -115,7 +140,10 @@ class VisionService:
         on_error: Callable[[str], None] | None = None,
         process_frame: Callable[[Any], tuple[bytes, str, int]] | None = None,
         still_allowed: Callable[[Target], bool] | None = None,
+        cancel: Callable[[], None] | None = None,
     ) -> None:
+        """*cancel* abandons the analyzer's request in flight (any thread; the
+        integration passes the analyzer's ``cancel_current``)."""
         self._post = post
         self._worker = worker
         self._capture = capture
@@ -131,6 +159,7 @@ class VisionService:
         self._on_error = on_error
         self._process_frame = process_frame or _default_process_frame
         self._still_allowed = still_allowed
+        self._cancel = cancel
 
         self.mode = VisionMode.OFF
         self.interval = 30.0
@@ -161,6 +190,16 @@ class VisionService:
         self._last_hash_hwnd = 0
         self._same_streak = 0
         self.recent: deque[Observation] = deque(maxlen=5)
+        #: The user is talking with her (see the module docstring); automatic frames
+        #: wait until ``_resume_at`` after it ends.
+        self._conversation = False
+        self._resume_at = 0.0
+        #: The frame in flight was sent as urgent (the user is waiting for it) /
+        #: answers a user's request (perhaps one that rode on an automatic frame).
+        self._job_urgent = False
+        self._job_for_user = False
+        #: The pending confirmation frame (``_confirm_due``) answers a user's request.
+        self._confirm_urgent = False
 
     # -- configuration ---------------------------------------------------------------------
 
@@ -183,6 +222,7 @@ class VisionService:
         self.analyzer = analyzer
         self._gen += 1
         self._busy = False
+        self._job_urgent = self._job_for_user = False
         self._backoff_until = 0.0
         self._capture_failures = 0
         self._reported.clear()
@@ -198,6 +238,7 @@ class VisionService:
         """Kill switch / permission revoked: stop now and forget what she saw."""
         self._gen += 1
         self._busy = False
+        self._job_urgent = self._job_for_user = False
         self._target = None
         self._confirm_due = None
         self._last_hash = None
@@ -205,6 +246,38 @@ class VisionService:
         self.recent.clear()
         if self.mode != VisionMode.OFF:
             self._set_state(VisionState.IDLE if self._enabled() else VisionState.OFF, "stopped")
+
+    @property
+    def conversation(self) -> bool:
+        """The user is talking with her (the last :meth:`set_conversation`)."""
+        return self._conversation
+
+    @property
+    def holding(self) -> bool:
+        """No automatic frames now: a conversation, or the grace after one."""
+        return self._conversation or self._clock() < self._resume_at
+
+    def set_conversation(self, active: bool) -> None:
+        """``ConversationActive``: see "The conversation comes first" in the module
+        docstring.  Main thread."""
+        active = bool(active)
+        if active == self._conversation:
+            return
+        self._conversation = active
+        if not active:
+            self._resume_at = self._clock() + CONVERSATION_GRACE_SECONDS
+            log.debug("conversation over: automatic frames resume in %.0f s", CONVERSATION_GRACE_SECONDS)
+            return
+        if self._confirm_due is not None and not self._confirm_urgent:
+            # An automatic event's second frame: not now.  The next regular frame starts over.
+            self._confirm_due = None
+        if not self._busy or self._job_urgent:
+            return  # nothing in flight, or the user's own request: it runs on
+        for_user = self._job_for_user
+        self._abandon("conversation")
+        if for_user:
+            # A user's request rode on that automatic frame: look again, as their request.
+            self.request()
 
     def game_session(self, active: bool) -> None:
         """A game started or ended: novelty and dedup start over."""
@@ -234,6 +307,15 @@ class VisionService:
         now = self._clock()
         if self._state == VisionState.PAUSED and now < self._backoff_until:
             return
+        if self._conversation or now < self._resume_at:
+            # The user is talking with her: no automatic frame may delay her answer.
+            # Only the second frame of a request they made is taken.
+            if self._confirm_due is not None and self._confirm_urgent and now >= self._confirm_due:
+                self._confirm_due = None
+                target = self._current_target(require_game=False)
+                if target is not None and target == self._target:
+                    self._start(target, force=True, reason="confirm", urgent=True)
+            return
         if (self.away or self.muted) and self.mode != VisionMode.MANUAL:
             # Nobody to watch (or nothing to do with it): no frames, and no cost.
             self._target = None
@@ -247,7 +329,7 @@ class VisionService:
                 self._confirm_due = None
                 target = self._current_target(require_game=False)
                 if target is not None and target == self._target:
-                    self._start(target, force=True, reason="confirm")
+                    self._start(target, force=True, reason="confirm", urgent=self._confirm_urgent)
             return
         target = self._current_target(require_game=self.mode == VisionMode.GAME)
         if target is None:
@@ -266,7 +348,7 @@ class VisionService:
             self._set_state(VisionState.WATCHING, target.title)
         if self._confirm_due is not None and now >= self._confirm_due:
             self._confirm_due = None
-            self._start(target, force=True, reason="confirm")
+            self._start(target, force=True, reason="confirm", urgent=self._confirm_urgent)
             return
         if now >= self._next_due and now >= self._backoff_until:
             self._start(target, force=False, reason="interval")
@@ -275,7 +357,8 @@ class VisionService:
         """Manual vision ("подивись на екран"): analyse the window in front now.
 
         Works in every mode except OFF; the app in front must still be allowed
-        and not private.  Returns False (and explains) if it can't.
+        and not private.  Returns False (and explains) if it can't.  Also during a
+        conversation with her: the user is waiting for this one (``urgent``).
         """
         if self.mode == VisionMode.OFF or self.analyzer is None or self._capture is None:
             self._error("Бачення екрана вимкнене (Налаштування → Бачення екрана).")
@@ -284,6 +367,9 @@ class VisionService:
             self._error("Захоплення екрана не дозволене в «Приватності».")
             return False
         if self._busy:
+            # The frame in flight answers the request too.  (An automatic one is
+            # restarted as the user's own if a conversation abandons it.)
+            self._job_for_user = True
             return True
         target = self._current_target(require_game=False)
         if target is None:
@@ -328,27 +414,52 @@ class VisionService:
 
     # -- the pipeline ---------------------------------------------------------------------------
 
-    def _start(self, target: Target, *, force: bool, reason: str) -> None:
+    def _start(self, target: Target, *, force: bool, reason: str, urgent: bool = False) -> None:
+        """*urgent*: the user is waiting for this frame (``reason == "manual"`` always is)."""
         analyzer = self.analyzer
         capture = self._capture
         if analyzer is None or capture is None:
             return
         self._busy = True
+        self._job_urgent = self._job_for_user = urgent or reason == "manual"
         gen = self._gen
         previous = self.recent[-1] if self.recent else None
         # Dedup only against the last frame of the same window.
         last_hash = None if force or target.hwnd != self._last_hash_hwnd else self._last_hash
         self._set_state(VisionState.ANALYZING, reason)
+        job_urgent = self._job_urgent
+
+        def wanted() -> bool:  # main thread: not abandoned, stopped or reconfigured since
+            return gen == self._gen
 
         def job() -> None:
-            outcome = self._pipeline(capture, analyzer, target, previous, last_hash)
+            outcome = self._pipeline(capture, analyzer, target, previous, last_hash,
+                                     urgent=job_urgent, wanted=wanted)
             self._post(lambda: self._finished(gen, target, reason, outcome))
 
         self._worker.submit(job, 1)
 
+    def _abandon(self, why: str) -> None:
+        """Give up the frame in flight: its analysis request is cancelled and whatever it
+        ends with is ignored (no notice, no back-off).  Main thread."""
+        self._gen += 1
+        self._busy = False
+        self._job_urgent = self._job_for_user = False
+        if self._cancel is not None:
+            try:
+                self._cancel()
+            except Exception:
+                log.exception("cancelling the analysis in flight failed")
+        log.info("vision: frame in flight abandoned (%s)", why)
+        watching = self._target is not None and self.mode not in (VisionMode.OFF, VisionMode.MANUAL)
+        self._set_state(VisionState.WATCHING if watching else VisionState.IDLE, why)
+
     def _pipeline(self, capture: CaptureBackend, analyzer: FrameAnalyzer, target: Target,
-                  previous: Observation | None, last_hash: int | None) -> tuple[str, Any]:
+                  previous: Observation | None, last_hash: int | None, *, urgent: bool = False,
+                  wanted: Callable[[], bool] | None = None) -> tuple[str, Any]:
         """Worker thread.  Returns (kind, payload)."""
+        if wanted is not None and not wanted():
+            return "dropped", "abandoned"
         if not self._capture_allowed():
             return "dropped", "permission revoked"
         try:
@@ -378,7 +489,8 @@ class VisionService:
         if not analyzer.is_local and not self._cloud_allowed():
             return "dropped", "cloud vision not allowed"
         try:
-            observation = analyzer.analyze(image, media_type, target.title, previous)
+            observation = analyzer.analyze(image, media_type, target.title, previous, urgent=urgent,
+                                           wanted=wanted)
         except AnalyzerError as exc:
             return "analyzer_error", exc
         except AnalysisError as exc:
@@ -390,8 +502,10 @@ class VisionService:
 
     def _finished(self, gen: int, target: Target, reason: str, outcome: tuple[str, Any]) -> None:
         if gen != self._gen:
-            return  # stopped or reconfigured meanwhile: forget it
+            return  # stopped, reconfigured or abandoned meanwhile: forget it
         self._busy = False
+        for_user = self._job_for_user
+        self._job_urgent = self._job_for_user = False
         now = self._clock()
         kind, payload = outcome
         self._next_due = now + self._effective_interval()
@@ -416,6 +530,7 @@ class VisionService:
                 decision = Decision("ignore", "unconfirmed", decision.score, observation=decision.observation)
             elif decision.action == "confirm":
                 self._confirm_due = now + CONFIRM_DELAY
+                self._confirm_urgent = for_user
             self._quiet_streak = 0 if observation.notable else self._quiet_streak + 1
             if self._on_observation is not None:
                 self._on_observation(decision.observation or observation, decision)

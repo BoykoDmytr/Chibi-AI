@@ -35,7 +35,14 @@ from chibi.settings.voice_page import (
     vocative,
 )
 from chibi.voice.hotkey_win import PRESETS
-from chibi.voice.integration import STT_OFF, VOICE_MODULE_MISSING, DownloadProgress, VoiceStatus
+from chibi.voice.integration import (
+    STT_OFF,
+    VOICE_MODULE_MISSING,
+    DownloadProgress,
+    VoiceLatency,
+    VoiceStatus,
+    recommended_threads,
+)
 from chibi.voice.models import CATALOG, DEFAULT_TTS_MODEL
 
 KEY = "azure-secret-key-0123456789"
@@ -715,3 +722,72 @@ def test_open_microphone_confirmations_promise_only_what_the_app_does():
     assert "поки вона відповідає" in voice_page.OPEN_MIC_CONFIRM_NAME  # the pending answer, too
     assert "не запам'ятовує" in voice_page.OPEN_MIC_CONFIRM_OPEN
     assert "запам'ятовує лише" in voice_page.OPEN_MIC_CONFIRM_NAME
+
+
+# --- "Швидкість відповіді": the last spoken answer and the CPU threads ----------------------------------
+
+
+def ready_status(latency=None):
+    return VoiceStatus(tts_ready=True, stt_ready=True, tts_reason="", stt_reason="", state="idle",
+                       hotkey="Ctrl + Alt + Пробіл", hotkey_active=True, latency=latency)
+
+
+def test_latency_helpers():
+    assert voice_page.format_latency(1.234) == "1,2 с"
+    slow_model = VoiceLatency(recognition=1.2, model=6.0, first_chunk=0.8, synthesis=0.3, total=8.3,
+                              pause=0.8)
+    assert voice_page.latency_lines(slow_model) == [
+        "Розпізнавання мовлення — 1,2 с", "Модель думала — 6,0 с",
+        "Перша частина відповіді — 0,8 с", "Озвучення — 0,3 с",
+        "Перед цим вона 0,8 с чекала тиші в кінці фрази."]
+    assert "ollama ps" in voice_page.latency_advice(slow_model)
+    assert "100% GPU" in voice_page.latency_advice(slow_model)
+    slow_ears = VoiceLatency(recognition=4.0, model=1.0, first_chunk=0.2, synthesis=0.3, total=5.5)
+    assert "меншу модель розпізнавання" in voice_page.latency_advice(slow_ears)
+    assert "потоків" in voice_page.latency_advice(slow_ears)
+    slow_voice = VoiceLatency(recognition=0.5, model=0.5, first_chunk=0.2, synthesis=2.5, total=3.7)
+    advice = voice_page.latency_advice(slow_voice)
+    assert "озвучення" in advice and "рідко" in advice
+    fast = VoiceLatency(recognition=0.6, model=0.6, first_chunk=0.2, synthesis=0.2, total=1.6)
+    assert voice_page.latency_advice(fast) == voice_page.LATENCY_FAST
+    long_pause = VoiceLatency(recognition=3.0, model=1.0, first_chunk=0.2, synthesis=0.3, total=4.5,
+                              pause=2.0)
+    assert "зменшити вище" in voice_page.latency_advice(long_pause)
+    assert voice_page.format_threads(4, 4) == "4 (рекомендовано)" and voice_page.format_threads(2, 4) == "2"
+
+
+def test_speed_card_before_the_first_spoken_answer(vf, make_page):
+    vf.status = ready_status()
+    page = make_page()
+    assert page.latency_total_label.text() == voice_page.LATENCY_NONE
+    assert not page.latency_steps_label.isVisibleTo(page) and not page.latency_advice_label.isVisibleTo(page)
+
+
+def test_speed_card_shows_the_last_spoken_answer_and_what_to_do(vf, make_page):
+    vf.status = ready_status()
+    page = make_page()
+    vf.status = ready_status(VoiceLatency(recognition=1.2, model=6.0, first_chunk=0.8, synthesis=0.3,
+                                          total=8.3, pause=0.8))
+    page.refresh_status()  # polled while the page is open
+    assert "8,3 с" in page.latency_total_label.text()
+    assert "Модель думала — 6,0 с" in page.latency_steps_label.text()
+    assert page.latency_steps_label.isVisibleTo(page)
+    assert "ollama ps" in page.latency_advice_label.text() and page.latency_advice_label.isVisibleTo(page)
+    assert page.latency_total_label.property("role") == "value"
+    texts = "\n".join(labels(page))
+    assert "Швидкість відповіді" in texts
+
+
+def test_cpu_threads_are_on_the_page_with_the_recommendation(vf, make_page):
+    vf._settings.voice.cpu_threads = 3
+    page = make_page()
+    recommended = recommended_threads()
+    assert page.threads_row.value() == 3 and not page.has_edits()
+    assert f"рекомендовано {recommended}" in page.threads_row.description_label.text()
+    assert "для гри" in page.threads_row.description_label.text()
+    page.threads_row.setValue(recommended)
+    assert page.threads_row.value_label.text() == f"{recommended} (рекомендовано)"
+    assert page.collect(vf.settings()).voice.cpu_threads == recommended
+    page.threads_row.setValue(99)
+    assert page.threads_row.value() == 8  # 1..8, as the settings allow
+    assert page.threads_row.slider.accessibleName() == "Потоки процесора для голосу"

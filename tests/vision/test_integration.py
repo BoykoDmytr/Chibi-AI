@@ -20,6 +20,7 @@ from chibi.activity.backend import ForegroundInfo
 from chibi.ai.providers.factory import is_cloud
 from chibi.core.config import Settings
 from chibi.core.events import (
+    ConversationActive,
     GameEnded,
     GameStarted,
     Permission,
@@ -36,6 +37,7 @@ from chibi.memory.repositories import PermissionRepository
 from chibi.personality.phrases import DEFAULT_PATH, PhraseBank
 from chibi.privacy.permissions import PermissionManager
 from chibi.vision.analysis import WORK_EVENTS, WORK_SCENES, Observation
+from chibi.vision.analyzer import CANCELLED_USER_MESSAGE
 from chibi.vision.capture_win import Frame
 from chibi.vision.integration import (
     LOOK_FAILED_MESSAGE,
@@ -67,7 +69,7 @@ from chibi.vision.integration import (
     reactions_per_hour,
     session_summary,
 )
-from chibi.vision.service import AnalyzerError, VisionMode, VisionState
+from chibi.vision.service import CONVERSATION_GRACE_SECONDS, AnalyzerError, VisionMode, VisionState
 from tests.personality.test_phrase_bank import (
     FANCY_APOSTROPHES,
     GENDERED_BARE,
@@ -143,6 +145,7 @@ class FakeAnalyzer:
         self.local = local
         self.allowed = allowed
         self.calls: list[str] = []
+        self.urgent: list[bool] = []
         self.cancelled = 0
         self.closed = False
 
@@ -150,8 +153,9 @@ class FakeAnalyzer:
     def is_local(self):
         return self.local
 
-    def analyze(self, image, media_type, app_title, previous):
+    def analyze(self, image, media_type, app_title, previous, *, urgent=False, wanted=None):
         self.calls.append(app_title)
+        self.urgent.append(urgent)
         result = self.h.results.pop(0) if len(self.h.results) > 1 else self.h.results[0]
         if isinstance(result, Exception):
             raise result
@@ -551,9 +555,9 @@ def test_a_frame_in_flight_when_its_app_stops_being_allowed_is_dropped(make, sec
     analyzer = h.analyzer
     original = analyzer.analyze
 
-    def analyze(*args):
+    def analyze(*args, **kwargs):
         h.change(section, **values)
-        return original(*args)
+        return original(*args, **kwargs)
 
     analyzer.analyze = analyze
     h.results = [obs("victory", "victory_screen", description=SECRET_DESCRIPTION)]
@@ -1090,10 +1094,10 @@ def test_revoking_window_titles_drops_a_browser_frame_in_flight(make):
     analyzer = h.analyzer
     original = analyzer.analyze
 
-    def analyze(*args):
+    def analyze(*args, **kwargs):
         h.permissions.revoke(Permission.WINDOW_TITLES)
         h.dispatch()
-        return original(*args)
+        return original(*args, **kwargs)
 
     analyzer.analyze = analyze
     h.results = [obs("none", "browser", description=SECRET_DESCRIPTION)]
@@ -1125,9 +1129,9 @@ def test_switching_back_to_the_lists_drops_a_frame_of_an_unlisted_window(make):
     analyzer = h.analyzer
     original = analyzer.analyze
 
-    def analyze(*args):
+    def analyze(*args, **kwargs):
         h.change(scope="allowed")
-        return original(*args)
+        return original(*args, **kwargs)
 
     analyzer.analyze = analyze
     h.first_frame()
@@ -1316,9 +1320,9 @@ def test_any_window_frame_in_flight_when_its_app_becomes_private_is_dropped(make
     analyzer = h.analyzer
     original = analyzer.analyze
 
-    def analyze(*args):
+    def analyze(*args, **kwargs):
         h.change("activity", excluded_processes=["code.exe"])
-        return original(*args)
+        return original(*args, **kwargs)
 
     analyzer.analyze = analyze
     h.results = [obs("none", "code", description=SECRET_DESCRIPTION)]
@@ -1407,3 +1411,95 @@ def test_her_answers_about_private_windows_never_claim_she_did_not_look():
     for key in ("vision.look.chat", "vision.look.email", "vision.look.document"):
         for phrase in bank.phrases(key):
             assert not any(claim in phrase.text.casefold() for claim in untrue), phrase.id
+
+
+# --- the user's conversation comes first ------------------------------------------------------------
+
+
+def talk(h: H, active: bool) -> None:
+    h.bus.publish(ConversationActive(active=active))
+    h.dispatch()
+
+
+def test_a_conversation_holds_her_frames_and_abandons_the_one_in_flight(make):
+    h = make(mode="auto", scope="foreground", commentary="observer")
+    h.backend.fg = info("code.exe", hwnd=444)
+    h.first_frame()
+    assert h.capture.calls == [444] and len(h.observed) == 1
+    h.clock.advance(100)
+    h.integ.tick()  # the next frame is on its way...
+    talk(h, True)  # ...when the user starts talking with her
+    assert h.analyzer.cancelled == 1  # its request is withdrawn from the AI service
+    h.worker.run()
+    h.dispatch()
+    for _ in range(60):
+        h.step(1)
+    assert h.capture.calls == [444] and len(h.observed) == 1  # nothing while they talk
+    talk(h, False)
+    h.step(CONVERSATION_GRACE_SECONDS - 1)
+    assert h.capture.calls == [444]
+    h.step(1)
+    assert h.capture.calls == [444, 444]  # back right after the grace, no back-off
+    assert h.notices == [] and h.integ.service.state != VisionState.PAUSED
+
+
+def test_an_analysis_cut_short_by_a_conversation_is_never_an_error_notice(make):
+    h = make()
+    analyzer = h.analyzer
+    original = analyzer.analyze
+
+    def analyze(*args, **kwargs):
+        if not analyzer.calls:
+            analyzer.calls.append("interrupted")
+            talk(h, True)  # the conversation starts while the model looks at the frame
+            # ...and the AI service reports the withdrawn request as cancelled.
+            raise AnalyzerError("analysis cancelled", user_message=CANCELLED_USER_MESSAGE)
+        return original(*args, **kwargs)
+
+    analyzer.analyze = analyze
+    h.first_frame()
+    assert analyzer.cancelled == 1 and h.observed == []
+    assert h.notices == [] and h.integ.service.state != VisionState.PAUSED
+    talk(h, False)
+    h.step(CONVERSATION_GRACE_SECONDS)
+    assert len(h.observed) == 1 and h.notices == []  # no 60 s pause after a "failure"
+
+
+def test_look_at_my_screen_in_the_conversation_is_answered_at_once(make):
+    h = make(mode="auto", scope="foreground", commentary="observer")
+    h.backend.fg = info("code.exe", hwnd=444)
+    talk(h, True)
+    h.results = [obs("none", "code", description="код у редакторі")]
+    assert h.integ.request()
+    h.worker.run()
+    h.dispatch()
+    # The user is waiting for this one: analysed now, marked so the AI service runs it.
+    assert h.capture.calls == [444] and h.analyzer.urgent == [True]
+    assert h.composer.calls and h.composer.calls[-1][1] is True  # her (solicited) answer
+    details = h.integ.details_for(h.observed[-1])
+    assert details is not None and details.solicited
+    assert h.notices == []
+    for _ in range(60):
+        h.step(1)
+    assert h.capture.calls == [444]  # nothing automatic while the conversation lasts
+
+
+def test_the_second_frame_of_a_request_in_the_conversation_is_taken(make):
+    h = make(mode="manual")
+    talk(h, True)
+    h.results = [obs("player_death", "death_screen")]
+    assert h.integ.request()
+    h.worker.run()
+    h.dispatch()
+    assert h.composer.calls == []  # waits for the confirmation frame
+    h.confirm_frame()
+    assert h.analyzer.urgent == [True, True]
+    assert h.composer.calls == [(("vision.player_death", "vision.generic"), True, {"game": TITLE})]
+
+
+def test_after_shutdown_a_conversation_changes_nothing(make):
+    h = make()
+    h.integ.shutdown()
+    talk(h, True)
+    talk(h, False)
+    assert h.notices == [] and not h.integ.service.conversation

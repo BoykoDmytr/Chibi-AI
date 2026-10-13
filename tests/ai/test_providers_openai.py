@@ -11,6 +11,7 @@ import httpx2
 import pytest
 
 from chibi.ai.providers.openai_provider import (
+    JSON_INSTRUCTION,
     OpenAIProvider,
     clean_json_text,
     is_loopback_url,
@@ -160,10 +161,10 @@ def test_openai_body_headers_and_result():
     assert request.headers["authorization"] == "Bearer sk-openai-test"
     body = server.body
     assert body["model"] == "gpt-5-mini"
+    # The volatile operator context opens the last user turn (prefix reuse), never a system message.
     assert body["messages"] == [
         {"role": "system", "content": SYSTEM},
-        {"role": "system", "content": "Настрій: сонна."},
-        {"role": "user", "content": "Привіт"},
+        {"role": "user", "content": "Настрій: сонна.\n\nПривіт"},
     ]
     assert body["max_completion_tokens"] == 600 and "max_tokens" not in body
     assert body["stream"] is False
@@ -203,12 +204,12 @@ def test_images_json_mode_and_history():
     result = make(server).generate(request)
     body = server.body
     assert body["response_format"] == {"type": "json_object"}
-    assert body["messages"][1]["role"] == "system" and "JSON" in body["messages"][1]["content"]
-    assert body["messages"][2] == {"role": "assistant", "content": "Привіт!"}
-    assert body["messages"][3] == {"role": "user", "content": [
+    assert [m["role"] for m in body["messages"]] == ["system", "assistant", "user"]
+    assert body["messages"][1] == {"role": "assistant", "content": "Привіт!"}
+    assert body["messages"][2] == {"role": "user", "content": [
         {"type": "image_url",
          "image_url": {"url": "data:image/png;base64," + base64.b64encode(b"png-bytes").decode()}},
-        {"type": "text", "text": "Що тут?"},
+        {"type": "text", "text": f"{JSON_INSTRUCTION}\n\nЩо тут?"},
     ]}
     assert json.loads(result.text) == {"seen": "кіт"}
 
@@ -356,3 +357,42 @@ def test_reasoning_before_json_does_not_break_json_mode():
     result = make(server, base_url="http://127.0.0.1:8080/v1", model="local", key=None).generate(
         req(purpose=Purpose.VISION, json_mode=True))
     assert json.loads(result.text) == {"scene": "combat"}
+
+
+def test_operator_context_opens_the_last_user_turn_so_the_prefix_stays_the_same():
+    history = (ChatTurn(Role.USER, "<user>Привіт</user>"),
+               ChatTurn(Role.ASSISTANT, "<<state=talk>>\nПривіт!"))
+
+    def request(context: str, text: str, **kwargs) -> GenerationRequest:
+        return GenerationRequest(system=SYSTEM, purpose=Purpose.CHAT, context=context,
+                                 turns=(*history, ChatTurn(Role.USER, text)), **kwargs)
+
+    server = Server(completion("ok"), completion("ok"), completion("{}"))
+    p = make(server, base_url="http://127.0.0.1:8080/v1", model="local", key=None)
+    p.generate(request("Зараз 10:01.", "<user>Як справи?</user>"))
+    first = server.body["messages"]
+    p.generate(request("Зараз 10:02.", "<user>А погода?</user>"))
+    second = server.body["messages"]
+    assert first[:3] == second[:3]  # system prompt and history: an unchanged prefix
+    assert [m["role"] for m in first] == ["system", "user", "assistant", "user"]
+    assert first[3]["content"] == "Зараз 10:01.\n\n<user>Як справи?</user>"
+    p.generate(request("", "<user>JSON</user>", json_mode=True))
+    assert server.body["messages"][3]["content"] == f"{JSON_INSTRUCTION}\n\n<user>JSON</user>"
+    no_context = Server(completion("ok"))
+    make(no_context).generate(request("", "<user>x</user>"))
+    assert no_context.body["messages"][3]["content"] == "<user>x</user>"
+
+
+@pytest.mark.parametrize(("url", "expected"), [
+    ("http://localhost:11434", "http://127.0.0.1:11434"),
+    ("http://LOCALHOST/api", "http://127.0.0.1/api"),
+    ("http://127.0.0.1:11434", "http://127.0.0.1:11434"),
+    ("http://[::1]:11434", "http://[::1]:11434"),
+    ("http://192.168.1.20:11434", "http://192.168.1.20:11434"),
+    ("http://my.localhost:1234/v1", "http://my.localhost:1234/v1"),
+    ("http://user@localhost:11434", "http://user@localhost:11434"),
+])
+def test_ipv4_loopback_rewrites_only_a_plain_localhost(url, expected):
+    from chibi.ai.providers.openai_provider import ipv4_loopback
+
+    assert ipv4_loopback(url) == expected

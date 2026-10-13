@@ -8,7 +8,28 @@ servers reject unknown fields), ``max_tokens`` elsewhere.
 
 This module also holds the small helpers the other providers share (it is the
 generic HTTP provider): loopback detection, ``Retry-After`` parsing, lenient
-JSON cleanup and HTTP status -> :class:`ProviderError` mapping.
+JSON cleanup, HTTP status -> :class:`ProviderError` mapping, the prompt layout
+and :class:`RequestAbort`.
+
+Prompt layout (here and in the Ollama provider): the stable system prompt
+first, then the conversation, and the volatile operator part (``context``:
+time, mood, needs; the JSON instruction) at the start of the *last user turn*,
+under its own heading ("службові дані програми, не від користувача").  Local
+servers (llama.cpp, Ollama, LM Studio) reuse the evaluated prompt for the
+longest unchanged prefix, so the system prompt and the history are read once
+instead of on every turn; OpenAI's own prompt cache keys on the prefix too.  It
+is part of a user message rather than a system message in the middle: many
+chat templates (Gemma, Mistral) reject a system message that is not the first
+one or turns it into an extra user turn.
+
+Cancellation: a :class:`CancelToken` is checked between stream chunks, and
+:class:`RequestAbort` also aborts a request that is blocked waiting for the
+server (a model loading, a long prompt being read): a local server works on one
+request at a time, and one we gave up on must not keep it busy.  Clients built
+here for a private-network server open a fresh connection for every request
+(:func:`build_client`), so the abort can always reach its socket.  A request
+that could not be stopped (a reused keep-alive connection) and ran to its end
+returns its complete answer: throwing it away would not make it free.
 
 Privacy: the API key is sent only as a Bearer header and never logged; the
 ``OPENAI_API_KEY`` environment variable is used only for ``api.openai.com`` so
@@ -19,16 +40,20 @@ request or the response body is logged or put into exception messages.
 from __future__ import annotations
 
 import base64
+import contextlib
 import email.utils
 import ipaddress
 import json
 import logging
 import os
 import re
+import socket
+import threading
 import time
 from collections.abc import Callable, Iterator
+from types import TracebackType
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx2
 
@@ -59,6 +84,8 @@ JSON_INSTRUCTION = (
 MAX_RETRY_AFTER = 3600.0
 #: Library loggers that log request bodies (chat text, images) or headers at DEBUG level.
 HTTP_LOGGERS = ("anthropic", "httpx2", "httpcore2")
+#: How often a request's watcher looks at its cancel token (seconds).
+ABORT_POLL_SECONDS = 0.05
 
 
 def quiet_http_loggers() -> None:
@@ -102,6 +129,22 @@ def is_loopback_url(url: str) -> bool:
         return False
     mapped = getattr(ip, "ipv4_mapped", None)
     return ip.is_loopback or bool(mapped is not None and mapped.is_loopback)
+
+
+def ipv4_loopback(url: str) -> str:
+    """*url* with a ``localhost`` host replaced by ``127.0.0.1`` (anything else unchanged).
+
+    Windows resolves ``localhost`` to ``::1`` first; a server listening on 127.0.0.1
+    only (Ollama's default) refuses that, and Windows retries the refused connection
+    for 1-2 s before it tries 127.0.0.1."""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if (parts.hostname or "").lower() != "localhost" or "@" in parts.netloc:
+        return url
+    netloc = "127.0.0.1" if parts.port is None else f"127.0.0.1:{parts.port}"
+    return urlunsplit(parts._replace(netloc=netloc))
 
 
 def is_private_network_url(url: str) -> bool:
@@ -216,6 +259,138 @@ def require_user_turn(request: GenerationRequest) -> None:
         raise ProviderRequestError("request has no user turn", user_message="Порожній запит до AI.")
 
 
+def operator_block(request: GenerationRequest) -> str:
+    """Our own volatile part of the prompt: ``context`` and the JSON instruction ("" if none)."""
+    return "\n\n".join(part for part in (request.context.strip(),
+                                         JSON_INSTRUCTION if request.json_mode else "") if part)
+
+
+def turn_texts(request: GenerationRequest) -> list[str]:
+    """The text of each turn, the operator block put at the start of the last user turn
+    (see "Prompt layout" in the module docstring)."""
+    texts = [turn.text for turn in request.turns]
+    operator = operator_block(request)
+    if not operator:
+        return texts
+    for index in range(len(texts) - 1, -1, -1):
+        if request.turns[index].role == Role.USER:
+            texts[index] = f"{operator}\n\n{texts[index]}" if texts[index] else operator
+            break
+    return texts
+
+
+def build_client(timeout: httpx2.Timeout, *, fresh_connections: bool) -> httpx2.Client:
+    """The HTTP client a provider owns.  *fresh_connections*: no keep-alive, every
+    request opens its own connection - free for a server on this machine or the
+    LAN, and it lets :class:`RequestAbort` reach the socket of any request."""
+    if not fresh_connections:
+        return httpx2.Client(timeout=timeout)
+    return httpx2.Client(timeout=timeout,
+                         limits=httpx2.Limits(max_connections=100, max_keepalive_connections=0))
+
+
+def _shutdown(sock: socket.socket) -> None:
+    # socket.socket's own shutdown also for an SSLSocket: its override would drop the
+    # SSL object under the reading thread's feet.  OSError: already closed.
+    with contextlib.suppress(OSError):
+        socket.socket.shutdown(sock, socket.SHUT_RDWR)
+
+
+class RequestAbort:
+    """Aborts an HTTP request at once when its :class:`CancelToken` is cancelled.
+
+    Use it around one request and pass :attr:`extensions` to it.  A watcher
+    thread looks at the token every :data:`ABORT_POLL_SECONDS`; once it is
+    cancelled, the sockets the request opened (reported by httpcore's ``trace``
+    extension) are shut down: a read blocked on the server returns at once, and
+    the server sees the client gone and stops working on the request.  A request
+    on a reused keep-alive connection (or a mock transport) has no socket to
+    shut; it still stops at the next stream chunk.
+
+    Leaving the block with an error while the token is cancelled raises
+    :class:`CancelledError` instead: the error is the abort's own doing.  So does
+    leaving it normally after a socket was shut: a response without a length ends
+    at the shut socket as if it were complete, but it was cut short.  A request
+    with nothing to shut ran to its end, and its answer is complete and real: it
+    is kept (the caller decides what a cancelled token means for it - the AI
+    service records the usage of a paid request and delivers it only to a caller
+    who still wants it).
+    """
+
+    def __init__(self, cancel: CancelToken | None) -> None:
+        self._cancel = cancel
+        self._lock = threading.Lock()
+        self._sockets: list[socket.socket] = []
+        self._finished = False
+        self._aborted = False
+        #: A socket of the request was shut down: what it received may be cut short.
+        self._cut = False
+        self._stop = threading.Event()
+
+    @property
+    def extensions(self) -> dict[str, Any]:
+        return {"trace": self._trace} if self._cancel is not None else {}
+
+    @property
+    def aborted(self) -> bool:
+        with self._lock:
+            return self._aborted
+
+    def __enter__(self) -> RequestAbort:
+        if self._cancel is not None:
+            threading.Thread(target=self._watch, name="chibi-ai-abort", daemon=True).start()
+        return self
+
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None,
+                 tb: TracebackType | None) -> None:
+        with self._lock:
+            self._finished = True
+            self._sockets.clear()
+            cut = self._cut
+        self._stop.set()
+        if exc is None and cut:
+            raise CancelledError("cancelled")
+        if isinstance(exc, Exception) and not isinstance(exc, CancelledError) \
+                and self._cancel is not None and self._cancel.cancelled:
+            raise CancelledError("cancelled") from None
+
+    def _trace(self, event: str, info: dict[str, Any]) -> None:
+        if not event.endswith(".complete"):
+            return
+        get_info = getattr(info.get("return_value"), "get_extra_info", None)
+        if get_info is None:
+            return
+        try:
+            sock = get_info("socket")
+        except Exception:
+            return
+        if not isinstance(sock, socket.socket):
+            return
+        with self._lock:
+            if self._finished:
+                return
+            if self._aborted:
+                _shutdown(sock)
+                self._cut = True
+            else:
+                self._sockets.append(sock)
+
+    def _watch(self) -> None:
+        cancel = self._cancel
+        assert cancel is not None
+        while not self._stop.wait(ABORT_POLL_SECONDS):
+            if not cancel.cancelled:
+                continue
+            with self._lock:
+                if self._finished:
+                    return
+                self._aborted = True
+                for sock in self._sockets:
+                    _shutdown(sock)
+                self._cut = bool(self._sockets)
+            return
+
+
 def _error_code(payload: Any) -> str:
     if isinstance(payload, dict):
         err = payload.get("error")
@@ -245,7 +420,10 @@ class OpenAIProvider:
         self._api_key = key
         self._timeout = httpx2.Timeout(timeout, connect=min(timeout, 10.0))
         self._owns_client = http_client is None
-        self._client = http_client if http_client is not None else httpx2.Client(timeout=self._timeout)
+        # A server on this machine or the LAN: a fresh connection per request costs
+        # nothing and lets a cancelled request be aborted while it waits.
+        self._client = http_client if http_client is not None else \
+            build_client(self._timeout, fresh_connections=is_private_network_url(self.base_url))
 
     def __repr__(self) -> str:  # never show the key
         return f"OpenAIProvider({self.base_url!r}, {self.model!r})"
@@ -271,22 +449,18 @@ class OpenAIProvider:
         messages: list[dict[str, Any]] = []
         if request.system.strip():
             messages.append({"role": "system", "content": request.system})
-        operator = "\n\n".join(p for p in (request.context.strip(),
-                                           JSON_INSTRUCTION if request.json_mode else "") if p)
-        if operator:
-            messages.append({"role": "system", "content": operator})
-        for turn in request.turns:
+        for turn, text in zip(request.turns, turn_texts(request), strict=True):
             if turn.role == Role.USER and turn.images:
                 parts: list[dict[str, Any]] = [
                     {"type": "image_url",
                      "image_url": {"url": f"data:{img.media_type};base64,{image_b64(img.data)}"}}
                     for img in turn.images
                 ]
-                if turn.text:
-                    parts.append({"type": "text", "text": turn.text})
+                if text:
+                    parts.append({"type": "text", "text": text})
                 messages.append({"role": "user", "content": parts})
-            elif turn.text:
-                messages.append({"role": turn.role.value, "content": turn.text})
+            elif text:
+                messages.append({"role": turn.role.value, "content": text})
         return messages
 
     def model_for(self, request: GenerationRequest) -> str:
@@ -326,11 +500,13 @@ class OpenAIProvider:
         if cancel is not None:
             cancel.raise_if_cancelled()
         body = self._body(request, stream=False)
-        try:
-            response = self._client.post(f"{self.base_url}/chat/completions", json=body,
-                                         headers=self._headers(), timeout=self._timeout)
-        except httpx2.HTTPError as exc:
-            raise transport_error(exc, service=self.SERVICE) from None
+        with RequestAbort(cancel) as abort:
+            try:
+                response = self._client.post(f"{self.base_url}/chat/completions", json=body,
+                                             headers=self._headers(), timeout=self._timeout,
+                                             extensions=abort.extensions)
+            except httpx2.HTTPError as exc:
+                raise transport_error(exc, service=self.SERVICE) from None
         self._raise_for_status(response, body["model"])
         try:
             data = response.json()
@@ -338,8 +514,8 @@ class OpenAIProvider:
             message = choice.get("message") or {}
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
             raise self._bad_payload() from None
-        if cancel is not None:
-            cancel.raise_if_cancelled()
+        # A complete answer is returned even if the token was cancelled meanwhile: it ran
+        # (and was billed) to its end; the caller decides (see RequestAbort).
         finish = str(choice.get("finish_reason") or "")
         self._check_refusal(finish, message.get("refusal"))
         text = message.get("content") or ""
@@ -358,9 +534,10 @@ class OpenAIProvider:
         usage: Any = None
         refusal = ""
         try:
-            with self._client.stream("POST", f"{self.base_url}/chat/completions", json=body,
-                                     headers={**self._headers(), "Accept": "text/event-stream"},
-                                     timeout=self._timeout) as response:
+            with RequestAbort(cancel) as abort, \
+                    self._client.stream("POST", f"{self.base_url}/chat/completions", json=body,
+                                        headers={**self._headers(), "Accept": "text/event-stream"},
+                                        timeout=self._timeout, extensions=abort.extensions) as response:
                 if response.status_code >= 400:
                     response.read()
                     self._raise_for_status(response, body["model"])

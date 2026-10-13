@@ -10,11 +10,12 @@ from datetime import datetime
 
 import pytest
 
-from chibi.ai.types import Purpose
+from chibi.ai.types import CancelToken, Purpose
 from chibi.core.config import Settings
 from chibi.core.events import (
     AppShuttingDown,
     AppStarted,
+    ConversationActive,
     DoNotDisturbChanged,
     GameStarted,
     InteractionKind,
@@ -304,6 +305,94 @@ def test_quiet_off_does_not_abandon(make, bus):
     h.take()
     brain.complete(0, "Жарт.")
     assert [s.text for s in h.take()] == ["Жарт."]
+
+
+# -- the user's conversation comes first ------------------------------------------------------------
+
+
+def test_during_a_conversation_her_own_lines_never_ask_the_model(make, bus):
+    brain = FakeBrain()
+    h = make(brain)
+    bus.publish(ConversationActive(active=True))
+    bus.dispatch_pending()
+    assert h.composer.conversation
+    assert h.composer.compose("idle.joke")
+    assert h.composer.compose("game_start.cs2", game="CS2")
+    # Said at once from the phrase bank: nothing waits in the AI queue next to her answer.
+    assert [s.source for s in h.take()] == ["idle.joke", "game_start.cs2"]
+    assert brain.calls == [] and brain.purposes == [] and h.schedule.timers == []
+    assert h.composer.pending == 0
+
+
+def test_during_a_conversation_lines_the_user_asked_for_keep_the_ai(make, bus):
+    brain = FakeBrain()
+    h = make(brain)
+    bus.publish(ConversationActive(active=True))
+    bus.dispatch_pending()
+    assert h.composer.compose("interaction.pet.happy", solicited=True)
+    assert brain.calls[0][:3] == (("interaction.pet.happy",), {}, True)
+    assert h.schedule.timers[0][0] == int(SOLICITED_TIMEOUT_SECONDS * 1000)
+    brain.complete(0, "Мррр!")
+    assert [(s.text, s.solicited) for s in h.take()] == [("Мррр!", True)]
+
+
+def test_a_conversation_abandons_only_her_own_lines_waiting_for_the_model(make, bus):
+    brain = FakeBrain()
+    h = make(brain)
+    h.composer.compose("idle.joke")  # her own
+    h.composer.compose("interaction.pet.happy", solicited=True)  # the user petted her
+    bus.publish(ConversationActive(active=True))
+    bus.dispatch_pending()
+    assert h.composer.pending == 1
+    brain.complete(0, "Жарт посеред розмови.")  # the moment has passed: dropped
+    brain.complete(1, "Мррр!")  # the user's line is said as usual
+    h.schedule.fire_all()  # and her own line's fallback is not said either
+    assert [s.text for s in h.take()] == ["Мррр!"]
+    assert h.composer.pending == 0
+
+
+def test_after_the_conversation_her_own_lines_use_the_ai_again(make, bus):
+    brain = FakeBrain()
+    h = make(brain)
+    for active in (True, False):
+        bus.publish(ConversationActive(active=active))
+    bus.dispatch_pending()
+    assert not h.composer.conversation
+    assert h.composer.compose("idle.joke")
+    assert h.take() == [] and len(brain.calls) == 1  # waiting for the model as before
+
+
+class TokenBrain(FakeBrain):
+    """Hands back a cancel token per request, like AIBrain.phrase."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tokens: list[CancelToken] = []
+
+    def phrase(self, keys, variables, solicited, on_done) -> CancelToken:
+        super().phrase(keys, variables, solicited, on_done)
+        self.tokens.append(CancelToken())
+        return self.tokens[-1]
+
+
+def test_a_line_given_up_withdraws_its_ai_request(make, bus):
+    brain = TokenBrain()
+    h = make(brain)
+    h.composer.compose("idle.joke")  # abandoned by the conversation
+    h.composer.compose("interaction.pet.happy", solicited=True)  # answered by the model
+    bus.publish(ConversationActive(active=True))
+    bus.dispatch_pending()
+    brain.complete(1, "Мррр!")
+    assert [t.cancelled for t in brain.tokens] == [True, False]
+    bus.publish(ConversationActive(active=False))
+    bus.dispatch_pending()
+    h.composer.compose("game_start.cs2", game="CS2")
+    h.schedule.fire_all()  # timed out: the phrase bank answered, the request is withdrawn
+    assert brain.tokens[2].cancelled
+    h.composer.compose("idle.joke")
+    bus.publish(QuietModeChanged(enabled=True))
+    bus.dispatch_pending()
+    assert brain.tokens[3].cancelled
 
 
 def test_timer_failure_falls_back(make):

@@ -14,11 +14,12 @@ from PySide6.QtWidgets import QMenu
 import chibi.app as app_module
 from chibi.ai.providers.fake import FakeProvider
 from chibi.ai.secrets import MemorySecretStore
-from chibi.ai.service import AIService
+from chibi.ai.service import AIService, RequestTiming
 from chibi.ai.types import Purpose
 from chibi.app import (
     BUSY_REPLY,
     CHAT_IN_FLIGHT_SECONDS,
+    CONVERSATION_HOLD_SECONDS,
     LOOKING_REPLY,
     MIC_PAUSE_PUSH_HINT,
     MIC_PAUSE_STATE_KEY,
@@ -26,7 +27,8 @@ from chibi.app import (
     PENDING_TRANSCRIPT_SECONDS,
     ChibiApp,
 )
-from chibi.core.events import Permission, SpeechRequested, VisionObserved, VoiceTranscript
+from chibi.core.clock import FakeClock
+from chibi.core.events import ConversationActive, Permission, SpeechRequested, VisionObserved, VoiceTranscript
 from chibi.desktop.tray import TrayIcon
 from chibi.games import GAME_IDS, GAME_TITLES
 from chibi.settings.facade import ChatReply
@@ -38,6 +40,8 @@ from chibi.voice.integration import (
     LISTENING_NAME,
     PAUSED_BY_USER,
     PAUSED_DND,
+    SpeechStart,
+    VoiceIntegration,
 )
 from tests.test_app import UnsupportedBackend, pump
 
@@ -54,8 +58,8 @@ def make_app(qapp, secrets):
     apply_dark_theme(qapp)
     created = []
 
-    def factory():
-        app = ChibiApp(qapp, backend=UnsupportedBackend())
+    def factory(clock=None):
+        app = ChibiApp(qapp, backend=UnsupportedBackend(), clock=clock)
         created.append(app)
         return app
 
@@ -441,8 +445,9 @@ class FakeVoiceService:
 def record_streams(app, monkeypatch):
     streams = []
 
-    def begin_reply(_source="chat", *, show):
+    def begin_reply(_source="chat", *, show, voice_request=False):
         streams.append(RecordingStream())
+        streams[-1].voice_request = voice_request
         return streams[-1]
 
     monkeypatch.setattr(app._voice, "begin_reply", begin_reply)
@@ -745,6 +750,33 @@ def test_overheard_speech_through_the_open_chat_window_is_not_remembered_either(
     assert app._chat_remember  # typed messages are remembered as before
 
 
+def test_only_voice_requests_are_timed_to_her_voice_typed_messages_never(heard_chat, monkeypatch):
+    """The speed card times a voice request from the end of the phrase: an answer to typed
+    text (in the window or straight) must never take a voice request's timing."""
+    app, chats, _listening = heard_chat
+    flags = []
+    real = app._voice.begin_reply
+
+    def begin_reply(source="chat", *, show, voice_request=False):
+        flags.append(voice_request)
+        return real(source, show=show, voice_request=voice_request)
+
+    monkeypatch.setattr(app._voice, "begin_reply", begin_reply)
+    app.bus.publish(VoiceTranscript(text="котра година", origin="push"))
+    pump(50)
+    chats[0][1](ChatReply(text="Восьма."))
+    app.send_chat_stream("а це написано", lambda _d: None, lambda _r: None)
+    chats[1][1](ChatReply(text="Бачу."))
+    app.show_chat()
+    app.bus.publish(VoiceTranscript(text="а це сказано", origin="named"))
+    pump(100)
+    chats[2][1](ChatReply(text="Чую."))
+    app._chat.input.setText("і знову написано")
+    app._chat.send()
+    pump(50)
+    assert flags == [True, False, True, False]
+
+
 def test_a_waiting_request_from_the_open_microphone_is_dropped_when_it_pauses(heard_chat):
     app, chats, listening = heard_chat
     app.bus.publish(VoiceTranscript(text="перше", origin="named"))
@@ -815,3 +847,189 @@ def test_the_microphone_pause_survives_a_restart(make_app):
     assert not app._voice.open_mic_paused and app._state.get(MIC_PAUSE_STATE_KEY) is None
     app._toggle_mic_pause()
     assert app._voice.open_mic_paused and app._state.get(MIC_PAUSE_STATE_KEY) is True
+
+
+# -- conversation first: background AI work never delays her answer ---------------------------------------
+
+
+@pytest.fixture
+def talk(make_app, monkeypatch):
+    """An app on a fake clock whose AI answers when the test says so and whose voice
+    conversation the test switches: (app, clock, chats, voice, published)."""
+    clock = FakeClock()
+    app = make_app(clock=clock)
+    app.start()
+    pump(50)
+    chats = []
+    monkeypatch.setattr(app._brain, "available", lambda _purpose: True)
+    monkeypatch.setattr(app._brain, "chat",
+                        lambda text, _delta, on_done, **_kw: chats.append((text, on_done)))
+    record_streams(app, monkeypatch)
+    voice = {"active": False}
+    monkeypatch.setattr(VoiceIntegration, "conversation_active", property(lambda _self: voice["active"]))
+    published = []
+    app.bus.subscribe(ConversationActive, lambda event: published.append(event.active))
+    return app, clock, chats, voice, published
+
+
+def test_a_typed_chat_answer_is_a_conversation_until_shortly_after_it_ends(talk):
+    app, clock, chats, _voice, published = talk
+    app.send_chat_stream("привіт", lambda _d: None, lambda _r: None)
+    pump(30)
+    assert published == [True]
+    assert app._ai.conversation_active  # the AI service holds background requests now
+    chats[0][1](ChatReply(text="Привіт!"))
+    pump(30)
+    assert published == [True] and app._conversation_timer.isActive()  # the short hold
+    clock.advance(CONVERSATION_HOLD_SECONDS - 0.1)
+    app._sync_conversation()  # what the timer does
+    pump(30)
+    assert published == [True]
+    clock.advance(0.2)
+    app._conversation_timer.timeout.emit()
+    pump(30)
+    assert published == [True, False] and not app._ai.conversation_active
+    assert not app._conversation_timer.isActive()
+
+
+def test_back_to_back_turns_do_not_flap(talk):
+    app, clock, chats, _voice, published = talk
+    app.send_chat_stream("перше", lambda _d: None, lambda _r: None)
+    chats[0][1](ChatReply(text="Ок."))
+    clock.advance(1.0)
+    app._sync_conversation()
+    app.send_chat_stream("друге", lambda _d: None, lambda _r: None)  # within the hold
+    clock.advance(CONVERSATION_HOLD_SECONDS + 1)
+    app._sync_conversation()
+    pump(30)
+    assert published == [True]  # still answering the second one
+    chats[1][1](ChatReply(text="Ок."))
+    clock.advance(CONVERSATION_HOLD_SECONDS)
+    app._sync_conversation()
+    pump(30)
+    assert published == [True, False]
+
+
+def test_the_voice_conversation_is_published_and_warms_the_model_up(talk, monkeypatch):
+    app, clock, _chats, voice, published = talk
+    warmed = []
+    monkeypatch.setattr(app._ai, "warm_up", lambda: warmed.append(1) or True)
+    voice["active"] = True  # push-to-talk, her name heard, her answer, the follow-up window...
+    app._voice._check_conversation()  # the voice reports the flip through on_change
+    pump(30)
+    assert published == [True] and warmed == [1]
+    app._sync_voice_ui()  # other voice changes publish nothing new
+    pump(30)
+    assert published == [True] and warmed == [1]
+    voice["active"] = False
+    app._voice._check_conversation()
+    clock.advance(CONVERSATION_HOLD_SECONDS)
+    app._sync_conversation()
+    pump(30)
+    assert published == [True, False]
+
+
+def test_a_chat_answer_that_never_arrives_does_not_hold_background_work_forever(talk):
+    app, clock, _chats, _voice, published = talk
+    app.send_chat_stream("привіт", lambda _d: None, lambda _r: None)
+    pump(30)
+    assert published == [True]
+    # The timer looks again when the lost answer stops counting (a coarse timer: +-5 %).
+    remaining = app._conversation_timer.remainingTime() / 1000
+    assert CHAT_IN_FLIGHT_SECONDS * 0.95 < remaining < CHAT_IN_FLIGHT_SECONDS * 1.05
+    clock.advance(CHAT_IN_FLIGHT_SECONDS + 1)
+    app._sync_conversation()
+    clock.advance(CONVERSATION_HOLD_SECONDS)
+    app._sync_conversation()
+    pump(30)
+    assert published == [True, False]
+
+
+def test_nothing_is_published_after_shutdown(talk):
+    app, _clock, _chats, voice, published = talk
+    app.shutdown()
+    voice["active"] = True
+    app._sync_conversation()
+    pump(30)
+    assert published == []
+
+
+def test_warm_up_only_when_the_user_speaks_to_her_or_opens_the_chat(make_app, monkeypatch):
+    """Not at start-up and not on a settings change: a user who starts her and then a game
+    must not find the chat model pinned in video memory for half an hour."""
+    calls = []
+    monkeypatch.setattr(AIService, "warm_up", lambda _self: calls.append(1) or False)
+    app = make_app()
+    app.start()
+    s = app.settings()
+    s.ai.keep_model_loaded_minutes = 60
+    app.apply_settings(s)
+    s = app.settings()
+    s.character.name = "Віка"
+    app.apply_settings(s)
+    assert calls == []
+    app._voice._on_speech_start("push", True)  # push-to-talk pressed
+    app._voice._on_speech_start("open_mic", True)  # "open" mode, the follow-up window
+    assert len(calls) == 2
+    app._voice._on_speech_start("open_mic", False)  # "name" mode: maybe the TV
+    assert len(calls) == 2
+    app.show_chat()
+    assert len(calls) == 3
+
+
+def test_a_local_model_is_loaded_ahead_and_not_again_while_it_is_warm(make_app, fake_ai):
+    warmed = []
+    fake_ai.warm_up = lambda cancel=None: warmed.append(1)
+    clock = FakeClock()
+    app = make_app(clock)
+    app.start()
+    enable_local_ai(app)  # a new model: not loaded until someone talks to her
+    pump(50)
+    assert warmed == []
+    clock.advance(app.settings().ai.keep_model_loaded_minutes * 60.0)  # unloaded by now
+    app._on_speech_start(SpeechStart(source="push", for_her=True))
+    assert pump_until(lambda: warmed)
+    app.show_chat()
+    pump(50)
+    assert warmed == [1]  # loaded a moment ago: kept by keep_alive
+    s = app.settings()
+    s.ai.use_for_chat = False
+    app.apply_settings(s)
+    pump(50)
+    assert warmed == [1]  # the chat does not use the model
+
+
+def test_deleting_memories_drops_what_still_waits_for_extraction(make_app, monkeypatch):
+    app = make_app()
+    discarded = []
+    monkeypatch.setattr(app._brain, "discard_pending_memories", lambda: discarded.append(1))
+    app.clear_memories("joke")  # nothing extraction would store
+    assert discarded == []
+    app.clear_memories("fact")
+    app.clear_memories("preference")
+    app.clear_memories(None)
+    assert len(discarded) == 3
+    app.wipe_all()
+    assert len(discarded) == 4
+
+
+def test_the_last_answers_timing_reaches_the_voice_page(make_app, fake_ai):
+    app = make_app()
+    app.start()
+    enable_local_ai(app)
+    assert app.ai_last_timing() is None
+    fake_ai.replies.append("<<state=happy;action=none>>\nПривіт!")
+    replies = []
+    app.send_chat_stream("привіт", lambda _d: None, replies.append)
+    assert pump_until(lambda: replies)
+    timing = app.ai_last_timing()
+    assert isinstance(timing, RequestTiming) and timing.total >= timing.queued >= 0
+    dialog = SettingsDialog(app, confirm=lambda _t, _x: True)
+    try:
+        dialog.show_page("voice")
+        dialog.voice_page.refresh_status()
+        assert "перші слова за" in dialog.voice_page.model_timing_label.text()
+        assert dialog.voice_page.model_timing_label.isVisibleTo(dialog.voice_page)
+    finally:
+        dialog.close()
+        dialog.deleteLater()

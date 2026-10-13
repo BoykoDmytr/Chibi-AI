@@ -27,6 +27,12 @@ Why it is built this way:
   spent daily budget -> 1 h, a full hour (the hourly cap or vision's share of
   it) -> 10 min (both ``budget=True``), offline / missing permission or key ->
   5 min, anything else -> 1 min.  Messages never contain request content.
+* **The user's conversation comes first.**  A frame the service abandoned
+  (``wanted()`` turned False) is never handed to the AI service, and
+  :meth:`cancel_current` withdraws one already handed over.  A frame the user
+  asked for (``urgent``) is submitted with ``user_waiting=True``, so the AI
+  service runs it during a conversation instead of holding it as background
+  work.
 
 Nothing here logs the image, the prompt or the model's answer.
 """
@@ -38,7 +44,7 @@ import logging
 import threading
 from collections.abc import Callable
 from types import EllipsisType
-from typing import Protocol
+from typing import Any, Protocol
 
 from chibi.ai.providers.factory import is_cloud
 from chibi.ai.service import REASON_LIMIT, AIOfflineError, QueueFullError
@@ -92,11 +98,13 @@ Post = Callable[[Callable[[], None]], None]
 
 
 class VisionAI(Protocol):
-    """What the analyzer needs from :class:`~chibi.ai.service.AIService` (main thread)."""
+    """What the analyzer needs from :class:`~chibi.ai.service.AIService` (main thread).
+
+    ``user_waiting`` is passed only when True (a frame the user asked for)."""
 
     def submit(self, request: GenerationRequest, *, on_done: Callable[[GenerationResult], None],
                on_error: Callable[[Exception], None], on_delta: Callable[[str], None] | None = None,
-               cancel: CancelToken | None = None) -> CancelToken: ...
+               cancel: CancelToken | None = None, user_waiting: bool = False) -> CancelToken: ...
 
 
 def default_vision_probe(ai: AISettings, model: str) -> Callable[[], bool] | None:
@@ -155,7 +163,11 @@ def to_analyzer_error(exc: BaseException) -> AnalyzerError:
 class _Call:
     """One request in flight: finished exactly once (answer, error or cancel)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, urgent: bool = False, wanted: Callable[[], bool] | None = None) -> None:
+        #: The user asked for this frame (see the module docstring).
+        self.urgent = urgent
+        #: False once the vision service abandoned the frame (checked on the main thread).
+        self.wanted = wanted
         self.token = CancelToken()
         self.done = threading.Event()
         self.result: GenerationResult | None = None
@@ -219,13 +231,16 @@ class ProviderFrameAnalyzer:
         """The vision model actually requested ("" = the AI page's model)."""
         return self._model
 
-    def analyze(self, image: bytes, media_type: str, app_title: str,
-                previous: Observation | None) -> Observation:
-        """Worker thread.  Raises :class:`AnalyzerError` or :class:`~chibi.vision.analysis.AnalysisError`."""
+    def analyze(self, image: bytes, media_type: str, app_title: str, previous: Observation | None, *,
+                urgent: bool = False, wanted: Callable[[], bool] | None = None) -> Observation:
+        """Worker thread.  Raises :class:`AnalyzerError` or :class:`~chibi.vision.analysis.AnalysisError`.
+
+        *urgent*: the user is waiting for this frame; *wanted*: False once the vision
+        service abandoned it (see :class:`~chibi.vision.service.FrameAnalyzer`)."""
         self._check_open()
         self._ensure_vision()
         request = self.build_request(image, media_type, app_title, previous)
-        result = self._run(request)
+        result = self._run(request, _Call(urgent=urgent, wanted=wanted))
         return analysis.parse_observation(result.text)
 
     def build_request(self, image: bytes, media_type: str, app_title: str,
@@ -284,8 +299,7 @@ class ProviderFrameAnalyzer:
             raise AnalyzerError(NO_VISION_MESSAGE, user_message=NO_VISION_USER_MESSAGE,
                                 retry_after=NO_VISION_RETRY)
 
-    def _run(self, request: GenerationRequest) -> GenerationResult:
-        call = _Call()
+    def _run(self, request: GenerationRequest, call: _Call) -> GenerationResult:
         with self._lock:
             if self._closed.is_set():
                 raise AnalyzerError("analyzer closed", user_message=CANCELLED_USER_MESSAGE,
@@ -316,6 +330,14 @@ class ProviderFrameAnalyzer:
         if call.done.is_set() or call.token.cancelled:
             return
         try:
+            wanted = call.wanted is None or bool(call.wanted())
+        except Exception:
+            log.exception("vision frame check failed")
+            wanted = False
+        if not wanted:  # abandoned meanwhile (a conversation started): never sent
+            call.cancel()
+            return
+        try:
             still_allowed = bool(self._allowed())
         except Exception:
             log.exception("vision permission check failed")
@@ -323,9 +345,11 @@ class ProviderFrameAnalyzer:
         if self._closed.is_set() or not still_allowed:
             call.cancel()
             return
+        # A frame the user asked for is not held back while they talk with her.
+        waiting: dict[str, Any] = {"user_waiting": True} if call.urgent else {}
         try:
             self._ai.submit(request, on_done=lambda result: call.finish(result=result),
-                            on_error=lambda exc: call.finish(error=exc), cancel=call.token)
+                            on_error=lambda exc: call.finish(error=exc), cancel=call.token, **waiting)
         except Exception as exc:
             log.warning("submitting a vision request failed (%s)", type(exc).__name__)
             call.finish(error=exc)

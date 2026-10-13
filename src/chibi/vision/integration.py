@@ -38,6 +38,14 @@ tested on its own with fakes:
   frames while she could not say anything about them (her own lines may not
   use the AI, it is offline or its limit is reached): the status says why
   (:attr:`VisionStatusView.observer_note`).
+* **The conversation comes first** (``ConversationActive``): while the user
+  is talking with her no automatic frame is taken, a frame in flight is
+  abandoned - its analysis request withdrawn from the AI service, its end
+  ignored (no notice, no back-off) - and frames resume a few seconds after the
+  conversation (:meth:`VisionService.set_conversation`).  "Подивись на екран"
+  said in the conversation itself is answered at once: the user is waiting for
+  it, so its frame is analysed as their request (``user_waiting``), not held
+  back as background work.
 * **What she does with it**: every analysed observation that is still allowed
   when its answer arrives is published as
   :class:`~chibi.core.events.VisionObserved` (see :meth:`_publish`).  With
@@ -83,6 +91,7 @@ from chibi.core.event_bus import EventBus
 from chibi.core.events import (
     ActivityCategory,
     AppShuttingDown,
+    ConversationActive,
     GameEnded,
     GameStarted,
     ObservationStopped,
@@ -518,6 +527,7 @@ class VisionIntegration(QObject):
             on_observation=self._on_observation,
             on_error=self._on_error,
             still_allowed=self._result_allowed,
+            cancel=self._cancel_analysis,
         )
 
         self._timer = QTimer(self)
@@ -539,6 +549,7 @@ class VisionIntegration(QObject):
             bus.subscribe(UserIdle, self._on_user_idle),
             bus.subscribe(UserReturned, self._on_user_returned),
             bus.subscribe(VoiceTranscript, self._on_voice),
+            bus.subscribe(ConversationActive, self._on_conversation),
             bus.subscribe(AppShuttingDown, lambda _event: self.shutdown()),
         ]
         self.reconfigure()
@@ -1057,6 +1068,19 @@ class VisionIntegration(QObject):
         """The user talks to her (hands-free: no keyboard, no mouse): they are here."""
         self._voice_at = self._clock.monotonic()
         self._sync_away()
+
+    def _on_conversation(self, event: ConversationActive) -> None:
+        """The user started or stopped talking with her: no automatic frame may delay her
+        answer (see :meth:`VisionService.set_conversation`)."""
+        if self._closed:
+            return
+        self._service.set_conversation(bool(event.active))
+
+    def _cancel_analysis(self) -> None:
+        """Withdraw the analysis request in flight (the service abandoned its frame)."""
+        analyzer = self._analyzer
+        if analyzer is not None:
+            analyzer.cancel_current()
 
     def _on_load(self, event: SystemLoadChanged) -> None:
         self._high_load = bool(event.high or event.on_battery_saver)

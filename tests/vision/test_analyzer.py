@@ -32,6 +32,7 @@ from chibi.ai.types import (
     Role,
 )
 from chibi.core.config import AISettings, Settings, VisionSettings
+from chibi.core.events import ConversationActive
 from chibi.memory.repositories import PermissionRepository
 from chibi.privacy.permissions import PermissionManager
 from chibi.vision import analyzer as analyzer_module
@@ -69,11 +70,14 @@ class FakeAI:
         self.tokens: list[CancelToken | None] = []
         self.threads: list[str] = []
         self.parked: list[tuple[Callable, Callable]] = []
+        #: Keywords beyond the basic ones (``user_waiting``), per submit.
+        self.extra: list[dict[str, object]] = []
 
-    def submit(self, request, *, on_done, on_error, on_delta=None, cancel=None):
+    def submit(self, request, *, on_done, on_error, on_delta=None, cancel=None, **extra):
         self.threads.append(threading.current_thread().name)
         self.requests.append(request)
         self.tokens.append(cancel)
+        self.extra.append(extra)
         if self.defer:
             self.parked.append((on_done, on_error))
             return cancel
@@ -125,8 +129,10 @@ def make(ai: FakeAI, main: MainThread, provider: str = "ollama", **kwargs) -> Pr
     return ProviderFrameAnalyzer(ai, main.post, AISettings(provider=provider), VisionSettings(), **kwargs)
 
 
-def analyze(main: MainThread, analyzer: ProviderFrameAnalyzer, **kwargs) -> Observation:
-    result = main.run(lambda: analyzer.analyze(IMAGE, "image/jpeg", "S.T.A.L.K.E.R. 2", PREVIOUS), **kwargs)
+def analyze(main: MainThread, analyzer: ProviderFrameAnalyzer, *, urgent: bool = False,
+            wanted: Callable[[], bool] | None = None, **kwargs) -> Observation:
+    result = main.run(lambda: analyzer.analyze(IMAGE, "image/jpeg", "S.T.A.L.K.E.R. 2", PREVIOUS,
+                                               urgent=urgent, wanted=wanted), **kwargs)
     assert isinstance(result, Observation)
     return result
 
@@ -433,3 +439,73 @@ def test_a_full_hour_is_not_called_a_spent_day():
     mapped = to_analyzer_error(BudgetExceededError("hour", user_message="x", hourly=True))
     assert mapped.user_message == HOURLY_BUDGET_USER_MESSAGE and "сьогодні" not in mapped.user_message
     assert mapped.retry_after == HOURLY_BUDGET_RETRY < BUDGET_RETRY
+
+
+# --- the user's conversation comes first --------------------------------------------------------------
+
+
+def test_a_frame_the_user_asked_for_is_marked_as_one_they_wait_for():
+    ai, main = FakeAI(), MainThread()
+    analyzer = make(ai, main)
+    analyze(main, analyzer, urgent=True)
+    analyze(main, analyzer)
+    # Only the user's frame carries the keyword (an automatic one is plain background work).
+    assert ai.extra == [{"user_waiting": True}, {}]
+
+
+@pytest.mark.parametrize("wanted", [lambda: False, lambda: 1 / 0])
+def test_an_abandoned_frame_never_reaches_the_ai(wanted):
+    ai, main = FakeAI(), MainThread()
+    analyzer = make(ai, main)
+    with pytest.raises(AnalyzerError) as caught:
+        analyze(main, analyzer, wanted=wanted)
+    assert "cancelled" in str(caught.value)
+    assert ai.requests == []  # checked on the main thread right before it would leave
+    assert analyze(main, analyzer, wanted=lambda: True).event == "boss_fight"
+
+
+def test_during_a_conversation_the_users_frame_is_analysed_at_once(qapp, db, clock, bus, monkeypatch):
+    """Against the real AI service: while the user talks with her, background vision waits
+    (the service holds it), but the frame the user asked for runs - so it is marked."""
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    settings = Settings()
+    settings.ai.provider = "ollama"
+    provider = FakeProvider([ANSWER, ANSWER], vision=True)
+    service = AIService(bus, lambda: settings, PermissionManager(PermissionRepository(db), bus, clock),
+                        MemorySecretStore(), UsageLedger(db, clock), clock,
+                        provider_factory=lambda ai, secrets: provider)
+    invoker = QtInvoker()
+    analyzer = ProviderFrameAnalyzer(service, invoker.post, settings.ai, settings.vision, probe=None,
+                                     timeout=1.0)
+    bus.publish(ConversationActive(active=True))
+    bus.dispatch_pending()
+
+    def run(urgent: bool) -> object:
+        box: dict[str, object] = {}
+
+        def work() -> None:
+            try:
+                box["obs"] = analyzer.analyze(IMAGE, "image/jpeg", "Counter-Strike 2", None, urgent=urgent)
+            except Exception as exc:
+                box["error"] = exc
+
+        thread = threading.Thread(target=work, name="chibi-vision")
+        thread.start()
+        deadline = time.monotonic() + 3.0
+        while thread.is_alive() and time.monotonic() < deadline:
+            qapp.processEvents()
+            time.sleep(0.002)
+        thread.join(1.0)
+        return box.get("obs", box.get("error"))
+
+    try:
+        seen = run(urgent=True)
+        assert isinstance(seen, Observation) and seen.event == "boss_fight"
+        assert len(provider.requests) == 1
+        held = run(urgent=False)  # background work: held until the conversation ends
+        assert isinstance(held, AnalyzerError) and "timed out" in str(held)
+        assert len(provider.requests) == 1
+    finally:
+        service.shutdown()
+        invoker.close()

@@ -57,6 +57,17 @@ Streamed answers: :meth:`VoiceIntegration.begin_reply` returns a
 :class:`ReplyStream` that voices a chat answer sentence by sentence while
 the model is still writing it (see its docstring for the contract).
 
+How fast she answers: every voice request is timed from the end of the
+user's phrase to the start of her voice (recognition, the model's first
+words, the first part to say, synthesis); the last one is
+:attr:`VoiceIntegration.last_latency` (also ``VoiceStatus.latency``), logged
+as one line of numbers.  :attr:`VoiceIntegration.conversation_active` says
+whether the user is talking with her right now (``on_change`` runs whenever it
+flips) - the app publishes ``ConversationActive`` from it, so background AI
+work never delays her answer - and
+:meth:`VoiceIntegration.add_speech_start_listener` tells the app the moment
+the user starts talking.
+
 Threading: everything here runs on the Qt main thread.  Work happens on the
 service's worker, the hotkey thread and a download worker; they come back
 through :meth:`_post` (a queued ``Signal(object)``, the same pattern as
@@ -68,6 +79,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import logging
+import os
 import re
 import threading
 import time
@@ -104,7 +116,7 @@ from chibi.core.events import (
 from chibi.core.worker import SerialWorker
 from chibi.voice import hotkey_win, models
 from chibi.voice.models import CATALOG, DEFAULT_TTS_MODEL, DownloadError, ModelSpec
-from chibi.voice.tts_text import SentenceChunker
+from chibi.voice.tts_text import FIRST_CLAUSE_CHARS, SentenceChunker
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; these modules need numpy at import time
     from chibi.voice.service import VoiceService
@@ -196,6 +208,8 @@ CALL_APP_PREFIXES = ("discord", "telegram", "teamspeak", "ts3client", "webex", "
 REPLY_HOLD_SECONDS = 8.0
 #: Reading speed assumed for an answer shown without voice (conversation window).
 READ_CHARS_PER_SECOND = 15.0
+#: A voice request's timing waits this long for the chat answer it gets (see VoiceLatency).
+LATENCY_TRACE_SECONDS = 120.0
 
 #: ``SpeechRequested.source`` of the observer's lines (``chibi.ai.brain.OBSERVER_SOURCE``).
 OBSERVER_SOURCE = "observer:ai"
@@ -365,6 +379,8 @@ class VoiceStatus:
     listen_mode: str = "push"
     #: Why the open microphone is paused, Ukrainian ("" when it is not, or in "push" mode).
     pause_reason: str = ""
+    #: Timing of the last voice request she answered aloud (None before the first).
+    latency: VoiceLatency | None = None
 
     @property
     def reasons(self) -> tuple[str, ...]:
@@ -379,6 +395,75 @@ class VoiceStatus:
         if self.pause_reason:
             return self.pause_reason
         return LISTENING_NAME if self.listen_mode == "name" else LISTENING_OPEN
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceLatency:
+    """Where the time went for the last voice request she answered aloud (seconds):
+    from the end of the user's phrase to the start of her voice.  The stages add up
+    to ``total``; ``pause`` - the silence waited for before the phrase counted as
+    finished ("Пауза в кінці фрази") - comes before it and is not in ``total``."""
+
+    #: Speech end -> the recognised text is ready (waiting for the voice worker included).
+    recognition: float
+    #: Text ready -> the first piece of the answer arrives from the model.
+    model: float
+    #: First piece from the model -> the first part she can say is complete.
+    first_chunk: float
+    #: That part ready -> her audio starts (synthesis, waiting for the voice worker).
+    synthesis: float
+    #: Speech end -> her audio starts.
+    total: float
+    pause: float = 0.0
+
+    @property
+    def dominant(self) -> str:
+        """The slowest part: "recognition", "model" (the model's wait and its first
+        words together) or "synthesis"."""
+        parts = {"recognition": self.recognition, "model": self.model + self.first_chunk,
+                 "synthesis": self.synthesis}
+        return max(parts, key=lambda name: parts[name])
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechStart:
+    """The user started talking (see :meth:`VoiceIntegration.add_speech_start_listener`)."""
+
+    #: "push" (push-to-talk, the microphone button) or "open_mic" (the open microphone).
+    source: str
+    #: The phrase is for her: always for push-to-talk; on the open microphone in "open"
+    #: mode, in the conversation window and right after her name - in "name" mode it is
+    #: not known before it has been recognised (it may be the TV).
+    for_her: bool
+
+
+@dataclass
+class _LatencyTrace:
+    """One voice request on its way to her voice (``clock.monotonic`` seconds)."""
+
+    speech_end: float
+    transcribed: float
+    pause: float = 0.0
+    first_text: float | None = None
+    first_chunk: float | None = None
+
+    def finish(self, audio_start: float) -> VoiceLatency:
+        first_text = self.first_text if self.first_text is not None else audio_start
+        first_chunk = self.first_chunk if self.first_chunk is not None else first_text
+        transcribed = max(self.transcribed, self.speech_end)
+        first_text = max(first_text, transcribed)
+        first_chunk = max(first_chunk, first_text)
+        audio_start = max(audio_start, first_chunk)
+        return VoiceLatency(recognition=transcribed - self.speech_end, model=first_text - transcribed,
+                            first_chunk=first_chunk - first_text, synthesis=audio_start - first_chunk,
+                            total=audio_start - self.speech_end, pause=self.pause)
+
+
+def recommended_threads(cpu_count: int | None = None) -> int:
+    """CPU threads recommended for recognition and the voice on this PC: half the
+    logical processors, 2 to 6 (the rest stays free for a game)."""
+    count = cpu_count if cpu_count is not None else (os.cpu_count() or 4)
+    return max(2, min(6, count // 2))
 
 
 @dataclass(frozen=True)
@@ -446,9 +531,13 @@ class ReplyStream:
       voice ready, ``speak`` allows answers...), every complete sentence
       (:class:`~chibi.voice.tts_text.SentenceChunker`) is routed as a solicited
       line as soon as it is written: she starts talking while the model
-      writes on, and the microphone stays closed between the sentences.
-      ``finish`` routes what is left with the answer's state and portrait -
-      or, when nothing is left, only her gesture (empty text, that state).
+      writes on, and the microphone stays closed between the sentences.  The
+      first piece may end at a clause boundary ("Ну що ж, давай подумаємо
+      разом," - at least :data:`~chibi.voice.tts_text.FIRST_CLAUSE_CHARS`
+      characters), so she starts sooner on a long first sentence; its rest is
+      the next piece.  ``finish`` routes what is left with the answer's state
+      and portrait - or, when nothing is left, only her gesture (empty text,
+      that state).
     * When she cannot voice it, ``feed`` does nothing and ``finish`` routes
       the whole answer once, like :meth:`~VoiceIntegration.route`.
     * The answer reaches her bubble / voice **exactly once** in total:
@@ -470,9 +559,13 @@ class ReplyStream:
         self._voiced = voiced
         #: Her name: a "Мія:" prefix the final answer drops is not "new" text.
         self._name = name.strip()
-        self._chunker = SentenceChunker()
+        self._chunker = SentenceChunker(first_clause=FIRST_CLAUSE_CHARS)
         #: Every sentence handed on (voiced, shown or kept for later), in order.
         self._routed: list[str] = []
+        #: The first routed piece ended at a clause boundary (the start of a sentence).
+        self._clause_first = False
+        #: Timing of the voice request this answers (see :class:`VoiceLatency`).
+        self._trace: _LatencyTrace | None = None
         self._lines: list[_Routed] = []
         #: Sentences not heard because the user cut her off (shown once at the end).
         self._unsaid: list[str] = []
@@ -499,7 +592,11 @@ class ReplyStream:
     def feed(self, delta: str) -> None:
         if self._closed or not self._voiced or not delta:
             return
+        if self._trace is not None and self._trace.first_text is None and delta.strip():
+            self._trace.first_text = self._owner._now()
         for sentence in self._chunker.feed(delta):
+            if not self._routed and self._chunker.clause_first:
+                self._clause_first = True
             self._route(sentence)
 
     def finish(self, text: str, state: str = "talk", portrait: str = "") -> None:
@@ -513,6 +610,8 @@ class ReplyStream:
             if text.strip() or state:
                 self._owner.route(self._event(text), self._show)
             return
+        if self._trace is not None and self._trace.first_text is None:
+            self._trace.first_text = self._owner._now()  # the answer came in one piece
         rest = self._remainder(text)
         if rest:
             self._route(rest)
@@ -525,6 +624,7 @@ class ReplyStream:
         if self._closed:
             return
         self._closed = True
+        self._trace = None
         self._unsaid.clear()
         for line in self._lines:
             if not line.done and not line.playing:
@@ -542,24 +642,42 @@ class ReplyStream:
         if self._cut:
             self._unsaid.append(sentence)
             return
+        if self._trace is not None and self._trace.first_chunk is None:
+            self._trace.first_chunk = self._owner._now()
         self._lines.append(self._owner._route_stream_line(self, self._event(sentence), self._show))
 
     def _remainder(self, text: str) -> str:
-        """The sentences of the final *text* not routed yet."""
+        """The sentences of the final *text* not routed yet.  A first piece that
+        ended at a clause counts together with the piece after it (the rest of
+        that sentence); if that rest was not routed yet, only the words after
+        the clause are left of its sentence."""
         chunker = SentenceChunker()
         sentences = chunker.feed(text) + chunker.flush()
-        routed = Counter(_same_words(s, self._name) for s in self._routed)
+        pieces = [_same_words(s, self._name) for s in self._routed]
+        clause = ""
+        if self._clause_first and pieces:
+            if len(pieces) > 1:
+                pieces[:2] = [_same_words(f"{self._routed[0]} {self._routed[1]}", self._name)]
+            else:
+                clause = pieces.pop(0)
+        routed = Counter(pieces)
         rest = []
         for sentence in sentences:
             key = _same_words(sentence, self._name)
             if routed[key] > 0:
                 routed[key] -= 1
+            elif clause and key.startswith(clause) and key[len(clause):len(clause) + 1] in ("", " "):
+                tail = key[len(clause):].strip()
+                clause = ""
+                if tail:
+                    rest.append(tail)
             else:
                 rest.append(sentence)
         return " ".join(rest)
 
     def _cut_off(self, line: _Routed | None = None) -> None:
         """The user cut her off: *line* (not shown yet) was not heard."""
+        self._trace = None
         if line is not None and not line.shown:
             self._unsaid.append(line.event.text)
         if not self._cut:
@@ -616,7 +734,8 @@ class VoiceIntegration(QObject):
         """*notify* shows a short Ukrainian message to the user (tray balloon,
         status line); it is called at most once a minute per message.
         *on_change* runs after every (re)configuration - :meth:`status` may
-        differ now (the app updates the chat's microphone button).
+        differ now (the app updates the chat's microphone button) - whenever
+        :attr:`conversation_active` flips and when :attr:`last_latency` changes.
         *is_visible* tells whether she is on screen (unsolicited lines are not
         voiced while the user has hidden her).  *post* replaces the queued Qt
         invoker (tests run callbacks inline).  Everything else is a seam for
@@ -684,6 +803,17 @@ class VoiceIntegration(QObject):
         #: Lines queued on the service and not finished yet.
         self._live: list[_Routed] = []
 
+        # -- how fast she answers and whether the user is talking with her -----------------
+        #: The last voice request, until a chat answer to it begins (see begin_reply).
+        self._pending_trace: _LatencyTrace | None = None
+        self._last_latency: VoiceLatency | None = None
+        self._speech_listeners: list[Callable[[SpeechStart], None]] = []
+        #: conversation_active as last reported through on_change.
+        self._conversation_was = False
+        self._conversation_timer = QTimer(self)
+        self._conversation_timer.setSingleShot(True)
+        self._conversation_timer.timeout.connect(self._check_conversation)
+
         self._invoke.connect(self._run_on_main, Qt.ConnectionType.QueuedConnection)
         self._unsubscribers: list[Callable[[], None]] = [
             bus.subscribe(PermissionChanged, self._on_permission_changed),
@@ -721,6 +851,10 @@ class VoiceIntegration(QObject):
         self._unsubscribers.clear()
         self._streams.clear()
         self._hold_timer.stop()
+        self._conversation_timer.stop()
+        self._speech_listeners.clear()
+        self._pending_trace = None
+        self._conversation_was = False
         self._stop_hotkey()
         if self._download is not None:
             self._download.cancel.set()
@@ -857,6 +991,8 @@ class VoiceIntegration(QObject):
                 on_result=self._on_result,
                 on_error=self._on_error,
                 on_wake=self._on_wake,
+                on_speech_start=self._on_speech_start,
+                on_activity=self._check_conversation,
             )
         except Exception as exc:
             _log_failure("creating the voice service", exc)
@@ -986,17 +1122,28 @@ class VoiceIntegration(QObject):
         if service is None or not self._should_voice(event) or not self._queue_line(service, line):
             self._show_unvoiced(line)
 
-    def begin_reply(self, source: str = "chat", *, show: ShowFn) -> ReplyStream:
+    def begin_reply(self, source: str = "chat", *, show: ShowFn, voice_request: bool = False) -> ReplyStream:
         """Start voicing an answer that is still being written (see
-        :class:`ReplyStream`).  *show* is the same callback :meth:`route` takes."""
+        :class:`ReplyStream`).  *show* is the same callback :meth:`route` takes.
+        *voice_request*: it answers the last voice request (its time to her voice is
+        measured); an answer to typed text never takes that request's timing - the
+        request may have been answered without a stream ("подивись на екран", offline)
+        or still wait for its turn."""
         voiced = self._should_voice(SpeechRequested(text="…", solicited=True, source=source))
         try:
             name = self._settings().character.name
         except Exception:
             name = ""
         stream = ReplyStream(self, show, source, voiced, name)
+        trace = None
+        if voice_request:
+            trace, self._pending_trace = self._pending_trace, None
+        if voiced and source == "chat" and trace is not None \
+                and self._now() - trace.transcribed <= LATENCY_TRACE_SECONDS:
+            stream._trace = trace  # the answer to the last voice request
         if voiced:
             self._streams.append(stream)
+            self._conversation_changed()
         return stream
 
     def _route_stream_line(self, stream: ReplyStream, event: SpeechRequested, show: ShowFn) -> _Routed:
@@ -1007,6 +1154,7 @@ class VoiceIntegration(QObject):
             if not stream.closed:
                 self._hold(service)
         else:
+            stream._trace = None  # shown, not voiced: no time to her voice to measure
             self._show_unvoiced(line)
         return line
 
@@ -1048,12 +1196,14 @@ class VoiceIntegration(QObject):
         with contextlib.suppress(ValueError):
             self._streams.remove(stream)
         self._release_hold()
+        self._conversation_changed()
 
     def _cut_streams(self) -> None:
         """The user cut her off or started talking: answers being written are
         no longer voiced (what she does not get to say is shown as text)."""
         for stream in list(self._streams):
             stream._cut_off()
+        self._conversation_changed()
 
     def _queue_line(self, service: VoiceService, line: _Routed) -> bool:
         line.attempt += 1
@@ -1133,10 +1283,15 @@ class VoiceIntegration(QObject):
         line.announced = True
         self._show(line, seconds if seconds > 0 else None)
         self._bus.publish(SpeechPlayback(playing=True, duration=max(0.0, float(seconds))))
+        if line.stream is not None and line.stream._trace is not None:
+            trace, line.stream._trace = line.stream._trace, None
+            self._record_latency(trace.finish(self._now()))
 
     def _line_done(self, line: _Routed, attempt: int, outcome: str) -> None:
         if attempt != line.attempt or line.done:
             return  # this attempt was superseded (the line was queued again)
+        if line.stream is not None:
+            line.stream._trace = None  # its first line ended without being heard
         self._forget(line)
         line.playing = False
         if line.announced:
@@ -1280,6 +1435,7 @@ class VoiceIntegration(QObject):
             text = text.strip()
             # Revoked, paused or switched meanwhile: what was heard is dropped.
             if text and self.transcript_allowed(origin):
+                self._pending_trace = self._trace_of_delivery()
                 self._bus.publish(VoiceTranscript(text=text, origin=origin))
             return
         key = RESULT_LINES.get(status)
@@ -1372,6 +1528,110 @@ class VoiceIntegration(QObject):
         if event.kind in INTERRUPTING and service is not None and service.state == "speaking":
             service.interrupt()
             self._cut_streams()
+
+    # -- the conversation: is the user talking with her, and how fast does she answer -------------
+
+    @property
+    def conversation_active(self) -> bool:
+        """The user is talking with her right now - while it is, background AI work
+        must not delay her answer.  True while push-to-talk listens, a phrase is
+        being recognised, a delivered request waits for her answer, her answer is
+        being written (a voiced :class:`ReplyStream`) or spoken, her name alone was
+        just heard, the conversation window is open, or - in "open" mode - the open
+        microphone hears speech (see ``VoiceService.conversation_active``).
+        ``on_change`` runs whenever this flips, also when a wait runs out."""
+        service = self._service
+        if self._closed or service is None:
+            return False
+        try:
+            active = bool(getattr(service, "conversation_active", False))
+        except Exception as exc:
+            _log_failure("reading the conversation state", exc)
+            active = False
+        return active or any(not stream._cut for stream in self._streams)
+
+    def add_speech_start_listener(self, callback: Callable[[SpeechStart], None]) -> Callable[[], None]:
+        """Call *callback* (main thread) whenever the user starts talking: push-to-talk
+        or the microphone button opens the microphone, or the open microphone hears
+        speech begin (:class:`SpeechStart` says whether it is known to be for her).
+        The app can warm the model up meanwhile.  Returns a function that removes it."""
+        self._speech_listeners.append(callback)
+
+        def remove() -> None:
+            with contextlib.suppress(ValueError):
+                self._speech_listeners.remove(callback)
+
+        return remove
+
+    @property
+    def last_latency(self) -> VoiceLatency | None:
+        """Timing of the last voice request she answered aloud (None before the first)."""
+        return self._last_latency
+
+    def _on_speech_start(self, source: str, for_her: bool) -> None:
+        if self._closed:
+            return
+        event = SpeechStart(source=source, for_her=bool(for_her))
+        for listener in list(self._speech_listeners):
+            try:
+                listener(event)
+            except Exception as exc:
+                _log_failure("a speech start listener", exc)
+
+    def _conversation_changed(self) -> None:
+        """Something of the integration's own (an answer being written) changed:
+        re-check once the service has finished what it is doing."""
+        note = getattr(self._service, "note_activity", None)
+        if note is not None and not self._closed:
+            note()
+        else:
+            self._check_conversation()
+
+    def _check_conversation(self) -> None:
+        """Report a flip of :attr:`conversation_active` through ``on_change`` and wake up
+        again when a wait or a window runs out."""
+        if self._closed:
+            return
+        active = self.conversation_active
+        self._schedule_conversation_check()
+        if active != self._conversation_was:
+            self._conversation_was = active
+            self._changed()
+
+    def _schedule_conversation_check(self) -> None:
+        deadline_of = getattr(self._service, "conversation_deadline", None)
+        deadline = None
+        if deadline_of is not None:
+            try:
+                deadline = deadline_of()
+            except Exception as exc:
+                _log_failure("reading the conversation deadline", exc)
+        if deadline is None:
+            self._conversation_timer.stop()
+            return
+        if QCoreApplication.instance() is not None:
+            wait = max(0.0, deadline - self._now())
+            self._conversation_timer.start(min(2**31 - 1, round(wait * 1000) + 50))
+
+    def _now(self) -> float:
+        return self._clock.monotonic()
+
+    def _trace_of_delivery(self) -> _LatencyTrace | None:
+        """The timing of the request just delivered (see :class:`VoiceLatency`)."""
+        delivery = getattr(self._service, "last_delivery", None)
+        if delivery is None:
+            return None
+        return _LatencyTrace(speech_end=delivery.speech_end, transcribed=delivery.transcribed,
+                             pause=delivery.pause)
+
+    def _record_latency(self, latency: VoiceLatency) -> None:
+        self._last_latency = latency
+        # Numbers only: never what was said.
+        log.info("voice answer latency %.2f s: recognition %.2f, model %.2f, first part %.2f, "
+                 "synthesis %.2f (end-of-phrase pause %.2f before it)", latency.total,
+                 latency.recognition, latency.model, latency.first_chunk, latency.synthesis,
+                 latency.pause)
+        self._changed()
 
     # -- push-to-talk hotkey ------------------------------------------------------------------------
 
@@ -1468,6 +1728,7 @@ class VoiceIntegration(QObject):
             hotkey_reason=self._hotkey_reason if stt_ready else "",
             listen_mode=listen_mode,
             pause_reason=self._pause_reason if listen_mode != "push" else "",
+            latency=self._last_latency,
         )
 
     def test_voice(self, text: str = "", on_done: Callable[[bool, str], None] | None = None) -> None:

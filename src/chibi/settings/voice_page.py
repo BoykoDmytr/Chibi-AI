@@ -28,6 +28,12 @@ Design notes - why it works this way:
 * The page depends only on the small :class:`VoiceFacade` protocol (the app
   implements it), never on the voice engines: it works without the optional
   voice libraries and says what is missing.
+* **"Швидкість відповіді"** shows where the time went for her last spoken
+  answer (``VoiceStatus.latency``: recognition, the model, the first part,
+  synthesis) with plain advice for the slowest part, next to the CPU threads
+  for voice (recommended: half the logical processors, 2 to 6).  The model
+  server's side of her last answer (``facade.ai_last_timing``, optional: the
+  queue and the model load) is a line below it.
 """
 
 from __future__ import annotations
@@ -70,13 +76,14 @@ from chibi.settings.widgets import (
     setting_row,
 )
 from chibi.voice import hotkey_win
-from chibi.voice.integration import STT_OFF, TTS_OFF
+from chibi.voice.integration import STT_OFF, TTS_OFF, recommended_threads
 from chibi.voice.models import CATALOG, DEFAULT_TTS_MODEL, ModelSpec
 from chibi.voice.tts import AZURE_VOICES, PIPER_SPEAKERS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from chibi.ai.service import RequestTiming
     from chibi.privacy.permissions import PermissionManager
-    from chibi.voice.integration import DownloadProgress, VoiceStatus
+    from chibi.voice.integration import DownloadProgress, VoiceLatency, VoiceStatus
 
 log = logging.getLogger(__name__)
 
@@ -185,6 +192,45 @@ DEFAULT_DEVICE = "Типовий пристрій системи"
 NOT_CONNECTED = "(не підключено)"
 REGION_ERROR = "Регіон — це латинські літери й цифри, наприклад westeurope."
 
+# --- "Швидкість відповіді" --------------------------------------------------------------------------
+
+LATENCY_NONE = (
+    "Поговори з нею голосом — і тут з'явиться, скільки триває кожен крок її відповіді: "
+    "розпізнавання, роздуми моделі та озвучення."
+)
+LATENCY_FAST = "Це швидко — нічого змінювати не треба."
+#: Advice for the slowest part (``VoiceLatency.dominant``).
+LATENCY_ADVICE: dict[str, str] = {
+    "recognition": (
+        "Найдовше триває розпізнавання мовлення. Обери меншу модель розпізнавання "
+        "(«Швидке») або додай потоків процесора нижче."
+    ),
+    "model": (
+        "Найдовше доводиться чекати на модель. Якщо це Ollama, виконай у терміналі «ollama ps»: "
+        "у стовпці PROCESSOR має бути «100% GPU». Якщо там є CPU, модель не вміщується у "
+        "відеопам'ять — обери меншу. А якщо це була перша відповідь після перерви, модель, "
+        "найімовірніше, саме завантажувалася: наступні будуть швидшими."
+    ),
+    "synthesis": (
+        "Найдовше триває озвучення — таке буває рідко. Можливо, процесор саме був зайнятий "
+        "грою чи іншою програмою; спробуй додати потоків процесора нижче."
+    ),
+}
+#: Below this (seconds from the end of the phrase to her voice) there is nothing to fix.
+LATENCY_FAST_SECONDS = 2.0
+#: An end-of-phrase pause this long is worth mentioning.
+LATENCY_LONG_PAUSE = 1.2
+#: A model load (or a wait in the AI queue) this long is worth pointing out.
+MODEL_WAIT_NOTE_SECONDS = 1.0
+MODEL_LOAD_ADVICE = (
+    "Модель щойно завантажувалася в пам'ять: Ollama вивантажує її, коли нею якийсь час не "
+    "користуються. Щоб вона довше чекала напоготові, збільш «Тримати модель у пам'яті» в розділі «AI»."
+)
+THREADS_HINT = (
+    "Більше потоків — швидше розпізнавання мовлення й озвучення, але менше процесора "
+    "лишається для гри. Для цього ПК рекомендовано {recommended}."
+)
+
 _REGION_RE = re.compile(r"[a-z0-9]{3,40}")
 #: A key is one line of printable ASCII without spaces.
 _KEY_RE = re.compile(r"[\x21-\x7e]{8,512}")
@@ -256,6 +302,57 @@ def format_seconds(ms: int) -> str:
 def format_follow_up(seconds: int) -> str:
     """``20`` -> ``"20 с"``; ``0`` -> ``"вимкнено"``."""
     return f"{seconds}{_NBSP}с" if seconds > 0 else "вимкнено"
+
+
+def format_latency(seconds: float) -> str:
+    """``1.234`` -> ``"1,2 с"``."""
+    return f"{max(0.0, seconds):.1f}".replace(".", ",") + f"{_NBSP}с"
+
+
+def latency_lines(latency: VoiceLatency) -> list[str]:
+    """Her last spoken answer, step by step, in plain Ukrainian."""
+    lines = [
+        f"Розпізнавання мовлення — {format_latency(latency.recognition)}",
+        f"Модель думала — {format_latency(latency.model)}",
+        f"Перша частина відповіді — {format_latency(latency.first_chunk)}",
+        f"Озвучення — {format_latency(latency.synthesis)}",
+    ]
+    if latency.pause > 0:
+        lines.append(f"Перед цим вона {format_latency(latency.pause)} чекала тиші в кінці фрази.")
+    return lines
+
+
+def latency_advice(latency: VoiceLatency) -> str:
+    """What to do about the slowest part ("" never: a fast answer gets praise)."""
+    if latency.total < LATENCY_FAST_SECONDS:
+        return LATENCY_FAST
+    advice = LATENCY_ADVICE[latency.dominant]
+    if latency.pause >= LATENCY_LONG_PAUSE:
+        advice += (f" Ще {format_latency(latency.pause)} забирає пауза в кінці фрази — її можна "
+                   "зменшити вище.")
+    return advice
+
+
+def model_timing_text(timing: RequestTiming) -> str:
+    """Her last chat answer (spoken or typed) as the model server saw it, plus what to
+    do when the model had to be loaded first."""
+    first = timing.first_text if timing.first_text is not None else timing.total
+    text = f"Остання відповідь моделі (голосом чи в чаті): перші слова за {format_latency(first)}"
+    parts = []
+    if timing.queued >= MODEL_WAIT_NOTE_SECONDS:
+        parts.append(f"черга — {format_latency(timing.queued)}")
+    loading = timing.model_load is not None and timing.model_load >= MODEL_WAIT_NOTE_SECONDS
+    if loading:
+        parts.append(f"завантаження моделі — {format_latency(timing.model_load or 0.0)}")
+    if parts:
+        text += ", з них " + " і ".join(parts)
+    text += "."
+    return f"{text} {MODEL_LOAD_ADVICE}" if loading else text
+
+
+def format_threads(value: int, recommended: int) -> str:
+    """``4`` -> ``"4 (рекомендовано)"`` when it is the recommended number."""
+    return f"{value} (рекомендовано)" if value == recommended else str(value)
 
 
 def vocative(name: str) -> str:
@@ -438,6 +535,7 @@ class VoicePage(QWidget):
         layout.addWidget(self._build_status_card())
         layout.addWidget(self._build_voice_card(v))
         layout.addWidget(self._build_recognition_card(v))
+        layout.addWidget(self._build_speed_card(v))
         layout.addStretch(1)
 
         self._fields: tuple[_Field, ...] = self._bind_fields()
@@ -529,6 +627,8 @@ class VoicePage(QWidget):
             self.listen_status_label.hide()
             return
         self._status_failed = False
+        self._show_latency(view.latency)
+        self._show_model_timing()
         if view.tts_ready:
             text, role = f"● Голос працює — {self._voice_title()}", "success"
         else:
@@ -798,6 +898,61 @@ class VoicePage(QWidget):
         layout.addWidget(InfoLabel(DND_NOTE))
         return box
 
+    def _build_speed_card(self, v: VoiceSettings) -> QWidget:
+        """"Швидкість відповіді": her last spoken answer step by step, and the CPU threads."""
+        card = Card(spacing=6)
+        card.body.addWidget(SectionHeader("Швидкість відповіді"))
+        self.latency_total_label = make_label("", "value")
+        self.latency_total_label.setAccessibleName("Скільки тривала остання відповідь голосом")
+        card.body.addWidget(self.latency_total_label)
+        self.latency_steps_label = make_label("", "hint")
+        self.latency_steps_label.setAccessibleName("Кроки відповіді")
+        self.latency_steps_label.hide()
+        card.body.addWidget(self.latency_steps_label)
+        self.latency_advice_label = InfoLabel("")
+        self.latency_advice_label.hide()
+        card.body.addWidget(self.latency_advice_label)
+        self.model_timing_label = InfoLabel("")
+        self.model_timing_label.setAccessibleName("Скільки чекали на модель")
+        self.model_timing_label.hide()
+        card.body.addWidget(self.model_timing_label)
+        self._recommended_threads = recommended_threads()
+        recommended = self._recommended_threads
+        self.threads_row = SliderRow(
+            "Потоки процесора для голосу", 1, 8, v.cpu_threads,
+            formatter=lambda value: format_threads(value, recommended),
+            description=THREADS_HINT.format(recommended=recommended))
+        card.body.addWidget(self.threads_row)
+        self._show_latency(None)
+        return card
+
+    def _show_model_timing(self) -> None:
+        """The model's side of her last answer (``facade.ai_last_timing``), if known."""
+        timing = None
+        read = getattr(self._facade, "ai_last_timing", None)  # optional for the page
+        if read is not None:
+            try:
+                timing = read()
+            except Exception:
+                log.debug("reading the AI timing failed", exc_info=True)
+        self.model_timing_label.setText(model_timing_text(timing) if timing is not None else "")
+        self.model_timing_label.setVisible(timing is not None)
+
+    def _show_latency(self, latency: VoiceLatency | None) -> None:
+        if latency is None:
+            self.latency_total_label.setText(LATENCY_NONE)
+            set_style_property(self.latency_total_label, "role", "hint")
+            self.latency_steps_label.hide()
+            self.latency_advice_label.hide()
+            return
+        self.latency_total_label.setText(
+            f"Остання відповідь голосом: {format_latency(latency.total)} від кінця твоєї фрази до її голосу.")
+        set_style_property(self.latency_total_label, "role", "value")
+        self.latency_steps_label.setText("\n".join(latency_lines(latency)))
+        self.latency_steps_label.show()
+        self.latency_advice_label.setText(latency_advice(latency))
+        self.latency_advice_label.show()
+
     # --- small builders ---------------------------------------------------------------------------
 
     @staticmethod
@@ -865,6 +1020,7 @@ class VoicePage(QWidget):
             check("wake_in_fullscreen", self.wake_in_fullscreen_check),
             device("input_device", self.input_device_combo),
             device("output_device", self.output_device_combo),
+            slider("cpu_threads", self.threads_row),
         )
 
     def _read_fields(self) -> dict[str, object]:

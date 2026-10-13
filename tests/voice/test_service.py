@@ -126,6 +126,10 @@ class Harness:
         self.errors = []
         self.wakes = 0
         self.mic = mic
+        #: on_speech_start calls: (source, for_her).
+        self.starts = []
+        #: conversation_active each time on_activity fired.
+        self.activity = []
         self.service = VoiceService(
             post=lambda fn: fn(),
             output=self.output,
@@ -137,6 +141,8 @@ class Harness:
             on_result=lambda text, status: self.results.append((text, status)),
             on_error=self.errors.append,
             on_wake=self._wake,
+            on_speech_start=lambda source, for_her: self.starts.append((source, for_her)),
+            on_activity=lambda: self.activity.append(self.service.conversation_active),
         )
         self.tts = tts if tts is not None else FakeTTS()
         self.stt = stt if stt is not None else FakeSTT()
@@ -889,6 +895,48 @@ def test_preload_loads_engines_in_the_background_and_reports_failures():
     assert h.errors == ["Модель не завантажено."]
 
 
+def test_preload_warms_recognition_up_last_so_waiting_requests_go_first():
+    """Loading recognition, then the voice, then one throwaway recognition - each its own
+    background job: a sample ("Прослухати") or a request that comes in meanwhile runs
+    before the warm-up instead of waiting seconds for it."""
+    order: list[str] = []
+
+    class Voice(FakeTTS):
+        def load(self):
+            order.append("voice loaded")
+
+        def synthesize(self, text):
+            order.append("said")
+            return super().synthesize(text)
+
+    class Recognition(FakeSTT):
+        def load(self):
+            order.append("recognition loaded")
+
+        def warm_up(self):
+            order.append("recognition warmed up")
+
+    h = Harness(tts=Voice(), stt=Recognition())
+    h.service.preload()
+    assert [p for p, _job in h.worker.jobs] == [VoiceWorker.BACKGROUND] * 3
+    _priority, first = h.worker.jobs.pop(0)
+    first()  # the worker was already loading recognition when the sample was asked for
+    h.service.say("Привіт!")
+    h.worker.run_all()
+    assert order == ["recognition loaded", "said", "voice loaded", "recognition warmed up"]
+
+
+def test_a_failed_warm_up_is_quiet():
+    class Recognition(FakeSTT):
+        def warm_up(self):
+            raise RuntimeError("no")
+
+    h = Harness(stt=Recognition())
+    h.service.preload()
+    h.worker.run_all()
+    assert h.errors == []
+
+
 def test_revoke_during_transcription_drops_the_transcript():
     h = Harness()
     h.service.listen()
@@ -1093,3 +1141,184 @@ def test_a_question_that_was_never_heard_does_not_open_the_conversation():
     h.service.say("Глянемо разом?", opens_conversation=True)
     h.worker.run_all()
     assert not h.service.conversation_open
+
+
+# --- is the user talking with her (ConversationActive), speech start, request timing ----------------
+
+
+def test_push_to_talk_is_a_conversation_from_the_key_to_her_answer():
+    h = Harness()
+    h.service.follow_up_seconds = 0  # no window: only the request itself counts
+    assert not h.service.conversation_active
+    h.activity.clear()
+    h.service.listen("button")
+    assert h.service.conversation_active and h.starts == [("push", True)]
+    h.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    assert h.service.state == VoiceState.TRANSCRIBING and h.service.conversation_active
+    h.worker.run_all()
+    assert h.results == [("Привіт, Міє", "ok")]
+    assert h.service.state == VoiceState.IDLE and h.service.conversation_active  # awaiting her answer
+    h.now += 5
+    h.service.say("Привіт!", solicited=True)
+    h.worker.run_all()
+    assert h.service.conversation_active  # her answer is being said
+    h.output.finish()
+    assert not h.service.conversation_active
+    # Never "not talking" for a moment between the key and her answer.
+    assert False not in h.activity[:-1] and h.activity[-1] is False
+
+
+def test_a_request_nobody_answers_stops_counting_after_the_reply_wait():
+    h = Harness()
+    h.service.follow_up_seconds = 0
+    h.service.listen()
+    h.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    h.worker.run_all()
+    assert h.service.conversation_active
+    deadline = h.service.conversation_deadline()
+    assert deadline == pytest.approx(h.now + h.service.reply_wait_seconds)
+    h.now = deadline + 0.01
+    assert not h.service.conversation_active and h.service.conversation_deadline() is None
+
+
+def test_an_answer_shown_as_text_ends_the_wait():
+    h = Harness()
+    h.service.follow_up_seconds = 0
+    h.service.listen()
+    h.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    h.worker.run_all()
+    h.service.note_reply_shown(3.0)
+    assert not h.service.conversation_active and h.activity[-1] is False
+
+
+def test_the_conversation_window_counts_until_it_closes():
+    h = Harness()
+    h.service.follow_up_seconds = 20
+    h.service.set_listen_mode("name")
+    utter(h, "Міє, котра година?")
+    h.service.say("Пів на третю.", solicited=True)
+    h.worker.run_all()
+    h.output.finish()
+    assert h.service.state == VoiceState.STANDBY and h.service.conversation_active
+    assert h.service.conversation_deadline() == pytest.approx(h.now + 20)
+    h.now += 20.5
+    assert not h.service.conversation_active
+
+
+def test_a_streamed_answer_counts_between_its_sentences():
+    h = Harness()
+    h.service.follow_up_seconds = 0
+    h.service.hold_for_reply(8.0)
+    h.service.say("Перше речення.", solicited=True, prefetch=True)
+    h.worker.run_all()
+    h.output.finish()
+    assert h.service.state == VoiceState.SPEAKING and h.service.conversation_active
+    h.service.release_reply_hold()
+    assert h.service.state == VoiceState.IDLE and not h.service.conversation_active
+
+
+def test_her_own_remark_is_not_a_conversation():
+    h = Harness()
+    h.service.follow_up_seconds = 0
+    h.service.say("Я тут подумала.")
+    h.worker.run_all()
+    assert h.service.state == VoiceState.SPEAKING and not h.service.conversation_active
+
+
+def test_in_name_mode_someone_talking_is_not_a_conversation_until_it_is_for_her():
+    h = Harness(stt=FakeSTT(text="Я сьогодні йду в магазин"))
+    h.service.set_listen_mode("name")
+    h.feed(speech(0.6))
+    assert h.starts == [("open_mic", False)]  # may be the TV: not known yet
+    assert not h.service.conversation_active
+    h.feed(silence(1.0))
+    assert not h.service.conversation_active  # recognising someone else's phrase
+    h.worker.run_all()
+    assert h.results == [] and not h.service.conversation_active
+    h.stt.text = "Міє!"  # her name alone: the next phrase is for her
+    h.feed(np.concatenate([speech(0.8), silence(1.0)]))
+    h.worker.run_all()
+    assert h.service.conversation_active
+    h.feed(speech(0.4))
+    assert h.starts[-1] == ("open_mic", True)
+
+
+def test_in_open_mode_speech_on_the_open_microphone_is_a_conversation():
+    h = Harness(stt=FakeSTT(text="Угу."))
+    h.service.follow_up_seconds = 0
+    h.service.set_listen_mode("open")
+    h.feed(speech(0.6))
+    assert h.starts == [("open_mic", True)] and h.service.conversation_active
+    h.feed(silence(1.0))
+    assert h.service.conversation_active  # being recognised
+    h.worker.run_all()
+    assert h.results == [] and not h.service.conversation_active  # a filler: nothing for her
+    assert h.activity[-1] is False
+
+
+def test_a_cough_on_the_open_microphone_does_not_stay_a_conversation():
+    h = Harness()
+    h.service.follow_up_seconds = 0
+    h.service.set_listen_mode("open")
+    h.feed(speech(0.2))  # speech starts (120 ms) but is too short to be a phrase
+    assert h.service.conversation_active
+    h.feed(silence(1.2))
+    assert not h.service.conversation_active and h.results == []
+
+
+def test_speech_heard_by_an_older_open_microphone_session_is_ignored():
+    h = Harness()
+    h.service.set_listen_mode("open")
+    gen, open_gen = h.service._listen_gen, h.service._open_gen
+    h.service.say("Привіт!", solicited=True)  # the microphone closes while she speaks
+    h.worker.run_all()
+    h.output.finish()
+    assert h.service.state == VoiceState.STANDBY
+    h.service._standby_speech(gen, open_gen, True, True)  # posted before the microphone closed
+    assert not h.service._heard_speech and h.starts == []
+
+
+def test_a_delivered_request_says_when_it_was_said_and_recognised():
+    h = Harness()
+    h.service.listen()
+    h.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    ended = h.now
+    h.now += 1.5  # recognition takes a while
+    h.worker.run_all()
+    delivery = h.service.last_delivery
+    assert delivery.speech_end == pytest.approx(ended, abs=0.05)
+    assert delivery.transcribed == pytest.approx(ended + 1.5, abs=0.05)
+    assert delivery.pause == pytest.approx(h.service.listen_config.end_silence_ms / 1000)
+
+
+def test_a_released_key_ends_the_phrase_without_a_pause():
+    h = Harness()
+    h.service.listen(hold=True)
+    h.feed(speech(1.0))
+    h.service.stop_listening()
+    released = h.now
+    h.worker.run_all()
+    assert h.service.last_delivery.speech_end == pytest.approx(released)
+    assert h.service.last_delivery.pause == 0.0
+
+
+def test_a_request_from_the_open_microphone_carries_its_timing():
+    h = Harness(stt=FakeSTT(text="Міє, котра година?"))
+    h.service.set_listen_mode("name")
+    h.feed(np.concatenate([speech(1.0), silence(1.0)]))
+    ended = h.now
+    h.now += 2.0
+    h.worker.run_all()
+    assert h.results == [("Котра година?", "named")]
+    assert h.service.last_delivery.speech_end <= ended
+    assert h.service.last_delivery.transcribed == pytest.approx(ended + 2.0)
+    assert h.service.last_delivery.pause == pytest.approx(h.service.wake_config.end_silence_ms / 1000)
+
+
+def test_failing_callbacks_never_break_the_service(caplog):
+    h = Harness()
+    h.service._on_speech_start = lambda *_: 1 / 0
+    h.service._on_activity = lambda: 1 / 0
+    assert h.service.listen()
+    assert h.service.state == VoiceState.LISTENING
+    assert "speech start callback failed" in caplog.text and "voice activity callback failed" in caplog.text

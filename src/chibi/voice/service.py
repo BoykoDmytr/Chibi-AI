@@ -39,7 +39,18 @@ mode.
 A delivered request reaches ``on_result(text, status)`` with the status
 saying how it reached her: ``"ok"`` (push-to-talk), ``"named"`` (the open
 microphone, addressed by name) or ``"heard"`` (the open microphone, not
-addressed: "open" mode, the conversation window).
+addressed: "open" mode, the conversation window).  :attr:`VoiceService.last_delivery`
+says when it was said and recognised (the start of her answer's latency trace).
+
+Is the user talking with her?  :attr:`VoiceService.conversation_active` says so
+(push-to-talk, recognition, a request waiting for her answer, her answer, her
+name alone, the conversation window; in "open" mode also speech on the open
+microphone).  ``on_activity`` fires whenever it may have changed - once per
+operation, so a passing intermediate state never shows - and
+:meth:`~VoiceService.conversation_deadline` is the next moment it may change by
+time alone.  ``on_speech_start(source, for_her)`` fires the moment the user
+starts talking (push-to-talk pressed, speech begins on the open microphone), so
+the app can get the model ready while the user is still speaking.
 
 Rules that protect the user:
 
@@ -63,6 +74,7 @@ Nothing here logs what was said or heard.
 
 from __future__ import annotations
 
+import functools
 import itertools
 import logging
 import re
@@ -118,6 +130,23 @@ DELIVERED_PUSH = "ok"
 DELIVERED_NAMED = "named"
 DELIVERED_HEARD = "heard"
 DELIVERED = frozenset({DELIVERED_PUSH, DELIVERED_NAMED, DELIVERED_HEARD})
+
+#: ``on_speech_start`` sources: push-to-talk / the microphone button, or the open microphone.
+SPEECH_PUSH = "push"
+SPEECH_OPEN_MIC = "open_mic"
+
+
+@dataclass(frozen=True, slots=True)
+class Delivery:
+    """When a delivered request was said and recognised (``clock`` seconds): see
+    :attr:`VoiceService.last_delivery`."""
+
+    #: The phrase was over: the end-of-phrase pause detected, or the key released.
+    speech_end: float
+    #: Its text was ready (main thread), just before ``on_result``.
+    transcribed: float
+    #: Silence waited for before ``speech_end`` (``end_silence_ms``; 0 for a released key).
+    pause: float = 0.0
 
 
 @dataclass
@@ -354,6 +383,30 @@ def _echoes(text: str, prompt: str) -> bool:
     return any(source[i:i + len(words)] == words for i in range(len(source) - len(words) + 1))
 
 
+def _batched[F: Callable[..., Any]](method: F) -> F:
+    """Main-thread entry points: ``on_activity`` fires once, after the whole call, so
+    an intermediate state (idle for a moment between recognising a request and
+    delivering it) never reaches the app as a change."""
+
+    @functools.wraps(method)
+    def wrapper(self: VoiceService, *args: Any, **kwargs: Any) -> Any:
+        self._activity_depth += 1
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._activity_depth -= 1
+            if self._activity_depth == 0 and self._activity_pending:
+                self._activity_pending = False
+                self._notify_activity()
+
+    return wrapper  # type: ignore[return-value]
+
+
+def _pause_of(event: Any, vad: EnergyVAD) -> float:
+    """Seconds of silence the detector waited for before *event* ended the phrase."""
+    return vad.config.end_silence_ms / 1000 if getattr(event, "reason", "") == "silence" else 0.0
+
+
 class VoiceService:
     def __init__(
         self,
@@ -369,7 +422,15 @@ class VoiceService:
         on_level: Callable[[float], None] | None = None,
         on_error: Callable[[str], None] | None = None,
         on_wake: Callable[[], None] | None = None,
+        on_speech_start: Callable[[str, bool], None] | None = None,
+        on_activity: Callable[[], None] | None = None,
     ) -> None:
+        """*on_speech_start(source, for_her)*: the user started talking - push-to-talk
+        or the microphone button opened the microphone (``"push"``, for her), or the
+        open microphone hears speech begin (``"open_mic"``; for her in "open" mode,
+        in the conversation window or right after her name, not known yet otherwise).
+        *on_activity*: something :attr:`conversation_active` depends on may have
+        changed (besides the state, which ``on_state`` reports)."""
         self._post = post
         self._output = output
         self._input_factory = input_factory
@@ -381,6 +442,10 @@ class VoiceService:
         self._on_level = on_level
         self._on_error = on_error
         self._on_wake = on_wake
+        self._on_speech_start = on_speech_start
+        self._on_activity = on_activity
+        self._activity_depth = 0
+        self._activity_pending = False
 
         self.tts: TTSEngine | None = None
         self.stt: STTEngine | None = None
@@ -437,8 +502,17 @@ class VoiceService:
         self._conv_speaking = False
         #: Her name alone was heard: the next phrase until then is the request.
         self._called_until = 0.0
-        #: One open-microphone utterance kept while another is recognised: (audio, open gen).
-        self._standby_waiting: tuple[Any, int] | None = None
+        #: One open-microphone utterance kept while another is recognised:
+        #: (audio, open gen, when it ended, end-of-phrase pause).
+        self._standby_waiting: tuple[Any, int, float, float] | None = None
+        #: A delivered request waits for her answer until then (whatever ``follow_up_seconds``).
+        self._awaiting_until = 0.0
+        #: The open microphone hears speech now (main thread; set from the audio thread's posts).
+        self._heard_speech = False
+        #: Audio thread: the last speech state posted (under ``_vad_lock``).
+        self._vad_talking = False
+        #: Timing of the last delivered request (see :class:`Delivery`).
+        self.last_delivery: Delivery | None = None
 
     # -- configuration ---------------------------------------------------------------------
 
@@ -471,6 +545,38 @@ class VoiceService:
         now = self._clock()
         return self._conv_speaking or now < self._conv_until or now < self._conv_awaiting_until
 
+    @property
+    def conversation_active(self) -> bool:
+        """The user is talking with her right now: push-to-talk is listening, a phrase
+        is being recognised, a delivered request waits for her answer (at most
+        ``reply_wait_seconds``), her answer is being spoken (also between its
+        sentences), her name alone was just heard, the conversation window is open -
+        or, where everything heard is for her ("open" mode), the open microphone
+        hears speech or recognises a phrase.  In "name" mode a phrase without her name
+        counts only once it turned out to be for her: the TV must not count."""
+        if self._state in (VoiceState.LISTENING, VoiceState.TRANSCRIBING):
+            return True
+        now = self._clock()
+        if now < self._awaiting_until or self._called() or self._answering():
+            return True
+        if any(u is not None and u.solicited for u in (self._current, *self._queue)):
+            return True  # an answer to the user is being said (or waits to be)
+        if self.conversation_open:
+            return True
+        return (self._state == VoiceState.STANDBY and self._listen_mode == OPEN
+                and (self._heard_speech or self._standby_busy))
+
+    def conversation_deadline(self) -> float | None:
+        """The next moment (``clock`` seconds) :attr:`conversation_active` may change
+        by time alone (a wait or a window running out), or None."""
+        now = self._clock()
+        times = [self._awaiting_until, self._called_until, self._hold_until]
+        if self.follow_up_seconds > 0:
+            times += [self._conv_until, self._conv_awaiting_until]
+        future = [t for t in times if t > now]
+        return min(future) if future else None
+
+    @_batched
     def configure(self, *, tts: TTSEngine | None, stt: STTEngine | None) -> None:
         """Swap engines (settings changed).  Interrupts whatever is going on."""
         self.interrupt()
@@ -482,7 +588,10 @@ class VoiceService:
 
     def preload(self) -> None:
         """Load the models in the background now, so the first answer isn't
-        delayed by loading (seconds for recognition, ~1 s for the voice)."""
+        delayed by loading (seconds for recognition, ~1 s for the voice), then warm
+        recognition up (one throwaway recognition, seconds) - each a background job of
+        its own, so a request or a voice sample that comes in meanwhile waits for one
+        load at most, never for the warm-up."""
         for engine in (self.stt, self.tts):
             load = getattr(engine, "load", None)
             if load is not None:
@@ -493,7 +602,16 @@ class VoiceService:
                         message = getattr(exc, "user_message", str(exc))
                         self._post(lambda: self._error(message))
                 self._worker.submit(job, VoiceWorker.BACKGROUND)
+        warm_up = getattr(self.stt, "warm_up", None)
+        if callable(warm_up):
+            def warm(warm_up=warm_up) -> None:
+                try:
+                    warm_up()
+                except Exception as exc:  # never fatal: the first request pays the setup
+                    log.debug("speech recognition warm-up failed: %s", type(exc).__name__)
+            self._worker.submit(warm, VoiceWorker.BACKGROUND)
 
+    @_batched
     def set_listen_mode(self, mode: str) -> None:
         """"push", "name" or "open" (see the module docstring)."""
         mode = mode if mode in LISTEN_MODES else PUSH
@@ -505,6 +623,7 @@ class VoiceService:
         if self._state in (VoiceState.IDLE, VoiceState.STANDBY):
             self._rest("listen mode changed")
 
+    @_batched
     def set_suspended(self, suspended: bool) -> None:
         """Pause the open microphone (push-to-talk keeps working).  What it
         heard just before is dropped, not delivered later, and the
@@ -519,6 +638,7 @@ class VoiceService:
         if self._state in (VoiceState.IDLE, VoiceState.STANDBY):
             self._rest("suspended" if suspended else "resumed")
 
+    @_batched
     def revoke_microphone(self) -> None:
         """Permission withdrawn / kill switch: close the microphone now.  A
         transcript of speech heard before the revoke never arrives after it."""
@@ -531,6 +651,7 @@ class VoiceService:
         else:
             self._close_input()
 
+    @_batched
     def shutdown(self) -> None:
         self.interrupt()
         self._close_input()
@@ -543,6 +664,7 @@ class VoiceService:
 
     # -- speaking ----------------------------------------------------------------------------
 
+    @_batched
     def say(self, text: str, *, solicited: bool = False,
             on_start: Callable[[float], None] | None = None,
             on_done: Callable[[Outcome], None] | None = None,
@@ -576,6 +698,7 @@ class VoiceService:
             self._prefetch()
         return True
 
+    @_batched
     def interrupt(self) -> None:
         """Stop speaking now and forget queued lines (the user cut her off)."""
         self._hold_until = 0.0
@@ -597,18 +720,24 @@ class VoiceService:
             self._queue.popleft().finish(Outcome.INTERRUPTED)
         if self._state == VoiceState.SPEAKING:
             self._rest("interrupted")
+        self._activity()
 
+    @_batched
     def hold_for_reply(self, seconds: float) -> None:
         """An answer is still being written (streamed): when a line ends and
         the next is not there yet, stay quiet with the microphone closed for
         up to *seconds* instead of reopening it between two sentences."""
         self._hold_until = self._clock() + max(0.0, float(seconds))
+        self._activity()
 
+    @_batched
     def release_reply_hold(self) -> None:
         """The answer is complete (or abandoned): no more waiting for it."""
         self._hold_until = 0.0
         self.check_hold()
+        self._activity()
 
+    @_batched
     def check_hold(self) -> None:
         """Back to rest if she is only waiting for a reply hold that is over."""
         if (self._waiting_for_reply and self._current is None and not self._queue
@@ -616,9 +745,12 @@ class VoiceService:
             self._waiting_for_reply = False
             self._rest("done speaking")
 
+    @_batched
     def note_reply_shown(self, seconds: float = 0.0) -> None:
         """An answer was shown without voice (*seconds* to read it): the
         conversation window runs from now, as if she had just said it."""
+        self._awaiting_until = 0.0  # her answer has come
+        self._activity()
         if not self.conversation_open:
             return
         self._conv_awaiting_until = 0.0
@@ -660,7 +792,8 @@ class VoiceService:
             if self.conversation_open:
                 self._conv_speaking = True  # the window stays open while she talks
             if utterance.solicited:
-                self._conv_awaiting_until = 0.0  # her answer has come
+                self._conv_awaiting_until = self._awaiting_until = 0.0  # her answer has come
+            self._activity()
             self._close_input()  # never listen to herself
             self._set_state(VoiceState.SPEAKING, "speaking")
             gen = self._speak_gen
@@ -717,6 +850,7 @@ class VoiceService:
             return
         self._post(lambda: self._synthesized(utterance, gen, clip, None))
 
+    @_batched
     def _synthesized(self, utterance: _Utterance, gen: int, clip: AudioClip | None,
                      error: str | None) -> None:
         if gen != self._speak_gen or utterance.resolved:
@@ -774,6 +908,7 @@ class VoiceService:
         if utterance is self._current:
             self._prefetch()
 
+    @_batched
     def _played(self, utterance: _Utterance, gen: int, completed: bool) -> None:
         if gen != self._speak_gen or utterance is not self._current:
             return
@@ -783,6 +918,7 @@ class VoiceService:
 
     # -- listening ----------------------------------------------------------------------------
 
+    @_batched
     def toggle_listening(self, source: str = "hotkey") -> None:
         """Push-to-talk press in toggle mode / the chat microphone button."""
         if self._state == VoiceState.LISTENING:
@@ -790,6 +926,7 @@ class VoiceService:
         else:
             self.listen(source)
 
+    @_batched
     def listen(self, source: str = "hotkey", *, hold: bool = False) -> bool:
         """Open the microphone for one utterance; interrupts her speech.  With
         *hold* (hold-to-talk) a pause does not end the utterance: letting go of
@@ -825,8 +962,10 @@ class VoiceService:
             self._rest("microphone failed")
             return False
         self._set_state(VoiceState.LISTENING, source)
+        self._speech_started(SPEECH_PUSH, True)
         return True
 
+    @_batched
     def stop_listening(self) -> None:
         """Push-to-talk released / pressed again: use what was said so far."""
         if self._state != VoiceState.LISTENING:
@@ -842,8 +981,9 @@ class VoiceService:
             self._rest("nothing heard")
             self._result("", "no_speech")
             return
-        self._transcribe(audio)
+        self._transcribe(audio, self._clock(), 0.0)
 
+    @_batched
     def cancel_listening(self) -> None:
         if self._state not in (VoiceState.LISTENING, VoiceState.TRANSCRIBING):
             return
@@ -866,8 +1006,8 @@ class VoiceService:
         for event in events:
             if event.kind == "end" and event.audio is not None:
                 ended = True
-                audio = event.audio
-                self._post(lambda a=audio, g=gen: self._utterance_ready(a, g))
+                audio, pause = event.audio, _pause_of(event, vad)
+                self._post(lambda a=audio, g=gen, t=now, p=pause: self._utterance_ready(a, g, t, p))
         if not ended and not talking and not self._timeout_posted \
                 and now - self._listen_started > self._listen_timeout:
             self._timeout_posted = True
@@ -877,27 +1017,33 @@ class VoiceService:
             on_level = self._on_level
             self._post(lambda lv=level: on_level(lv))
 
-    def _utterance_ready(self, audio: Any, gen: int) -> None:
+    @_batched
+    def _utterance_ready(self, audio: Any, gen: int, ended: float | None = None, pause: float = 0.0) -> None:
         if gen != self._listen_gen or self._state != VoiceState.LISTENING:
             return
         self._drop_vad()
         self._close_input()
         self._listen_gen += 1
-        self._transcribe(audio)
+        self._transcribe(audio, self._clock() if ended is None else ended, pause)
 
+    @_batched
     def _no_speech(self, gen: int) -> None:
         if gen != self._listen_gen or self._state != VoiceState.LISTENING:
             return
         self.cancel_listening()
         self._result("", "no_speech")
 
-    def _transcribe(self, audio: Any) -> None:
+    def _transcribe(self, audio: Any, ended: float, pause: float) -> None:
+        """Recognise a push-to-talk phrase that ended at *ended* (``clock``) after a
+        *pause* of silence."""
         self._set_state(VoiceState.TRANSCRIBING, "")
         gen = self._listen_gen
         stt, prompt = self.stt, self.prompt
-        self._worker.submit(lambda: self._stt_job(stt, audio, prompt, gen), VoiceWorker.TRANSCRIBE)
+        self._worker.submit(lambda: self._stt_job(stt, audio, prompt, gen, ended, pause),
+                            VoiceWorker.TRANSCRIBE)
 
-    def _stt_job(self, stt: STTEngine | None, audio: Any, prompt: str, gen: int) -> None:
+    def _stt_job(self, stt: STTEngine | None, audio: Any, prompt: str, gen: int,
+                 ended: float | None = None, pause: float = 0.0) -> None:
         try:
             if stt is None:
                 raise STTError("speech recognition switched off")
@@ -912,9 +1058,11 @@ class VoiceService:
             self._post(lambda: self._transcribed(gen, "", message))
             return
         text = transcript.text
-        self._post(lambda: self._transcribed(gen, text, ""))
+        self._post(lambda: self._transcribed(gen, text, "", ended, pause))
 
-    def _transcribed(self, gen: int, text: str, error: str) -> None:
+    @_batched
+    def _transcribed(self, gen: int, text: str, error: str, ended: float | None = None,
+                     pause: float = 0.0) -> None:
         if gen != self._listen_gen or self._state != VoiceState.TRANSCRIBING:
             return
         self._rest("transcribed")
@@ -922,23 +1070,29 @@ class VoiceService:
             self._error(error)
             self._result("", "error")
         elif text:
-            self._deliver(text, DELIVERED_PUSH)
+            self._deliver(text, DELIVERED_PUSH, ended, pause)
         else:
             self._result("", "not_understood")
 
-    def _deliver(self, text: str, status: str) -> None:
+    def _deliver(self, text: str, status: str, ended: float | None = None, pause: float = 0.0) -> None:
         """A request for her: hand it over (*status*: how it reached her, see
-        :data:`DELIVERED`) and open the conversation window."""
+        :data:`DELIVERED`), note when it was said (:attr:`last_delivery`) and open
+        the conversation window."""
+        now = self._clock()
         self._called_until = 0.0
+        self._awaiting_until = now + self.reply_wait_seconds
         if self.follow_up_seconds > 0:
-            now = self._clock()
             self._conv_awaiting_until = now + self.reply_wait_seconds
             self._conv_until = max(self._conv_until, now + self.follow_up_seconds)
+        self.last_delivery = Delivery(speech_end=now if ended is None else min(ended, now),
+                                      transcribed=now, pause=max(0.0, pause))
         self._result(text, status)
+        self._activity()
 
     def _end_conversation(self) -> None:
-        self._conv_until = self._conv_awaiting_until = self._called_until = 0.0
+        self._conv_until = self._conv_awaiting_until = self._called_until = self._awaiting_until = 0.0
         self._conv_speaking = False
+        self._activity()
 
     # -- the open microphone ("name" / "open" modes) ---------------------------------------------
 
@@ -951,6 +1105,7 @@ class VoiceService:
         gen = self._listen_gen
         with self._vad_lock:
             self._vad = EnergyVAD(self.wake_config, initial_floor=self._noise_floor)
+            self._vad_talking = False
         if self._open_input(lambda chunk, g=gen: self._on_standby_audio(chunk, g)):
             self._set_state(VoiceState.STANDBY, f"open microphone ({self._listen_mode})")
         else:
@@ -971,27 +1126,51 @@ class VoiceService:
                 return
             events = vad.feed(chunk)
             open_gen = self._open_gen
+            talking = vad.in_speech
+            changed = talking != self._vad_talking
+            self._vad_talking = talking
+        now = self._clock()
+        started = any(event.kind == "start" for event in events)
+        if started or changed:
+            self._post(lambda g=open_gen, t=talking, s=started: self._standby_speech(gen, g, t, s))
         for event in events:
             if event.kind == "end" and event.audio is not None:
-                audio = event.audio
-                self._post(lambda a=audio, g=open_gen: self._standby_utterance(a, g))
+                audio, pause = event.audio, _pause_of(event, vad)
+                self._post(lambda a=audio, g=open_gen, t=now, p=pause: self._standby_utterance(a, g, t, p))
+
+    @_batched
+    def _standby_speech(self, gen: int, open_gen: int, talking: bool, started: bool) -> None:
+        """The open microphone heard speech begin (*started*) or stop."""
+        if (gen != self._listen_gen or not self._open_result_valid(open_gen)
+                or self._state != VoiceState.STANDBY):
+            return
+        if talking != self._heard_speech:
+            self._heard_speech = talking
+            self._activity()
+        if started:
+            for_her = self._listen_mode == OPEN or self.conversation_open or self._called()
+            self._speech_started(SPEECH_OPEN_MIC, for_her)
 
     def _open_result_valid(self, open_gen: int) -> bool:
         return (open_gen == self._open_gen and self._open_wanted()
                 and self._state not in (VoiceState.LISTENING, VoiceState.TRANSCRIBING))
 
-    def _standby_utterance(self, audio: Any, open_gen: int) -> None:
+    @_batched
+    def _standby_utterance(self, audio: Any, open_gen: int, ended: float | None = None,
+                           pause: float = 0.0) -> None:
         if not self._open_result_valid(open_gen):
             return
+        ended = self._clock() if ended is None else ended
         if self._standby_busy:
             # One recognition at a time: under constant talk (a TV) work never piles up.
             # The newest phrase waits - it is the request if the one being recognised
             # turns out to be her name alone ("Міє, ... котра година?").
             if self._standby_waiting is not None:
                 self._drop_utterance()
-            self._standby_waiting = (audio, open_gen)
+            self._standby_waiting = (audio, open_gen, ended, pause)
             return
         self._standby_busy = True
+        self._activity()
         stt, prompt = self.stt, self.standby_prompt
 
         def job() -> None:
@@ -1000,12 +1179,15 @@ class VoiceService:
             except Exception as exc:
                 log.debug("open microphone: recognition failed (%s)", type(exc).__name__)
                 text = ""
-            self._post(lambda: self._standby_heard(open_gen, text))
+            self._post(lambda: self._standby_heard(open_gen, text, ended, pause))
 
         self._worker.submit(job, VoiceWorker.TRANSCRIBE)
 
-    def _standby_heard(self, open_gen: int, text: str) -> None:
+    @_batched
+    def _standby_heard(self, open_gen: int, text: str, ended: float | None = None,
+                       pause: float = 0.0) -> None:
         self._standby_busy = False
+        self._activity()
         waiting, self._standby_waiting = self._standby_waiting, None
         if not self._open_result_valid(open_gen):
             return  # paused, revoked, mode changed or push-to-talk took over meanwhile
@@ -1022,7 +1204,7 @@ class VoiceService:
         if waiting is not None:
             self._drop_utterance()
         if found is not None:
-            self._deliver(*found)
+            self._deliver(*found, ended, pause)
 
     def _drop_utterance(self) -> None:
         self.dropped_utterances += 1
@@ -1068,6 +1250,9 @@ class VoiceService:
             vad, self._vad = self._vad, None
             if vad is not None:
                 self._noise_floor = vad.noise_floor
+        if self._heard_speech:
+            self._heard_speech = False
+            self._activity()
 
     def _close_input(self) -> None:
         """Close the microphone (and keep the background level it learnt)."""
@@ -1110,6 +1295,36 @@ class VoiceService:
                 self._conv_until = max(self._conv_until, now + self.follow_up_seconds)
         if self._on_state is not None:
             self._on_state(state, reason)
+        self._activity()
+
+    def note_activity(self) -> None:
+        """Something outside the service that the conversation depends on changed (an
+        answer being written): ``on_activity`` fires - after the operation in
+        progress, if one is."""
+        self._activity()
+
+    def _activity(self) -> None:
+        """Something :attr:`conversation_active` depends on may have changed."""
+        if self._activity_depth > 0:
+            self._activity_pending = True
+        else:
+            self._notify_activity()
+
+    def _notify_activity(self) -> None:
+        if self._on_activity is None:
+            return
+        try:
+            self._on_activity()
+        except Exception:
+            log.exception("voice activity callback failed")
+
+    def _speech_started(self, source: str, for_her: bool) -> None:
+        if self._on_speech_start is None:
+            return
+        try:
+            self._on_speech_start(source, for_her)
+        except Exception:
+            log.exception("speech start callback failed")
 
     def _result(self, text: str, status: str) -> None:
         if self._on_result is not None:

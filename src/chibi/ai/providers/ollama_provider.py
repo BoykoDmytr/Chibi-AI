@@ -2,7 +2,20 @@
 
 ``POST /api/chat`` (NDJSON stream: one JSON object per line, the last one has
 ``"done": true`` and the token counts), ``GET /api/tags`` (installed models),
-``POST /api/show`` (capabilities, for vision).  Plain ``httpx2``.
+``POST /api/show`` (capabilities, for vision), ``POST /api/generate`` with only
+the model (:meth:`OllamaProvider.warm_up`: load it, generate nothing).  Plain
+``httpx2``.
+
+Ollama unloads a model 5 minutes after its last request, and loading it again
+takes 5-20 s; every request therefore carries ``keep_alive`` (the "keep the
+model loaded" setting), and :meth:`~OllamaProvider.warm_up` lets the app load
+it before the user's words are even recognised.  The prompt layout keeps the
+system prompt and the history an unchanged prefix that Ollama does not read
+again (see the OpenAI-compatible provider's module docstring), and a cancelled
+request is aborted at once (:class:`RequestAbort`): Ollama works on one request
+at a time.  :attr:`~OllamaProvider.last_load_seconds` /
+:attr:`~OllamaProvider.last_prompt_seconds` tell where the last request's time
+went (numbers only).
 
 An empty model name means "the first installed model", resolved lazily on the
 worker thread the first time it is needed.  Errors carry instructions the user
@@ -20,13 +33,16 @@ from typing import Any
 import httpx2
 
 from chibi.ai.providers.openai_provider import (
-    JSON_INSTRUCTION,
+    RequestAbort,
+    build_client,
     clean_json_text,
     image_b64,
+    ipv4_loopback,
     is_loopback_url,
     parse_retry_after,
     require_user_turn,
     status_error,
+    turn_texts,
 )
 from chibi.ai.providers.reasoning import ReasoningFilter, strip_reasoning
 from chibi.ai.types import (
@@ -50,16 +66,30 @@ class OllamaProvider:
     name = "ollama"
 
     def __init__(self, base_url: str, model: str, *, timeout: float = 60.0,
-                 http_client: httpx2.Client | None = None) -> None:
+                 keep_alive: str | None = None, http_client: httpx2.Client | None = None) -> None:
+        """*keep_alive*: how long Ollama keeps the model loaded after a request (its
+        duration syntax, e.g. ``"30m"``); None leaves Ollama's own default (5 minutes)."""
         self.base_url = base_url.strip().rstrip("/")
+        #: Where requests go: "localhost" as 127.0.0.1, like Ollama's own clients - Windows
+        #: resolves "localhost" to ::1 first, Ollama listens on 127.0.0.1 only, and the
+        #: refused ::1 attempt costs 1-2 s there (Windows retries the SYN) on every request.
+        self._address = ipv4_loopback(self.base_url)
         self.model = model.strip()
+        self.keep_alive = keep_alive
         # Connecting to a local server either works at once or not at all; the
         # read timeout must cover loading a model into memory on first use.
         self._timeout = httpx2.Timeout(timeout, connect=min(timeout, 5.0))
         self._owns_client = http_client is None
-        self._client = http_client if http_client is not None else httpx2.Client(timeout=self._timeout)
+        # A fresh connection per request: free on this machine / the LAN, and a
+        # cancelled request can then always be aborted (Ollama answers one at a time).
+        self._client = http_client if http_client is not None else \
+            build_client(self._timeout, fresh_connections=True)
         self._lock = threading.Lock()
         self._vision: dict[str, bool] = {}
+        #: Seconds Ollama spent loading the model / reading the prompt for the last
+        #: request on the AI worker (None: not reported).
+        self.last_load_seconds: float | None = None
+        self.last_prompt_seconds: float | None = None
 
     def __repr__(self) -> str:
         return f"OllamaProvider({self.base_url!r}, {self.model!r})"
@@ -116,14 +146,10 @@ class OllamaProvider:
         messages: list[dict[str, Any]] = []
         if request.system.strip():
             messages.append({"role": "system", "content": request.system})
-        operator = "\n\n".join(p for p in (request.context.strip(),
-                                           JSON_INSTRUCTION if request.json_mode else "") if p)
-        if operator:
-            messages.append({"role": "system", "content": operator})
-        for turn in request.turns:
-            if not turn.text and not (turn.role == Role.USER and turn.images):
+        for turn, text in zip(request.turns, turn_texts(request), strict=True):
+            if not text and not (turn.role == Role.USER and turn.images):
                 continue
-            message: dict[str, Any] = {"role": turn.role.value, "content": turn.text}
+            message: dict[str, Any] = {"role": turn.role.value, "content": text}
             if turn.role == Role.USER and turn.images:
                 message["images"] = [image_b64(img.data) for img in turn.images]
             messages.append(message)
@@ -133,19 +159,29 @@ class OllamaProvider:
             "stream": stream,
             "options": {"num_predict": max(1, request.max_tokens)},
         }
+        if self.keep_alive:
+            body["keep_alive"] = self.keep_alive
         if request.json_mode:
             body["format"] = "json"
         return body
 
+    def _note_timing(self, data: dict[str, Any]) -> None:
+        """Where the request's time went, from the final object's nanosecond counters."""
+        self.last_load_seconds = _seconds(data.get("load_duration"))
+        self.last_prompt_seconds = _seconds(data.get("prompt_eval_duration"))
+
     def generate(self, request: GenerationRequest, cancel: CancelToken | None = None) -> GenerationResult:
         if cancel is not None:
             cancel.raise_if_cancelled()
+        self.last_load_seconds = self.last_prompt_seconds = None
         model = (request.model or "").strip() or self._ensure_model()
         body = self._body(request, model, stream=False)
-        try:
-            response = self._client.post(f"{self.base_url}/api/chat", json=body, timeout=self._timeout)
-        except httpx2.HTTPError as exc:
-            raise self._transport_error(exc) from None
+        with RequestAbort(cancel) as abort:
+            try:
+                response = self._client.post(f"{self._address}/api/chat", json=body, timeout=self._timeout,
+                                             extensions=abort.extensions)
+            except httpx2.HTTPError as exc:
+                raise self._transport_error(exc) from None
         self._raise_for_status(response, model)
         try:
             data = response.json()
@@ -154,22 +190,25 @@ class OllamaProvider:
             raise self._bad_payload() from None
         if not isinstance(text, str):
             raise self._bad_payload()
-        if cancel is not None:
-            cancel.raise_if_cancelled()
+        # A complete answer is returned even if the token was cancelled meanwhile (see
+        # RequestAbort): the AI service decides whether anyone still wants it.
+        self._note_timing(data)
         return self._result(strip_reasoning(text), data, model, request)
 
     def stream(self, request: GenerationRequest, on_delta: Callable[[str], None],
                cancel: CancelToken | None = None) -> GenerationResult:
         if cancel is not None:
             cancel.raise_if_cancelled()
+        self.last_load_seconds = self.last_prompt_seconds = None
         model = (request.model or "").strip() or self._ensure_model()
         body = self._body(request, model, stream=True)
         parts: list[str] = []
         reasoning = ReasoningFilter()
         final: dict[str, Any] = {}
         try:
-            with self._client.stream("POST", f"{self.base_url}/api/chat", json=body,
-                                     timeout=self._timeout) as response:
+            with RequestAbort(cancel) as abort, \
+                    self._client.stream("POST", f"{self._address}/api/chat", json=body,
+                                        timeout=self._timeout, extensions=abort.extensions) as response:
                 if response.status_code >= 400:
                     response.read()
                     self._raise_for_status(response, model)
@@ -200,14 +239,40 @@ class OllamaProvider:
                         break
         except httpx2.HTTPError as exc:
             raise self._transport_error(exc) from None
+        self._note_timing(final)
         tail = reasoning.finish()
         if tail:
             on_delta(tail)
         return self._result(strip_reasoning("".join(parts)), final, model, request)
 
+    def warm_up(self, cancel: CancelToken | None = None) -> None:
+        """Load the model into memory without generating anything (``POST /api/generate``
+        with only the model and ``keep_alive``), so the next answer does not wait for it.
+        Returns once it is loaded; raises like :meth:`generate`."""
+        if cancel is not None:
+            cancel.raise_if_cancelled()
+        self.last_load_seconds = self.last_prompt_seconds = None
+        model = self._ensure_model()
+        body: dict[str, Any] = {"model": model}
+        if self.keep_alive:
+            body["keep_alive"] = self.keep_alive
+        with RequestAbort(cancel) as abort:
+            try:
+                response = self._client.post(f"{self._address}/api/generate", json=body,
+                                             timeout=self._timeout, extensions=abort.extensions)
+            except httpx2.HTTPError as exc:
+                raise self._transport_error(exc) from None
+        self._raise_for_status(response, model)
+        try:
+            data = response.json()
+        except ValueError:
+            raise self._bad_payload() from None
+        if isinstance(data, dict):
+            self._note_timing(data)
+
     def list_models(self) -> list[str]:
         try:
-            response = self._client.get(f"{self.base_url}/api/tags", timeout=self._timeout)
+            response = self._client.get(f"{self._address}/api/tags", timeout=self._timeout)
         except httpx2.HTTPError as exc:
             raise self._transport_error(exc) from None
         self._raise_for_status(response, self.model)
@@ -233,7 +298,7 @@ class OllamaProvider:
             if model in self._vision:
                 return self._vision[model]
         try:
-            response = self._client.post(f"{self.base_url}/api/show", json={"model": model},
+            response = self._client.post(f"{self._address}/api/show", json={"model": model},
                                          timeout=self._timeout)
             if response.status_code != 200:
                 return False
@@ -278,3 +343,10 @@ class OllamaProvider:
 
 def _count(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def _seconds(nanoseconds: Any) -> float | None:
+    """A duration Ollama reports in nanoseconds, in seconds (None when absent)."""
+    if isinstance(nanoseconds, bool) or not isinstance(nanoseconds, (int, float)) or not nanoseconds >= 0:
+        return None
+    return float(nanoseconds) / 1e9

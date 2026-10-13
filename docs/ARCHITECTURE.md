@@ -363,7 +363,12 @@ class OpenAIProvider(TextProvider):
                  http_client=None)
 # ai/providers/ollama_provider.py  - httpx2, /api/chat (NDJSON stream), /api/tags, /api/show
 class OllamaProvider(TextProvider):
-    def __init__(self, base_url: str, model: str, *, timeout: float = 60.0, http_client=None)
+    def __init__(self, base_url: str, model: str, *, timeout: float = 60.0,
+                 keep_alive: str | None = None, http_client=None)
+    # a "localhost" URL is reached as 127.0.0.1 (Windows tries ::1 first: 1-2 s per request)
+    keep_alive: str | None                 # sent with every request ("30m"); set by AIService
+    def warm_up(self, cancel=None) -> None # POST /api/generate {model, keep_alive}: load, no text
+    last_load_seconds / last_prompt_seconds: float | None   # Ollama's load / prompt-eval durations
 # ai/providers/fake.py  - scripted provider for tests and the headless smoke test
 class FakeProvider(TextProvider): replies: list[str | Exception]; requests: list[GenerationRequest]
 # ai/providers/factory.py
@@ -393,15 +398,25 @@ class AIService(QObject):
     def is_available(self, purpose: Purpose) -> bool
     def submit(self, request: GenerationRequest, *, on_done: Callable[[GenerationResult], None],
                on_error: Callable[[Exception], None], on_delta: Callable[[str], None] | None = None,
-               cancel: CancelToken | None = None) -> CancelToken
+               cancel: CancelToken | None = None, user_waiting: bool = False) -> CancelToken
         # callbacks always on the main thread; queue max 4, lower Purpose rank dropped first;
-        # identical non-chat requests answered from a 10-minute cache
+        # identical non-chat requests answered from a 10-minute cache; user_waiting: the user
+        # asked for it, so it runs during a conversation (see "Answer latency" below)
     def reconfigure(self) -> None                   # settings or key changed
     def test(self, on_done: Callable[[bool, str], None]) -> None
     def list_models(self, on_done: Callable[[list[str], str], None]) -> None
+    def warm_up(self) -> bool                        # load a local model ahead (Ollama); True if queued
+    last_chat_timing: RequestTiming | None           # property: where the last chat answer's time went
+    own_model_server: bool                           # property: local / LAN / Ollama (free, reuses the prefix)
+    conversation_active: bool                        # property: the last ConversationActive
     def usage_today(self) -> UsageSummary
     def shutdown(self) -> None                       # cancels and joins the worker (<= 2 s)
-    # publishes AIStatusChanged; circuit breaker: 3 consecutive "unavailable" errors -> offline 120 s
+    # publishes AIStatusChanged; circuit breaker: 3 consecutive "unavailable" errors -> offline 120 s;
+    # subscribes to ConversationActive itself
+@dataclass(frozen=True)
+class RequestTiming: queued: float; first_text: float | None; total: float   # seconds since submit
+                     model_load: float | None; prompt_read: float | None; input_tokens; output_tokens
+class ConversationBusyError(CancelledError)          # background request put aside for a conversation
 ```
 
 ### memory and emotion
@@ -463,7 +478,8 @@ class AIBrain:
     def chat(self, text: str, on_delta: Callable[[str], None],
              on_done: Callable[[ChatReply | None], None]) -> None   # None -> caller uses offline reply
     def phrase(self, keys: Sequence[str], variables: Mapping[str, str], solicited: bool,
-               on_done: Callable[[SpeechRequested | None], None]) -> None
+               on_done: Callable[[SpeechRequested | None], None]) -> CancelToken | None
+        # the request's token (None: nothing sent); the composer cancels a line it gave up
 # reply control line (first line of every chat/phrase reply, stripped before display):
 #   <<state=happy;action=none>>     state: CharacterState value; action (chat only):
 #   none | feed | pet | rest | quiet_on | quiet_off - anything else is ignored
@@ -765,6 +781,125 @@ As built for Phase 6:
   the wallet/inventory, what she saw and a voice request still waiting.
 * Interface feedback keys (`voice.*`, `game.start`) never go to the model
   (`prompts.BANK_ONLY_PREFIXES`): "Слухаю!" must be instant and free.
+
+## Answer latency: the conversation comes first
+
+With a local model and the open microphone an answer used to take ~20 s:
+one AI worker and one model server (Ollama serves one request at a time per
+model) meant the chat request queued behind a screen analysis (slow image
+prompt), an observer decision, a reaction line or the memory extraction of
+the previous turn; Ollama unloaded the model after 5 idle minutes; and
+nothing measured where the time went.
+
+**The rule.** While the user is talking with her, background AI work must not
+delay her answer.  `core.events.ConversationActive(active)` (HIGH priority)
+carries it; the app is its only publisher.
+
+* `ChibiApp._sync_conversation`: active = `VoiceIntegration.conversation_active`
+  (push-to-talk listening, a phrase being recognised, a delivered request
+  waiting for her answer - at most 30 s -, her answer being written or spoken,
+  her name alone just heard, the follow-up window; in "open" mode also speech
+  on the open microphone - in "name" mode speech counts only once it turned
+  out to be for her, so a TV cannot hold it) **or** a chat answer in flight
+  (typed or spoken, `send_chat_stream` until its `on_done`; one lost for
+  `CHAT_IN_FLIGHT_SECONDS` stops counting - a timer looks again then).
+  `True` is published at once; `False` only after `CONVERSATION_HOLD_SECONDS`
+  (2 s) of quiet, so back-to-back turns do not flap.  It is re-evaluated on
+  every voice `on_change` (which fires on each flip of `conversation_active`,
+  also when a wait runs out), when a chat answer starts or ends and on the
+  timer; never after shutdown.
+* `AIService` (subscribes itself): while active, requests of the background
+  purposes (REACTION, INITIATIVE, VISION, MEMORY) wait in the queue; CHAT, the
+  connection test, model listing, the warm-up and anything submitted with
+  `user_waiting=True` (a solicited line, a manual screen analysis) run.  A
+  background request already running on a server of the user's own (local /
+  LAN, Ollama anywhere: one request at a time, free) is interrupted through its
+  token - the provider aborts the HTTP request (`RequestAbort` shuts the socket
+  down; clients for private-network servers open a fresh connection per
+  request so the abort can reach it) - REACTION and MEMORY go back into the
+  queue, VISION and INITIATIVE fail with `ConversationBusyError` (a
+  `CancelledError`).  One on a paid cloud API is let finish (the API answers
+  side by side; interrupting would bill it twice).  A complete answer is never
+  thrown away by a provider: `RequestAbort` turns a clean end into
+  `CancelledError` only when it shut a socket (a response without a length may
+  have been cut short).  VISION / INITIATIVE held over 60 s are given up, a
+  REACTION not started within 8 s of submission is stale (the composer used
+  the phrase bank), MEMORY waits for the end; held requests are budget-checked
+  again before they run.  Interrupted requests are not recorded in the ledger;
+  a complete answer its caller withdrew is, and so is a paid-API request cut
+  short after sending (input estimated: `CUT_SHORT_CHARS_PER_TOKEN`).
+* Vision (`VisionService.set_conversation`, `CONVERSATION_GRACE_SECONDS`): no
+  automatic frames; a frame in flight is abandoned (`analyzer.cancel_current`,
+  no notice, no back-off, no `VisionObserved`; a `wanted()` check right before
+  submit and before capture); an unconfirmed automatic event's confirmation
+  frame is dropped; automatic frames resume 5 s after the conversation.
+  "Подивись на екран" during a conversation runs at once, its frames
+  `user_waiting` (`FrameAnalyzer.analyze(..., urgent=True)`).
+* Observer: no decisions during a conversation and for `CHAT_QUIET_SECONDS`
+  (60 s) after it; a decision in flight is dropped as stale (no failure
+  back-off).  Composer: her own (unsolicited) lines come from the phrase bank
+  during a conversation, own lines waiting for the model are abandoned;
+  solicited lines keep the AI.  A line it gives up (abandoned, or timed out
+  to the phrase bank) withdraws its request, so it never runs afterwards.
+* Brain: one memory extraction with the AI service at a time, later messages
+  wait and go `MEMORY_BATCH` (4) to a request, each in its own `<user>` tags
+  (only beyond `MEMORY_BACKLOG`, 32 waiting, is the oldest dropped - logged);
+  `discard_pending_memories()`
+  (the app calls it from `clear_memories(None | "fact" | "preference")` and
+  `wipe_all()`, because extraction now waits for the end of a conversation).
+
+**Keeping the model ready.**  `AISettings.keep_model_loaded_minutes` (5-240,
+default 30; "Тримати модель у пам'яті" on the AI page, Ollama only) goes to
+Ollama as `keep_alive` with every request.  `AIService.warm_up()` queues a
+load-only request at chat priority when the provider can (Ollama), a chat
+request would be accepted, and the model is likely unloaded (unused for
+keep - 1 minutes, never used, or another model - a separate vision model -
+ran since); otherwise it is a cheap no-op.  The app calls it when the user
+starts speaking (`VoiceIntegration.add_speech_start_listener`, only
+`SpeechStart.for_her`: speech the open microphone cannot yet attribute must
+not pin the model in video memory), when a conversation starts and when the
+chat window opens - never at start-up or on a settings change (a model loaded
+then would sit in video memory for the keep-alive time although nobody talks
+to her, e.g. during a game).
+
+**Fewer tokens to read and say first.**  OpenAI-compatible and Ollama
+prompts keep the system prompt and history as an unchanged prefix (the
+volatile context and the JSON instruction open the last user turn), and on a
+server of the user's own (`AIService.own_model_server`: local / LAN, Ollama)
+the brain's history window keeps its first turn while it grows by up to
+`history_slack()` turns, so the server reuses what it already read (a paid
+cloud API gets the plain window: the extra turns would only be billed).  The
+voice starts at the first clause of a long first sentence
+(`SentenceChunker(first_clause=FIRST_CLAUSE_CHARS)`, 30 characters; never
+inside numbers, abbreviations or `*actions*`).  Whisper runs one throwaway
+recognition after its background preload, as a background job of its own
+after the voice has loaded (a request or a voice sample waiting meanwhile goes
+first).  Phrases up to 8 s are capped at 24 + 24 tokens per second of audio
+(faster-whisper 1.2 / CTranslate2 4.8 stop at about half the cap plus the
+prompt - measured), so a hallucination loop on a short noisy clip stops early;
+longer phrases are not capped (a cap cut the end of a long request off).
+"Потоки процесора для
+голосу" (`VoiceSettings.cpu_threads`, recommended `recommended_threads()`:
+half the logical CPUs, 2-6) is on the voice page.
+
+**Where the time went** (numbers only, never text):
+
+* `AIService` records each request's `RequestTiming` (queue wait, first
+  streamed text, total, Ollama's model load and prompt read, tokens; a
+  warm-up the request waited behind - a conversation starting queues one just
+  before the chat - counts as model load, not queue wait); a chat
+  answer logs one INFO line (`AI chat: queued 0.0 s, first text 2.3 s, ...`)
+  and is kept as `last_chat_timing` (facade: `ai_last_timing()`).
+* `VoiceIntegration` times every voice request from the end of the phrase
+  (plus the end-of-phrase pause) through recognition, the model's first text,
+  the first piece and synthesis to her audio: `VoiceLatency`, kept as
+  `last_latency` / `VoiceStatus.latency` and logged as one INFO line.  Only
+  an answer the app marks as one to a voice request
+  (`begin_reply(..., voice_request=True)`, `send_chat_stream(spoken=True)`)
+  takes the request's timing; an answer to typed text never does.
+* The voice page's "Швидкість відповіді" card shows both (the voice steps with
+  advice for the slowest one; a line for the model with the queue and the
+  model load, advising "Тримати модель у пам'яті" after a load).
 
 ## Packaging
 

@@ -140,6 +140,11 @@ CHECKS_NOTE = (
     "Перевірка й пошук моделей використовують налаштування цієї сторінки: перед ними її зміни буде "
     "збережено."
 )
+KEEP_LOADED_HINT = (
+    "Скільки хвилин після останньої відповіді Ollama не вивантажує модель. Завантаження моделі "
+    "триває 5–20 с, і на нього чекає перша відповідь після перерви. Довше — після перерви вона "
+    "відповідає швидше, але модель довше займає відеопам'ять, яка знадобилася б грі."
+)
 
 CLOUD_AI_CONSENT_TITLE = "Дозволити хмарний AI?"
 CLOUD_AI_CONSENT_TEXT = (
@@ -504,6 +509,10 @@ class AIPage(QWidget):
             "Зазвичай змінювати не треба. Якщо Ollama працює на іншому комп'ютері, вона вважається "
             "хмарою."), self.ollama_url_error)
         box.addWidget(self.ollama_url_row)
+        self.keep_loaded_spin = self._spin(5, 240, ai.keep_model_loaded_minutes, " хв")
+        self.keep_loaded_row = setting_row("Тримати модель у пам'яті", self.keep_loaded_spin,
+                                           KEEP_LOADED_HINT)
+        box.addWidget(self.keep_loaded_row)
 
         self.openai_url_edit = QLineEdit(ai.openai_base_url)
         self.openai_url_edit.setMaxLength(300)
@@ -728,6 +737,7 @@ class AIPage(QWidget):
             combo("provider", self.provider_combo, "none"),
             _Field("model", self.model_text, lambda v: self._set_model_text(str(v))),
             url("ollama_url", self.ollama_url_edit),
+            number("keep_model_loaded_minutes", self.keep_loaded_spin),
             url("openai_base_url", self.openai_url_edit),
             money("openai_price_input_per_mtok", self.price_input_spin),
             money("openai_price_output_per_mtok", self.price_output_spin),
@@ -791,6 +801,7 @@ class AIPage(QWidget):
         self.provider_note.setText(PROVIDER_NOTES.get(provider, "").format(name=self._name))
         self.connection_box.setVisible(provider != "none")
         self.ollama_url_row.setVisible(provider == "ollama")
+        self.keep_loaded_row.setVisible(provider == "ollama")
         self.openai_url_row.setVisible(provider == "openai")
         self.price_row.setVisible(provider == "openai")
         self.effort_row.setVisible(provider == "anthropic")

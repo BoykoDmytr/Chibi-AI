@@ -584,33 +584,97 @@ def _cut_long(sentence: str, max_chars: int) -> list[str]:
     return parts
 
 
+#: A streamed answer's first piece may end at a clause boundary once it is this long.
+FIRST_CLAUSE_CHARS = 30
+
+
 class SentenceChunker:
     """Collects streamed text and hands out complete sentences.
 
     ``feed("Привіт! Як ти")`` -> ``["Привіт!"]``; ``flush()`` -> ``["Як ти"]``.
     Works on raw text (normalise each sentence afterwards): splitting before
     normalisation keeps "о 14:30." intact.
+
+    A piece never ends inside what :func:`normalize_for_tts` reads as one unit:
+    a number ("2,5", "14:30", "1.500"), an abbreviation ("і т. д.", "т. зв.",
+    "р. р.", "напр.") or a role-play action (``*зітхає, сміється*``).
+
+    *first_clause* (characters, 0 = off): the **first** piece may also end at
+    a clause boundary - a comma, semicolon, colon or spaced dash followed by a
+    space - once it is at least that long, so a voice can start on it while
+    the rest of a long first sentence is still being written.  The rest of
+    that sentence is then the next piece (whatever its length); later pieces
+    are whole sentences again.  A boundary is judged only by the text before
+    it (and the space right after), so the same text gives the same pieces
+    whether it arrives in one piece or many.
     """
 
     _END = re.compile(r"[.!?…]+[»\"”)]*(?=\s)")
+    _CLAUSE = re.compile(r"(?:[,;:]|(?<=\s)[—–-])(?=\s)")
+    #: A period after these is an abbreviation, not a sentence end ("і т. д.", "т. зв.").
+    _ABBREVIATION = re.compile(r"(?:^|[^\w])(?:т|р|напр|вул|зв|див|ім)\.$", re.IGNORECASE)
 
-    def __init__(self, min_chars: int = 12) -> None:
+    def __init__(self, min_chars: int = 12, *, first_clause: int = 0) -> None:
         self._buffer = ""
         self._min_chars = min_chars
+        self._first_clause = max(0, first_clause)
+        self._pieces = 0
+        #: The first piece ended at a clause boundary (see :attr:`clause_first`).
+        self._clause_first = False
+        #: The last piece was a clause: the next one ends at the sentence end, however short.
+        self._sentence_rest = False
+
+    @property
+    def clause_first(self) -> bool:
+        """The first piece handed out ended at a clause boundary, not a sentence end."""
+        return self._clause_first
 
     def feed(self, delta: str) -> list[str]:
         self._buffer += delta
         out: list[str] = []
-        start = 0
-        for m in self._END.finditer(self._buffer):
-            candidate = self._buffer[start:m.end()].strip()
-            if len(candidate) >= self._min_chars:
-                out.append(candidate)
-                start = m.end()
-        self._buffer = self._buffer[start:].lstrip() if start else self._buffer
+        while (cut := self._next_cut()) is not None:
+            end, clause = cut
+            out.append(self._buffer[:end].strip())
+            self._buffer = self._buffer[end:].lstrip()
+            if self._pieces == 0:
+                self._clause_first = clause
+            self._pieces += 1
+            self._sentence_rest = clause
         return out
 
     def flush(self) -> list[str]:
         rest = self._buffer.strip()
         self._buffer = ""
+        self._sentence_rest = False
+        if rest:
+            self._pieces += 1
         return [rest] if rest else []
+
+    def _next_cut(self) -> tuple[int, bool] | None:
+        """(where the next piece ends, whether at a clause) or None if not yet."""
+        buffer = self._buffer
+        minimum = 1 if self._sentence_rest else self._min_chars
+        sentence = None
+        for m in self._END.finditer(buffer):
+            candidate = buffer[:m.end()].strip()
+            if len(candidate) >= minimum and not self._inside_unit(candidate):
+                sentence = m.end()
+                break
+        if self._pieces or not self._first_clause:
+            return (sentence, False) if sentence is not None else None
+        for m in self._CLAUSE.finditer(buffer, 0, sentence if sentence is not None else len(buffer)):
+            candidate = buffer[:m.end()].strip()
+            if len(candidate) >= self._first_clause and not self._inside_unit(candidate):
+                return m.end(), True
+        return (sentence, False) if sentence is not None else None
+
+    def _inside_unit(self, candidate: str) -> bool:
+        """Ending a piece here would split what is read as one unit."""
+        if candidate.count("*") % 2:
+            return True  # inside a role-play action: *зітхає, сміється*
+        if candidate.endswith(".") and not candidate.endswith("..") \
+                and self._ABBREVIATION.search(candidate):
+            return True
+        mark = candidate.rstrip("»\"”)")[-1:]
+        # "1, 2, 3" or "2, 5": a number list read as a whole.
+        return mark in ",;:" and len(candidate) >= 2 and candidate[-2].isdigit()

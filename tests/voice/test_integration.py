@@ -45,6 +45,7 @@ from chibi.voice.integration import (
     AZURE_NEEDS_CLOUD,
     AZURE_NO_KEY,
     HOTKEY_WINDOWS_ONLY,
+    LATENCY_TRACE_SECONDS,
     LISTENING_NAME,
     LISTENING_OPEN,
     MIC_NOT_ALLOWED,
@@ -59,9 +60,12 @@ from chibi.voice.integration import (
     STT_OFF,
     TTS_OFF,
     VOICE_MODULE_MISSING,
+    SpeechStart,
     VoiceIntegration,
+    VoiceLatency,
     VoiceStatus,
     is_call_app,
+    recommended_threads,
 )
 from chibi.voice.models import CATALOG, DEFAULT_TTS_MODEL, DownloadCancelled, DownloadError
 from chibi.voice.stt import STTError, Transcript
@@ -1760,3 +1764,294 @@ def test_artefacts_the_final_answer_drops_do_not_make_her_repeat_herself(rig, de
         if rig.output.playing:
             rig.output.finish()
     assert rig.service.tts.said == spoken  # each sentence once
+
+
+# --- faster first words: a long first sentence starts at its first clause ------------------------------
+
+
+LONG_ANSWER = ("Ну що ж, давай подумаємо разом, що можна зробити з цим завданням. "
+               "Спершу перевір налаштування гри. Потім напиши мені.")
+
+
+def play_all(rig, times=6):
+    for _ in range(times):
+        rig.worker.run_all()
+        if rig.output.playing is not None:
+            rig.output.finish()
+    rig.worker.run_all()
+
+
+def test_she_starts_on_the_first_clause_of_a_long_first_sentence(rig):
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    stream.feed("Ну що ж, давай подумаємо разом, ")
+    rig.worker.run_all()
+    assert rig.service.tts.said == ["Ну що ж, давай подумаємо разом,"]  # long before the sentence ends
+    stream.feed("що можна зробити з цим завданням. Спершу перевір налаштування гри. Потім")
+    stream.finish(LONG_ANSWER + "", "happy")
+    play_all(rig)
+    expected = ["Ну що ж, давай подумаємо разом,", "що можна зробити з цим завданням.",
+                "Спершу перевір налаштування гри.", "Потім напиши мені."]
+    assert rig.service.tts.said == expected and shown.texts == expected  # each part exactly once
+
+
+def test_an_answer_finished_right_after_its_first_clause_says_only_the_rest(rig):
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    stream.feed("Ну що ж, давай подумаємо разом, ")
+    stream.finish("Ну що ж, давай подумаємо разом, що можна зробити.")
+    play_all(rig)
+    assert shown.texts == ["Ну що ж, давай подумаємо разом,", "що можна зробити."]
+
+
+def test_cutting_her_off_after_the_first_clause_shows_the_rest_once(rig):
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    stream.feed("Ну що ж, давай подумаємо разом, ")
+    rig.worker.run_all()
+    rig.voice.interrupt()
+    stream.feed("що можна зробити з цим завданням. Спершу перевір налаштування гри. ")
+    stream.finish("Ну що ж, давай подумаємо разом, що можна зробити з цим завданням. "
+                  "Спершу перевір налаштування гри.")
+    assert shown.texts == ["Ну що ж, давай подумаємо разом,",
+                           "що можна зробити з цим завданням. Спершу перевір налаштування гри."]
+    assert len(rig.output.volumes) == 1
+
+
+def test_a_different_final_text_after_a_clause_never_repeats_what_was_said(rig):
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    stream.feed("Мія: Ну що ж, давай подумаємо разом, що можна зробити з цим завданням. Спершу ")
+    stream.finish("Ну що ж, давай подумаємо разом, що можна зробити з цим завданням. Спершу інше.")
+    play_all(rig)
+    assert shown.texts == ["Мія: Ну що ж, давай подумаємо разом,", "що можна зробити з цим завданням.",
+                           "Спершу інше."]
+
+
+# --- is the user talking with her (the app publishes ConversationActive) -----------------------------
+
+
+class Changes:
+    def __init__(self, rig):
+        self.rig = rig
+        self.seen = []
+        rig.voice._on_change = self
+
+    def __call__(self):
+        self.seen.append(self.rig.voice.conversation_active)
+
+    def flips(self):
+        out = []
+        for value in self.seen:
+            if not out or out[-1] != value:
+                out.append(value)
+        return out
+
+
+def push_to_talk(rig, text=SECRET_TEXT, recognition=0.0):
+    rig.service.stt.text = text
+    rig.hotkey.press()
+    rig.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    rig.clock.advance(recognition)
+    rig.worker.run_all()
+
+
+def test_on_change_reports_every_flip_of_the_conversation(heard):
+    rig = heard
+    changes = Changes(rig)
+    assert not rig.voice.conversation_active
+    push_to_talk(rig)
+    assert rig.voice.conversation_active  # her answer is awaited now
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    stream.feed("Ось і вся моя відповідь тобі. ")
+    stream.finish("Ось і вся моя відповідь тобі.")
+    play_all(rig)
+    assert rig.service.state == "idle" and rig.voice.conversation_active  # the follow-up window
+    rig.clock.advance(rig.settings.voice.follow_up_seconds + 1)
+    rig.voice._check_conversation()  # the conversation timer
+    assert not rig.voice.conversation_active
+    assert changes.flips() == [True, False]
+    assert changes.seen.count(False) == 1  # never "over" for a moment in between
+
+
+def test_an_answer_being_written_is_a_conversation_even_without_a_request(rig):
+    rig.change(follow_up_seconds=0)
+    changes = Changes(rig)
+    stream = rig.voice.begin_reply(show=Events())
+    assert rig.voice.conversation_active and changes.seen[-1] is True
+    stream.abort()
+    assert not rig.voice.conversation_active and changes.seen[-1] is False
+
+
+def test_the_conversation_timer_wakes_up_when_the_window_closes(heard, qapp):
+    rig = heard
+    push_to_talk(rig)
+    # The follow-up window (20 s) runs out before the wait for her answer (30 s).
+    assert rig.voice._conversation_timer.isActive()
+    assert abs(rig.voice._conversation_timer.remainingTime() - 20_050) < 1000
+
+
+def test_no_conversation_after_shutdown(heard):
+    rig = heard
+    push_to_talk(rig)
+    rig.voice.shutdown()
+    assert not rig.voice.conversation_active
+    assert not rig.voice._conversation_timer.isActive()
+
+
+# --- "the user started talking": the app warms the model up -------------------------------------------
+
+
+def test_speech_start_listeners_hear_push_to_talk_and_the_open_microphone(heard):
+    rig = heard
+    starts = []
+    remove = rig.voice.add_speech_start_listener(starts.append)
+    rig.hotkey.press()
+    assert starts == [SpeechStart("push", True)]
+    rig.voice.toggle_listening()  # the microphone button: stop
+    rig.worker.run_all()
+    rig.change(listen_mode="name")
+    rig.feed(speech(0.5))
+    assert starts[-1] == SpeechStart("open_mic", False)  # not known yet whether it is for her
+    rig.feed(silence(1.2))
+    rig.worker.run_all()
+    remove()
+    rig.voice.toggle_listening()
+    assert len(starts) == 2
+
+
+def test_a_failing_speech_start_listener_is_contained(heard, caplog):
+    rig = heard
+    starts = []
+    rig.voice.add_speech_start_listener(lambda event: 1 / 0)
+    rig.voice.add_speech_start_listener(starts.append)
+    rig.hotkey.press()
+    assert starts == [SpeechStart("push", True)] and rig.service.state == "listening"
+    assert "a speech start listener failed" in caplog.text
+
+
+# --- how long her answer took --------------------------------------------------------------------------
+
+
+def answer(rig, *, model=0.0, first_part=0.0, synthesis=0.0, text=LONG_ANSWER, source="chat"):
+    """The app's part: a chat answer streamed into a ReplyStream, the voice worker
+    synthesising; each stage takes the given seconds of the fake clock."""
+    shown = Events()
+    stream = rig.voice.begin_reply(source, show=shown, voice_request=True)
+    rig.clock.advance(model)
+    stream.feed(text[:10])
+    rig.clock.advance(first_part)
+    stream.feed(text[10:])
+    rig.clock.advance(synthesis)
+    rig.worker.run_all()  # synthesis of the first part; its audio starts
+    stream.finish(text)
+    play_all(rig)
+    return stream, shown
+
+
+def test_the_last_voice_answer_is_timed_step_by_step_and_logged_without_words(heard, caplog):
+    rig = heard
+    changes = Changes(rig)
+    caplog.set_level(logging.INFO, logger="chibi.voice.integration")
+    push_to_talk(rig, recognition=1.5)
+    assert rig.voice.last_latency is None
+    answer(rig, model=4.0, first_part=0.5, synthesis=0.25)
+    latency = rig.voice.last_latency
+    assert latency.recognition == pytest.approx(1.5, abs=0.05)
+    assert latency.model == pytest.approx(4.0)
+    assert latency.first_chunk == pytest.approx(0.5)
+    assert latency.synthesis == pytest.approx(0.25)
+    assert latency.total == pytest.approx(latency.recognition + 4.75)
+    assert latency.pause == pytest.approx(rig.settings.voice.end_silence_ms / 1000)
+    assert latency.dominant == "model"
+    assert rig.voice.status().latency == latency
+    assert len(changes.seen) >= 1  # the page refreshes
+    lines = [r.getMessage() for r in caplog.records if "latency" in r.getMessage()]
+    assert len(lines) == 1 and "4.00" in lines[0]
+    assert SECRET_TEXT not in caplog.text and "подумаємо" not in caplog.text
+
+
+def test_only_the_first_sentence_of_an_answer_is_timed(heard):
+    rig = heard
+    push_to_talk(rig)
+    answer(rig, model=1.0)
+    first = rig.voice.last_latency
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)  # a typed message: no voice request behind it
+    stream.feed("Ще одна відповідь без запиту голосом. ")
+    stream.finish("Ще одна відповідь без запиту голосом.")
+    play_all(rig)
+    assert rig.voice.last_latency is first
+
+
+def test_a_typed_answer_never_inherits_a_voice_request_answered_without_a_stream(heard):
+    """"Подивись на екран", the offline responder or "busy" answered the voice request
+    without a reply stream: a message typed a minute later is not that request."""
+    rig = heard
+    push_to_talk(rig, recognition=1.0)
+    rig.clock.advance(60.0)
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)  # typed: no voice request behind it
+    stream.feed("Відповідь на написане. ")
+    stream.finish("Відповідь на написане.")
+    play_all(rig)
+    assert rig.voice.last_latency is None
+
+
+def test_a_voice_request_still_waiting_keeps_its_timing_for_its_own_answer(heard):
+    rig = heard
+    push_to_talk(rig, recognition=1.0)
+    typed = rig.voice.begin_reply(show=Events())  # an answer to typed text comes first
+    typed.feed("Спершу це. ")
+    typed.finish("Спершу це.")
+    play_all(rig)
+    assert rig.voice.last_latency is None
+    answer(rig, model=2.0)  # then the answer to the voice request
+    assert rig.voice.last_latency is not None and rig.voice.last_latency.recognition == pytest.approx(
+        1.0, abs=0.05)
+
+
+@pytest.mark.parametrize("case", ["speak_off", "aborted", "cut_off", "stale", "not_chat", "failed"])
+def test_answers_that_never_reached_her_voice_are_not_timed(heard, case):
+    rig = heard
+    push_to_talk(rig)
+    if case == "speak_off":
+        rig.change(speak="off")
+    if case == "stale":
+        rig.clock.advance(LATENCY_TRACE_SECONDS + 1)
+    if case == "failed":
+        rig.service.tts.fail = True
+    stream = rig.voice.begin_reply("observer" if case == "not_chat" else "chat", show=Events(),
+                                   voice_request=True)
+    if case == "aborted":
+        stream.abort()
+    stream.feed("Ну що ж, давай подумаємо разом, ")
+    if case == "cut_off":
+        rig.voice.interrupt()
+    stream.feed("що можна зробити. ")
+    stream.finish("Ну що ж, давай подумаємо разом, що можна зробити.")
+    play_all(rig)
+    assert rig.voice.last_latency is None
+
+
+def test_a_request_from_the_open_microphone_is_timed_too(heard):
+    rig = heard
+    rig.change(listen_mode="name")
+    rig.service.stt.text = "Міє, котра година?"
+    rig.feed(np.concatenate([speech(1.0), silence(1.0)]))
+    rig.clock.advance(2.0)
+    rig.worker.run_all()
+    assert rig.published(VoiceTranscript)[-1].origin == "named"
+    answer(rig, model=1.0)
+    # From the moment the pause ended the phrase (0.8 s into the 1 s of silence).
+    assert 2.0 <= rig.voice.last_latency.recognition <= 2.25
+
+
+def test_latency_dominant_part_and_recommended_threads():
+    latency = VoiceLatency(recognition=3.0, model=1.0, first_chunk=1.5, synthesis=0.2, total=5.7)
+    assert latency.dominant == "recognition"
+    assert VoiceLatency(1.0, 1.0, 1.5, 0.2, 3.7).dominant == "model"  # the model's wait and first words
+    assert VoiceLatency(0.5, 0.5, 0.1, 2.0, 3.1).dominant == "synthesis"
+    assert [recommended_threads(n) for n in (1, 2, 4, 8, 12, 16, 32)] == [2, 2, 2, 4, 6, 6, 6]
+    assert 2 <= recommended_threads() <= 6

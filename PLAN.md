@@ -42,7 +42,7 @@ check below.
 
 ## Verified
 
-- [x] ~4900 automated tests (headless), ruff clean; CI on windows-latest and
+- [x] ~5100 automated tests (headless), ruff clean; CI on windows-latest and
       ubuntu with Python 3.12 / 3.13
 - [x] Windows CI: Win32 activity calls, `PrintWindow` capture of a real window,
       `RegisterHotKey` registration, frozen `.exe` self-test + start/quit,
@@ -82,6 +82,24 @@ check below.
 - [x] README (modes, trade-offs, privacy, cost estimates), ARCHITECTURE
 - [ ] Manual check on Windows (see below)
 
+## Faster spoken answers (after user feedback: "she answers ~20 s later")
+
+- [x] Conversation first: the app publishes `ConversationActive` (voice
+      conversation or a chat answer in flight, 2 s hold); the AI service holds
+      and interrupts background requests, vision takes no automatic frames,
+      the observer and her own AI lines wait, memory extraction runs after
+- [x] Ollama keeps the model loaded (`keep_model_loaded_minutes`, "Тримати
+      модель у пам'яті") and loads it ahead (speech start, conversation start,
+      chat window - not at start-up: nothing pinned in video memory unused)
+- [x] Cache-friendly prompts (stable prefix, anchored history window on the
+      user's own model servers); voice starts at the first clause; Whisper
+      warm-up (its own background job), output cap for short clips only, CPU
+      threads on the voice page
+- [x] Timing: `RequestTiming` and `VoiceLatency` logged as numbers, shown in
+      "Швидкість відповіді" with advice; README "Вона відповідає повільно"
+- [ ] Measure on the user's PC (Ollama `gemma3:12b`, real microphone): the
+      speed card before / after, `ollama ps`
+
 ## Needs a manual check on a real Windows PC
 
 - [ ] Transparency / click-through, no focus stealing, hiding over fullscreen
@@ -94,6 +112,7 @@ check below.
 - [ ] Phase 6: false-trigger rate of "name" mode with a TV or other people in
       the room; VAD with background noise; CPU load of the open microphone;
       call apps and fullscreen pausing; latency to the first spoken sentence
+      (the "Швидкість відповіді" card shows it step by step)
 - [ ] Phase 6: real vision models (Claude, `gemma3` / `qwen2.5vl` in Ollama)
       on work windows; how often the observer stays silent and whether it ever
       says something not on screen; whether models keep to the persona and
