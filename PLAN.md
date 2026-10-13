@@ -40,8 +40,9 @@ tamagotchi needs, and later gains an AI brain, screen vision and voice.
 - [x] Tamagotchi needs + offline catch-up (never punishes absence)
 - [x] Ukrainian phrase bank (626 lines / 94 situations), reaction engine, offline chat
 - [x] Settings / status / chat / first-run windows
-- [x] App integration, ~1800 tests green, headless end-to-end smoke test, CPU measured
+- [x] App integration, ~2450 tests green, headless end-to-end smoke test, CPU measured
 - [x] Six-lens adversarial review: 42 confirmed findings fixed, regression-checked
+- [x] Offline chat: golden corpus (~500 cases) + two blind tests on fresh messages (32 % -> 12 % errors)
 - [x] CI on windows-latest: full suite + native-window tests pass against the real Win32 API
 - [ ] Manual check on a real Windows desktop: transparency/click-through, no focus stealing,
       fullscreen/borderless hiding, tray, multi-monitor with mixed DPI, real CPU usage
@@ -53,5 +54,8 @@ tamagotchi needs, and later gains an AI brain, screen vision and voice.
 * Sprite frames are separate AI-generated poses, not in-betweens: motion is
   pose-to-pose with crossfades.  Smooth animation needs proper sheets or Live2D.
 * Perching on other windows' edges is not implemented yet.
+* Offline chat intents are regex rules: ~12 % misreads on fresh phrasing in the
+  last blind test (2.5 % wrong side effects).  Phase 2 should classify intents
+  with the LLM (rules stay as the offline fallback).
 * A game session flushed by revoke/shutdown right after the PC slept with the
   game open still counts the sleep time (statistics only).

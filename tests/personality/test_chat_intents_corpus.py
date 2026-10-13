@@ -3,7 +3,7 @@
 One table instead of a pile of one-off regression tests, so a regex that fixes one
 phrase and breaks another fails here at once.  It covers every message named in the
 review findings UK-1..UK-8 / UK-14, the regression check REG-1..REG-9 and the blind
-test BT (both the messages that must match and the ones that must not), plus typos,
+tests BT and BT2 (both the messages that must match and the ones that must not), plus typos,
 MiXeD case, emoji, apostrophe variants, quoted words, roleplay actions, her name as a
 vocative in any position ("Міє, ...", "..., Міє", "Мія ...") and a renamed character
 ("Кіра" -> "Кіро, будь тихо").
@@ -464,6 +464,95 @@ CORPUS: list[tuple[str, str]] = [
     ("Наймиліша!", "compliment"),
     ("Ти найтупіша", "unknown"),
     ("дякю", "thanks"),  # typo: a dropped letter in a short word
+    # == blind test BT2: side effects on the wrong target, and commands that were missed ===
+    # -- feeding: someone else's food, hunger or chores never feed her ----------------------
+    ("кіт хоче їсти, піду насиплю корм", "unknown"),
+    ("треба нагодувати собаку", "unknown"),
+    ("в Stardew Valley треба нагодувати курей", "unknown"),
+    ("Нагодую кота", "unknown"),
+    ("Піду погодую кота", "unknown"),
+    ("Кіт голодний, піду погодую", "unknown"),
+    ("Він хоче їсти", "unknown"),
+    ("Мама приготувала піцу", "unknown"),
+    ("*годує кота*", "unknown"),
+    ("Нагадую, що завтра іспит", "unknown"),  # a real word one letter from "нагодую"
+    ("Я хочу 🍕", "unknown"),
+    ("Мені 🍕 привезли", "unknown"),
+    ("Тримай кулачки", "unknown"),
+    # ...while an offer still feeds her, with any food.
+    ("на, тримай круасан 🥐", "feed"),
+    ("Тримай 🍎", "feed"),
+    ("Хочеш 🍩?", "feed"),
+    ("Будеш сир?", "feed"),
+    ("Хочеш шаурму?", "feed"),
+    ("Треба тебе нагодувати", "feed"),
+    ("Мама принесла тобі піцу", "feed"),
+    ("Хто хоче їсти?", "feed"),
+    # -- petting: someone else, the past, or the other way round is not petting her --------
+    ("погладив кота, він замуркотів", "unknown"),
+    ("Гладжу кота", "unknown"),
+    ("Обійми маму", "unknown"),
+    ("*гладить кота*", "unknown"),
+    ("погладь мене", "unknown"),  # she would pet the user ("Обійми мене" is a hug both ways)
+    ("Почухай мені спинку", "unknown"),
+    ("Можеш мене погладити?", "unknown"),
+    ("Мама мене погладила", "unknown"),
+    ("гладю по голівці", "pet"),  # common misspelling of "гладжу"
+    ("Глажу тебе", "pet"),
+    ("Можна тебе погладити?", "pet"),
+    ("Погладжу тебе і кота", "pet"),
+    # -- sleep: suggestions and the imperfective count -------------------------------------
+    ("давай ти поспиш", "rest"),
+    ("Давай спати", "rest"),
+    ("Ти б поспала", "rest"),
+    ("Тобі б поспати", "rest"),
+    ("відпочивай, Міє", "rest"),
+    ("Засинай", "rest"),
+    ("Не засинай!", "unknown"),
+    ("Я засинаю", "unknown"),
+    ("Давай відпочинемо від гри", "unknown"),
+    # -- quiet: quiet mode by name, "притихни", "не пиши мені", "не чіпай мене" -------------
+    ("увімкни тихий режим на годину", "quiet_on"),
+    ("Тихий режим, плз", "quiet_on"),
+    ("Тихий режим на пів години, будь ласка", "quiet_on"),
+    ("Не вимикай тихий режим", "quiet_on"),
+    ("можеш трохи притихнути?", "quiet_on"),
+    ("Затихни", "quiet_on"),
+    ("іду в рейд на годину, не пиши мені", "quiet_on"),
+    ("не пиши мені поки", "quiet_on"),
+    ("можеш не коментувати мою гру?", "quiet_on"),
+    ("Перестань коментувати", "quiet_on"),
+    ("я злий як чорт, не чіпай мене", "quiet_on"),
+    ("Не турбуй", "quiet_on"),
+    ("мия, памавчи", "quiet_on"),  # "Міє, помовч" spelled by ear
+    ("Мия, тихо", "quiet_on"),
+    # ...and what only looks like it.
+    ("Як увімкнути тихий режим?", "unknown"),
+    ("Я увімкнула тихий режим на телефоні", "unknown"),
+    ("Увімкни тихий режим на телефоні", "unknown"),
+    ("Тихий режим не працює", "unknown"),
+    ("Все притихло", "unknown"),
+    ("Не пиши мамі", "unknown"),
+    ("Не пиши капсом", "unknown"),
+    ("Я вирішив не писати диплом", "unknown"),
+    ("Не чіпай мій сейв", "unknown"),
+    ("Не турбуйся", "unknown"),
+    ("Не говори мені такого", "unknown"),
+    ("Не говори тихо", "unknown"),
+    # -- talking again ---------------------------------------------------------------------
+    ("можна знов балакати", "quiet_off"),
+    ("дозволяю говорити 😄", "quiet_off"),
+    ("Можеш базікати", "quiet_off"),
+    ("вимкни тихий режим", "quiet_off"),
+    ("тихий режим вимкни будь ласка", "quiet_off"),
+    ("Вийди з тихого режиму", "quiet_off"),
+    ("Мені дозволено говорити", "unknown"),
+    ("Не дозволяю тобі говорити", "unknown"),
+    ("Я вимкнув тихий режим", "unknown"),
+    ("Як вимкнути тихий режим?", "unknown"),
+    # -- spelled by ear ----------------------------------------------------------------------
+    ("Маладець", "compliment"),
+    ("Прывит", "greeting"),
 ]
 
 # (her name, message, expected intent): the user renamed her in Settings.
@@ -512,6 +601,7 @@ def test_only_her_current_name_is_an_address():
     [
         ("Мія", "міє"), ("Кіра", "кіро"), ("Соломія", "соломіє"), ("Таня", "таню"), ("Ліна", "ліно"),
         ("Сашко", "сашку"), ("Андрій", "андрію"), ("Ігор", "ігоре"), ("Василь", "василю"),
+        ("Мія", "мия"), ("Кіра", "киро"),  # spelled with "и", as on a Russian keyboard
     ],
 )
 def test_vocative_forms(name, vocative):
@@ -610,6 +700,18 @@ def chat(bus, db, clock):
         # ...and real offers or roleplay still do.
         ("Тримай яблучко 🍎", ["feed"], "fed"),
         ("*гладить по голові*", ["pet"], "petted"),
+        # BT2: someone else's cat, dog or chickens, the past, or petting the other way round.
+        ("погладив кота, він замуркотів", [], ""),
+        ("кіт хоче їсти, піду насиплю корм", [], ""),
+        ("треба нагодувати собаку", [], ""),
+        ("в Stardew Valley треба нагодувати курей", [], ""),
+        ("погладь мене", [], ""),
+        ("Нагадую, що завтра іспит", [], ""),
+        # ...and the commands that were missed.
+        ("на, тримай круасан 🥐", ["feed"], "fed"),
+        ("гладю по голівці", ["pet"], "petted"),
+        ("давай ти поспиш", ["rest"], "rest"),
+        ("відпочивай, Міє", ["rest"], "rest"),
     ],
 )
 def test_actions_happen_only_when_asked(chat, text, performed, reply_action):
@@ -646,6 +748,8 @@ def test_actions_happen_only_when_asked(chat, text, performed, reply_action):
         ("Йду на роботу, гарного тобі дня!", "chat.bye"),
         ("Ти найкрасивіша", "chat.compliment"),
         ("дякю", "chat.thanks"),
+        # BT2: no "Мур-р! Дякую!" when the user asks her to pet them.
+        ("погладь мене", "chat.unknown"),
     ],
 )
 def test_replies_come_from_the_right_pool(chat, text, key):
@@ -655,7 +759,10 @@ def test_replies_come_from_the_right_pool(chat, text, key):
 @pytest.mark.parametrize(
     "text",
     ["Міє, будь тихо", "Будь тихо", "Міє, тихо", "Тепер тихо", "Можна тихо?", "тсс", "Відстань",
-     "Будь ласка, потихіше", "Можеш трохи менше говорити?", "Тиша!", "«Помовч»"],
+     "Будь ласка, потихіше", "Можеш трохи менше говорити?", "Тиша!", "«Помовч»",
+     # BT2
+     "увімкни тихий режим на годину", "можеш трохи притихнути?", "іду в рейд на годину, не пиши мені",
+     "не пиши мені поки", "можеш не коментувати мою гру?", "я злий як чорт, не чіпай мене", "мия, памавчи"],
 )
 def test_asking_for_quiet_turns_it_on(chat, text):
     reply = chat.say(text)
@@ -670,7 +777,10 @@ def test_asking_for_quiet_turns_it_on(chat, text):
      "Тихо так на вулиці сьогодні", "Тихенько сиджу, граю в майнкрафт", "Обожнюю тишу вночі",
      "У навушниках тиша, звук пропав", "Я помовчу трохи, треба подумати", "Краще б я помовчав тоді на нараді",
      "Не говори мамі, що я грав до третьої ночі 😅", "Як перекласти «помовч» англійською?",
-     "Тихіше їдеш — далі будеш"],
+     "Тихіше їдеш — далі будеш",
+     # BT2
+     "Як увімкнути тихий режим?", "Я увімкнула тихий режим на телефоні", "Не пиши мамі",
+     "Я вирішив не писати диплом", "Не турбуйся", "Не говори тихо"],
 )
 def test_quiet_mode_is_not_turned_on_by_accident(chat, text):
     reply = chat.say(text)
@@ -681,7 +791,9 @@ def test_quiet_mode_is_not_turned_on_by_accident(chat, text):
 @pytest.mark.parametrize(
     "text",
     ["Можеш говорити, Міє", "Міє, можеш говорити", "Можеш говорити далі", "Можеш говорити, дякую",
-     "Мія, можна говорити", "Не мовчи!", "Скасуй режим тиші", "Не замовкай!"],
+     "Мія, можна говорити", "Не мовчи!", "Скасуй режим тиші", "Не замовкай!",
+     # BT2
+     "можна знов балакати", "дозволяю говорити 😄", "вимкни тихий режим", "тихий режим вимкни будь ласка"],
 )
 def test_asking_her_to_talk_turns_quiet_off(chat, text):
     chat.reactions.set_quiet(60)
@@ -693,7 +805,9 @@ def test_asking_her_to_talk_turns_quiet_off(chat, text):
 @pytest.mark.parametrize(
     "text",
     ["Ти можеш говорити українською?", "Чому так тихо?", "Вже можна їсти?", "Мені сумно",
-     "Про це можна говорити годинами", "Говори нормально!"],
+     "Про це можна говорити годинами", "Говори нормально!",
+     # BT2
+     "Мені дозволено говорити", "Я вимкнув тихий режим", "Як вимкнути тихий режим?"],
 )
 def test_quiet_mode_survives_other_messages(chat, text):
     chat.reactions.set_quiet(60)
