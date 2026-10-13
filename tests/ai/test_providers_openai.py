@@ -330,3 +330,11 @@ def test_list_models():
 
 def test_repr_hides_key():
     assert "sk-openai-test" not in repr(make(Server()))
+
+
+def test_request_model_override():
+    server = Server(completion("ok"))
+    p = make(server)
+    result = p.generate(req(model="gpt-5-nano"))
+    assert server.body["model"] == "gpt-5-nano" and result.model == "gpt-5-nano"
+    assert p.model == "gpt-5-mini"

@@ -138,22 +138,26 @@ class AnthropicProvider:
             raise ProviderRequestError("request has no user turn", user_message="Порожній запит до AI.")
         return messages
 
+    def model_for(self, request: GenerationRequest) -> str:
+        return (request.model or "").strip() or self.model
+
     def _params(self, request: GenerationRequest) -> dict[str, Any]:
         max_tokens = max(1, request.max_tokens)
         if request.purpose == Purpose.CHAT:
             max_tokens = max(max_tokens, CHAT_MAX_TOKENS)
+        model = self.model_for(request)
         params: dict[str, Any] = {
-            "model": self.model,
+            "model": model,
             "max_tokens": max_tokens,
             "messages": self._messages(request),
         }
         system = self._system(request)
         if system:
             params["system"] = system
-        if supports_effort(self.model):
+        if supports_effort(model):
             effort = request.effort if request.effort in EFFORTS else self.effort
             params["output_config"] = {"effort": effort}
-        if uses_fallbacks(self.model):
+        if uses_fallbacks(model):
             params["betas"] = [FALLBACK_BETA]
             params["fallbacks"] = "default"
         return params
@@ -204,7 +208,7 @@ class AnthropicProvider:
         return GenerationResult(
             text=text,
             provider=self.name,
-            model=str(final.model or self.model),
+            model=str(final.model or self.model_for(request)),
             usage=Usage(
                 input_tokens=usage.input_tokens or 0,
                 output_tokens=usage.output_tokens or 0,

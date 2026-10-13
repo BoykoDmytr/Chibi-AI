@@ -732,7 +732,7 @@ class AIService(QObject):
         payload = json.dumps(
             [provider.name, provider.model, request.system, request.context,
              [[t.role.value, t.text] for t in request.turns], request.max_tokens, request.json_mode,
-             request.effort],
+             request.effort, request.model],
             ensure_ascii=False,
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()

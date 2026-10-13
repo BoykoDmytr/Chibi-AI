@@ -1,4 +1,5 @@
-"""The settings dialog: character, personality, behaviour, privacy, games, AI, memory.
+"""The settings dialog: character, personality, behaviour, privacy, games, AI, voice,
+screen vision, gaming companion, memory.
 
 Design notes:
 
@@ -18,8 +19,9 @@ Design notes:
   writes only the fields the user edited *in the dialog* (widget value differs
   from what the widget was last loaded with) onto the app's current settings,
   so a stale widget never undoes a change made elsewhere.  The AI page
-  (:class:`~chibi.settings.ai_page.AIPage`) keeps the same baseline for its
-  own fields and is merged in by ``collect`` / ``sync``.
+  (:class:`~chibi.settings.ai_page.AIPage`) and the voice, vision and gaming
+  pages keep the same baseline for their own fields and are merged in by
+  ``collect`` / ``sync``.
 * API keys (AI page) and memories (memory page) are not settings either: like
   permissions they take effect immediately and never pass through Apply.
 """
@@ -59,7 +61,10 @@ from chibi.memory.repositories import GameTotals, PermissionRecord
 from chibi.privacy.permissions import AVAILABLE, REQUIRES
 from chibi.settings.ai_page import CLOUD_AI_CONSENT_TEXT, CLOUD_AI_CONSENT_TITLE, AIPage
 from chibi.settings.facade import AppFacade
+from chibi.settings.gaming_page import GamingPage
 from chibi.settings.memory_viewer import MemoryViewer
+from chibi.settings.vision_page import VisionPage
+from chibi.settings.voice_page import MICROPHONE_CONSENT_TEXT, MICROPHONE_CONSENT_TITLE, VoicePage
 from chibi.settings.widgets import (
     Card,
     CheckRow,
@@ -92,6 +97,9 @@ PAGES: tuple[tuple[str, str], ...] = (
     ("privacy", "Приватність"),
     ("games", "Ігри"),
     ("ai", "AI"),
+    ("voice", "Голос"),
+    ("vision", "Бачення екрана"),
+    ("gaming", "Ігровий компаньйон"),
     ("memory", "Пам'ять"),
 )
 
@@ -202,13 +210,8 @@ PERMISSION_TEXTS: dict[Permission, PermissionText] = {
             "(або, якщо ти ввімкнеш експериментальну активацію за іменем, чекає на «Міє…»). Мовлення "
             "розпізнається на цьому ПК, звук не зберігається і нікуди не надсилається."
         ),
-        consent_title="Дозволити слухати мікрофон?",
-        consent_text=(
-            "Вона зможе чути тебе, коли ти натискаєш клавішу розмови або кнопку мікрофона.\n\n"
-            "• Розпізнавання працює локально, звук нікуди не надсилається й не записується.\n"
-            "• Поки мікрофон відкритий, видно індикатор «слухаю».\n\n"
-            "Відкликати можна будь-коли тут або кнопкою «Зупинити все спостереження»."
-        ),
+        consent_title=MICROPHONE_CONSENT_TITLE,
+        consent_text=MICROPHONE_CONSENT_TEXT,
     ),
 }
 
@@ -325,6 +328,9 @@ class SettingsDialog(QDialog):
             "privacy": self._build_privacy_page,
             "games": self._build_games_page,
             "ai": self._build_ai_page,
+            "voice": self._build_voice_page,
+            "vision": self._build_vision_page,
+            "gaming": self._build_gaming_page,
             "memory": self._build_memory_page,
         }
         self._page_keys: list[str] = []
@@ -383,7 +389,7 @@ class SettingsDialog(QDialog):
         self._refresh_permissions()
         self._refresh_history()
         self._refresh_games()
-        self.ai_page.refresh()
+        self._refresh_pages()
 
     def apply(self) -> bool:
         """Validate and hand the edited settings to the app.  Returns False if rejected."""
@@ -404,6 +410,14 @@ class SettingsDialog(QDialog):
             self.show_page("ai")
             self._set_status("API-ключ не збережено — перевір його на сторінці «AI».", error=True)
             return False
+        if not self.voice_page.validate():
+            self.show_page("voice")
+            self._set_status("Перевір налаштування на сторінці «Голос».", error=True)
+            return False
+        if not self.voice_page.save_pending_key():
+            self.show_page("voice")
+            self._set_status("Ключ Azure не збережено — перевір його на сторінці «Голос».", error=True)
+            return False
         settings = self._collect()
         try:
             self._facade.apply_settings(settings)
@@ -416,7 +430,8 @@ class SettingsDialog(QDialog):
         if not self._sync_from_app(edited_too=True):
             self._settings = settings
             self._loaded = self._read_fields()
-            self.ai_page.reset_baseline()
+            for page in (self.ai_page, self.voice_page, self.vision_page, self.gaming_page):
+                page.reset_baseline()
             self.setWindowTitle(f"Налаштування — {settings.character.name}")
         self._set_status("Збережено ✓")
         return True
@@ -733,6 +748,27 @@ class SettingsDialog(QDialog):
         self.ai_page.settings_applied.connect(lambda: self._set_status("Налаштування AI збережено."))
         return self.ai_page
 
+    def _build_voice_page(self) -> QWidget:
+        self.voice_page = VoicePage(self._facade, self._confirm, parent=self)  # type: ignore[arg-type]
+        self.voice_page.permissions_changed.connect(self._on_ai_permission_granted)
+        self.voice_page.settings_applied.connect(lambda: self._set_status("Налаштування голосу збережено."))
+        return self.voice_page
+
+    def _build_vision_page(self) -> QWidget:
+        self.vision_page = VisionPage(self._facade, self._confirm, parent=self)  # type: ignore[arg-type]
+        self.vision_page.permissions_changed.connect(self._on_ai_permission_granted)
+        return self.vision_page
+
+    def _build_gaming_page(self) -> QWidget:
+        self.gaming_page = GamingPage(self._facade, parent=self)
+        return self.gaming_page
+
+    def _refresh_pages(self) -> None:
+        """The pages with their own permission rows follow the privacy page."""
+        self.ai_page.refresh()
+        self.voice_page.refresh()
+        self.vision_page.refresh()
+
     def _build_memory_page(self) -> QWidget:
         self.memory_viewer = MemoryViewer(self._facade, parent=self, confirm=self._confirm)
         return self.memory_viewer
@@ -819,11 +855,12 @@ class SettingsDialog(QDialog):
         self._refresh_permissions()
         self._refresh_history()
         self._refresh_games()
-        self.ai_page.refresh()
+        self._refresh_pages()
 
     def _on_ai_permission_granted(self) -> None:
         self._refresh_permissions()
         self._refresh_history()
+        self._refresh_pages()
         self._set_status("Дозвіл надано.")
 
     def _stop_all(self) -> None:
@@ -831,7 +868,7 @@ class SettingsDialog(QDialog):
         self._refresh_permissions()
         self._refresh_history()
         self._refresh_games()
-        self.ai_page.refresh()
+        self._refresh_pages()
         self._set_status("Усе спостереження зупинено.")
 
     def _refresh_permissions(self) -> None:
@@ -1001,7 +1038,9 @@ class SettingsDialog(QDialog):
             value = field.read()
             if value != self._loaded[(field.section, field.name)]:
                 setattr(getattr(s, field.section), field.name, value)
-        return self.ai_page.collect(s)
+        for page in (self.ai_page, self.voice_page, self.vision_page, self.gaming_page):
+            s = page.collect(s)
+        return s
 
     def _bind_fields(self) -> tuple[_Field, ...]:
         """Every settings field this dialog edits, with how to read and show it."""
@@ -1060,7 +1099,8 @@ class SettingsDialog(QDialog):
             if edited_too or field.read() == self._loaded[key]:
                 field.write(getattr(getattr(current, field.section), field.name))
                 self._loaded[key] = field.read()
-        self.ai_page.sync(current, edited_too=edited_too)
+        for page in (self.ai_page, self.voice_page, self.vision_page, self.gaming_page):
+            page.sync(current, edited_too=edited_too)
         self._settings = current
         self.setWindowTitle(f"Налаштування — {current.character.name}")
         return True

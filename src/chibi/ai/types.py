@@ -76,6 +76,8 @@ class GenerationRequest:
     json_mode: bool = False
     #: Claude effort override ("low" | "medium" | "high"); None = settings.
     effort: str | None = None
+    #: Model for this request only (e.g. a cheaper one for screen vision); None = settings.
+    model: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

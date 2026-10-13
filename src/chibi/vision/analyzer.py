@@ -33,7 +33,6 @@ Nothing here logs the image, the prompt or the model's answer.
 from __future__ import annotations
 
 import copy
-import dataclasses
 import logging
 import threading
 from collections.abc import Callable
@@ -84,10 +83,6 @@ TIMEOUT_USER_MESSAGE = "Модель не встигла роздивитися 
 CANCELLED_USER_MESSAGE = "Аналіз кадру скасовано."
 FAILED_USER_MESSAGE = "Аналіз кадру не вдався."
 BUDGET_USER_MESSAGE = "Ліміт AI на сьогодні вичерпано — на екран подивлюся пізніше."
-
-#: Whether the AI layer lets one request pick its own model (``GenerationRequest.model``).
-#: When it does not, ``VisionSettings.model`` cannot be honoured and the AI model is used.
-MODEL_OVERRIDE_SUPPORTED: bool = any(f.name == "model" for f in dataclasses.fields(GenerationRequest))
 
 Post = Callable[[Callable[[], None]], None]
 
@@ -188,10 +183,7 @@ class ProviderFrameAnalyzer:
         self._post = post
         self._allowed = allowed
         self._ai_settings = copy.deepcopy(ai_settings)
-        requested_model = vision_settings.model.strip()
-        if requested_model and not MODEL_OVERRIDE_SUPPORTED:
-            log.info("a separate vision model is not supported by the AI service yet; using the AI model")
-        self._model = requested_model if MODEL_OVERRIDE_SUPPORTED else ""
+        self._model = vision_settings.model.strip()
         self._local = not is_cloud(self._ai_settings)
         self._timeout = float(timeout) if timeout is not None else \
             self._ai_settings.request_timeout_seconds + EXTRA_WAIT_SECONDS
@@ -233,11 +225,8 @@ class ProviderFrameAnalyzer:
                       previous: Observation | None) -> GenerationRequest:
         turn = ChatTurn(Role.USER, analysis.user_prompt(app_title, previous),
                         images=(ImageInput(data=image, media_type=media_type),))
-        request = GenerationRequest(system=analysis.SYSTEM_PROMPT, turns=(turn,), purpose=Purpose.VISION,
-                                    max_tokens=MAX_TOKENS, json_mode=True)
-        if self._model:  # only reachable when the AI layer supports a per-request model
-            request = dataclasses.replace(request, model=self._model)  # type: ignore[call-arg]
-        return request
+        return GenerationRequest(system=analysis.SYSTEM_PROMPT, turns=(turn,), purpose=Purpose.VISION,
+                                 max_tokens=MAX_TOKENS, json_mode=True, model=self._model or None)
 
     # -- lifecycle (any thread) -----------------------------------------------------------------
 

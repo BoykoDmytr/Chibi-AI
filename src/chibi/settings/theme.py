@@ -183,6 +183,32 @@ QPushButton[variant="danger"][big="true"]:pressed { background-color: $danger_pr
 QCheckBox { spacing: 10px; color: $text; }
 QCheckBox:disabled { color: $text_disabled; }
 
+/* --- radio buttons (Fusion's indicator is nearly invisible on the dark palette) --- */
+QRadioButton { spacing: 10px; color: $text; }
+QRadioButton:disabled { color: $text_disabled; }
+QRadioButton::indicator {
+    width: 14px; height: 14px; border-radius: 9px; border: 2px solid $border_hover; background: $surface;
+}
+QRadioButton::indicator:hover { border-color: $pink_hover; }
+QRadioButton::indicator:checked {
+    border: 2px solid $pink;
+    background: qradialgradient(cx: 0.5, cy: 0.5, radius: 0.5, fx: 0.5, fy: 0.5,
+                                stop: 0 $pink, stop: 0.5 $pink, stop: 0.62 $surface, stop: 1 $surface);
+}
+
+/* --- the chat's microphone button ("listening" is set while the mic is open) --- */
+QToolButton#micButton {
+    background-color: $surface_alt; color: $text;
+    border: 1px solid $border; border-radius: 8px; padding: 6px 10px; min-height: 20px;
+}
+QToolButton#micButton:hover, QToolButton#micButton:focus { border-color: $lilac; }
+QToolButton#micButton:checked, QToolButton#micButton[listening="true"] {
+    background-color: $pink; color: $on_accent; border-color: $pink;
+}
+QToolButton#micButton:disabled {
+    background-color: $surface; color: $text_disabled; border-color: $surface_alt;
+}
+
 /* --- text inputs --- */
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QTextEdit {
     background-color: $surface; color: $text;

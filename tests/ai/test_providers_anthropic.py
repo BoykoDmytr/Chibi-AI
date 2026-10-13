@@ -469,3 +469,16 @@ def test_list_models():
 def test_list_models_auth_error():
     with pytest.raises(ProviderAuthError):
         provider(Server(error_response(401, "authentication_error"))).list_models()
+
+
+def test_request_model_override_drives_model_effort_and_fallbacks():
+    server = Server(sse_response(text_events(["a"])), sse_response(text_events(["b"])))
+    p = provider(server, model="claude-opus-5-5", effort="medium")
+    p.generate(chat(purpose=Purpose.VISION, model="claude-haiku-5-5"))
+    # Effort and fallbacks follow the model actually requested, not the configured one.
+    assert server.body["model"] == "claude-haiku-5-5"
+    assert server.body["output_config"] == {"effort": "medium"}
+    assert "fallbacks" not in server.body
+    p.generate(chat(model="  "))
+    assert server.body["model"] == "claude-opus-5-5" and server.body["fallbacks"] == "default"
+    assert p.model == "claude-opus-5-5"

@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QMenu
 
 from chibi.desktop.tray import (
     ICON_SIZES,
+    LISTENING,
     OBSERVING_OFF,
     OBSERVING_ON,
     TrayIcon,
@@ -18,6 +19,16 @@ from tests.desktop.helpers import MIA_DIR, alpha_bbox
 
 def _is_green(color: QColor) -> bool:
     return color.green() > 150 and color.red() < 120 and color.blue() < 160 and color.alpha() > 200
+
+
+def _is_red(color: QColor) -> bool:
+    return color.red() > 180 and color.green() < 110 and color.blue() < 120 and color.alpha() > 200
+
+
+def _has_red_corner(icon, size: int = 32) -> bool:
+    image = icon.pixmap(size, size).toImage()
+    w, h = image.width(), image.height()
+    return any(_is_red(image.pixelColor(x, y)) for x in range(w // 2, w) for y in range(h // 2, h))
 
 
 def _has_green_corner(icon, size: int = 32) -> bool:
@@ -95,3 +106,28 @@ def test_activation_signal(qapp, menu):
     tray.tray.activated.emit(QSystemTrayIcon.ActivationReason.Trigger)
     tray.tray.activated.emit(QSystemTrayIcon.ActivationReason.Context)
     assert hits == [1]
+
+
+def test_open_microphone_shows_a_red_dot_and_says_so(qapp, menu):
+    tray = TrayIcon(menu, name="Мія")
+    tray.set_observing(True)
+    tray.set_listening(True)
+    assert tray.listening and LISTENING in tray.tooltip()
+    assert _has_red_corner(tray.icon()) and not _has_green_corner(tray.icon())
+    tray.set_listening(False)
+    assert LISTENING not in tray.tooltip()
+    assert _has_green_corner(tray.icon()) and not _has_red_corner(tray.icon())
+
+
+def test_listening_counts_as_observing_even_without_the_badge_permission_flag(qapp, menu):
+    tray = TrayIcon(menu)
+    tray.set_listening(True)
+    assert OBSERVING_ON in tray.tooltip()
+
+
+def test_watching_names_the_allowed_window(qapp, menu):
+    tray = TrayIcon(menu)
+    tray.set_watching("  S.T.A.L.K.E.R. 2 ")
+    assert tray.tooltip().splitlines()[-1] == "Дивиться на вікно: S.T.A.L.K.E.R. 2"
+    tray.set_watching("")
+    assert "Дивиться" not in tray.tooltip()

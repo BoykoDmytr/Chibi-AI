@@ -782,8 +782,7 @@ def test_status_view(make):
     h.change(allowed_games=["stalker2"], model="llava")
     h.step(1)
     view = h.integ.status_view()
-    assert view.state == "watching" and view.app_title == TITLE
-    assert "не підтримується" in view.note
+    assert view.state == "watching" and view.app_title == TITLE and view.note == ""
 
 
 def test_game_choices_are_sorted_and_include_custom_games(make):

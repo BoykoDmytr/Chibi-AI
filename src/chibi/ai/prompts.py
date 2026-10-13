@@ -49,7 +49,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only (brain imports this module)
 #: deliberately absent: a line must never put her to sleep or make her walk off.
 REPLY_STATES: tuple[str, ...] = (
     "talk", "happy", "laugh", "surprised", "curious", "thinking", "shy", "sad", "angry",
-    "wave", "bye", "yawn", "eat", "point",
+    "wave", "bye", "yawn", "eat", "point", "excited", "proud",
 )
 DEFAULT_STATE = "talk"
 #: Actions a chat reply may request (the app performs them, not the model).
@@ -97,6 +97,8 @@ _STATE_DESCRIPTIONS: dict[str, str] = {
     "yawn": "сонливість",
     "eat": "їжа",
     "point": "порада",
+    "excited": "захват",
+    "proud": "гордість",
 }
 
 _TIME_OF_DAY_UK: dict[str, str] = {"morning": "ранок", "day": "день", "evening": "вечір", "night": "ніч"}
@@ -148,7 +150,35 @@ EVENT_DESCRIPTIONS: dict[str, str] = {
                                "і доречно про це скажи",
     "quiet.ack": "користувач попросив тебе помовчати; коротко погодься",
     "quiet.end": "тобі знову можна говорити",
+    "vision.": "у грі, яку тобі дозволено бачити, щойно сталося те, що описано в <observation>; "
+               "коротко й дружньо відреагуй, без підказок і спойлерів",
+    "vision.player_death": "персонаж користувача щойно загинув у грі; пожартуй по-доброму й підбадьор",
+    "vision.victory": "користувач щойно переміг у грі; порадій разом",
+    "vision.boss_fight": "у грі почалася битва з босом; підтримай, без підказок",
+    "vision.low_health": "у персонажа користувача мало здоров'я; коротко похвилюйся",
+    "vision.level_up": "персонаж користувача підвищив рівень; привітай",
+    "vision.achievement": "користувач отримав досягнення в грі; привітай",
+    "vision.loot": "користувач знайшов у грі щось цінне; порадій",
+    "vision.new_area": "користувач потрапив у нову локацію гри; поділися враженням, без спойлерів",
+    "vision.look": "користувач попросив тебе подивитися на екран; коротко скажи, що бачиш "
+                   "(див. <observation>)",
+    "gift.": "користувач подарував тобі подарунок (назва в атрибуті gift); щиро подякуй",
+    "gift.again": "користувач знову дарує тобі те, що ти вже маєш; подякуй тепло й з усмішкою",
+    "game.start": "користувач відкрив міні-гру, щоб пограти з тобою",
+    "game.invite": "тобі нудно; запропонуй користувачу зіграти з тобою в міні-гру",
+    "game.rps.win": "ти виграла в користувача в «Камінь, ножиці, папір»; радій без зловтіхи",
+    "game.rps.lose": "користувач виграв у тебе в «Камінь, ножиці, папір»; програй гідно й весело",
+    "game.rps.draw": "ваша партія в «Камінь, ножиці, папір» закінчилася нічиєю",
+    "game.cookies.great": "користувач чудово зіграв у «Лови печиво»; похвали",
+    "game.cookies.ok": "користувач непогано зіграв у «Лови печиво»; підбадьор",
+    "game.cookies.poor": "у «Лови печиво» вийшло не дуже; підбадьор без докорів",
+    "game.guess.win": "користувач відгадав твоє число; порадій за нього",
+    "game.guess.lose": "користувач не відгадав твоє число; підбадьор і запропонуй ще раз",
 }
+
+#: Interface feedback ("Слухаю!", "Не розчула") must be instant and free: the
+#: phrase bank always says it, never the model.
+BANK_ONLY_PREFIXES: tuple[str, ...] = ("voice.", "game.start")
 DEFAULT_EVENT_DESCRIPTION = "щось сталося; відреагуй"
 
 _CONTROL_LINE = re.compile(r"^\s*<<(?P<body>[^<>\n]{0,180})>>\s*(?P<rest>.*)$")

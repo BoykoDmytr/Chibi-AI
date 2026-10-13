@@ -75,7 +75,7 @@ from chibi.personality.text_uk import normalize as normalize_text
 from chibi.personality.text_uk import plural
 from chibi.privacy.filters import PrivacyFilter
 from chibi.vision.analysis import Observation
-from chibi.vision.analyzer import MODEL_OVERRIDE_SUPPORTED, ProviderFrameAnalyzer, VisionAI
+from chibi.vision.analyzer import ProviderFrameAnalyzer, VisionAI
 from chibi.vision.capture_win import CaptureBackend, CaptureError, exclude_from_capture
 from chibi.vision.policy import EVENT_COOLDOWNS, Decision, PolicyConfig, VisionReactionPolicy
 from chibi.vision.service import FrameAnalyzer, Target, VisionMode, VisionService, VisionState
@@ -125,9 +125,6 @@ REASON_LOCAL_ONLY = "Увімкнено «Лише локальний аналі
 REASON_NO_CLOUD_VISION = "Хмарній моделі потрібен окремий дозвіл «Хмарний аналіз екрана»."
 REASON_NO_CLOUD_AI = "Хмарній моделі потрібен дозвіл на хмарний AI (сторінка «Приватність»)."
 NOTE_NOTHING_ALLOWED = "Список дозволених ігор і програм порожній — їй поки нема на що дивитися."
-NOTE_NO_MODEL_OVERRIDE = (
-    "Окрема модель для зору поки не підтримується — кадри аналізує модель зі сторінки «AI»."
-)
 OWN_WINDOW_MESSAGE = "Я бачу лише власне вікно. Перемкнися на гру й попроси ще раз."
 LOOK_FAILED_MESSAGE = "Не вдалося роздивитися екран. Спробуй ще раз за хвилинку."
 
@@ -506,8 +503,6 @@ class VisionIntegration(QObject):
         notes = []
         if s.vision.mode != VisionMode.OFF and not (s.vision.allowed_games or s.vision.allowed_processes):
             notes.append(NOTE_NOTHING_ALLOWED)
-        if s.vision.model.strip() and not MODEL_OVERRIDE_SUPPORTED:
-            notes.append(NOTE_NO_MODEL_OVERRIDE)
         local = None if s.ai.provider == "none" else not is_cloud(s.ai)
         return VisionStatusView(
             mode=s.vision.mode, state=state.value,

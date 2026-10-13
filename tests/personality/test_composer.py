@@ -45,6 +45,7 @@ BANK = PhraseBank.from_dict({"version": 1, "phrases": {
     "late_night": [entry("night.1", "Вже {time}, час спати.")],
     "greet.morning": [entry("gm.1", "Доброго ранку!")], "greet.day": [entry("gd.1", "Привіт!")],
     "greet.evening": [entry("ge.1", "Добрий вечір!")], "greet.night": [entry("gn.1", "Доброї ночі!")],
+    "voice.listening": [entry("listen.1", "Слухаю!")],
 }})
 
 
@@ -222,6 +223,15 @@ def test_no_ai_when_unavailable_or_switched_off(make, setup):
     [speech] = h.take()
     assert speech.source == "idle.joke"
     assert brain.calls == [] and h.schedule.timers == []
+
+
+def test_interface_feedback_never_waits_for_the_model(make):
+    # "Слухаю!" must come out the moment the microphone opens, not seconds later.
+    brain = FakeBrain()
+    h = make(brain)
+    assert h.composer.compose("voice.listening", solicited=True)
+    assert [s.text for s in h.take()] == ["Слухаю!"]
+    assert brain.calls == [] and brain.purposes == [] and h.schedule.timers == []
 
 
 def test_synchronous_none_from_the_brain_falls_back_at_once(make):

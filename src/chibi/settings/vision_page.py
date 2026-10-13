@@ -52,7 +52,6 @@ from chibi.core.events import Permission
 from chibi.gaming.games_db import title_from_exe
 from chibi.privacy.filters import PrivacyFilter
 from chibi.privacy.permissions import REQUIRES, PermissionManager
-from chibi.settings import theme
 from chibi.settings.widgets import (
     Card,
     CheckRow,
@@ -153,19 +152,6 @@ LOCAL_ONLY_HINT = (
 MODEL_HINT = (
     "Необов'язково. Порожньо — та сама модель, що й на сторінці «AI». Для Ollama потрібна модель, яка "
     "бачить зображення, наприклад gemma3 чи llava."
-)
-
-#: The dark theme draws check boxes but not radio buttons; the mode radios get a
-#: matching indicator here (theme tokens, so they follow the palette).
-RADIO_QSS = (
-    f"QRadioButton {{ spacing: 10px; color: {theme.TEXT}; }}"
-    f"QRadioButton:disabled {{ color: {theme.TEXT_DISABLED}; }}"
-    f"QRadioButton::indicator {{ width: 14px; height: 14px; border-radius: 9px;"
-    f" border: 2px solid {theme.BORDER_HOVER}; background: {theme.SURFACE}; }}"
-    f"QRadioButton::indicator:hover {{ border-color: {theme.PINK_HOVER}; }}"
-    f"QRadioButton::indicator:checked {{ border: 2px solid {theme.PINK};"
-    f" background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,"
-    f" stop:0 {theme.PINK}, stop:0.5 {theme.PINK}, stop:0.62 {theme.SURFACE}, stop:1 {theme.SURFACE}); }}"
 )
 
 #: VisionSettings keeps only names that match this (see ``core.config``).
@@ -420,7 +406,6 @@ class VisionPage(QWidget):
 
     def _build_mode_card(self, settings: Settings) -> QWidget:
         card = Card()
-        card.setStyleSheet(RADIO_QSS)
         card.body.addWidget(SectionHeader("Коли дивитися"))
         self.mode_group = QButtonGroup(self)
         self.mode_group.setExclusive(True)

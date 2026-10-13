@@ -127,6 +127,8 @@ STATE_PORTRAITS: dict[str, tuple[str, ...]] = {
     "yawn": ("tired",),
     "eat": ("eat",),
     "point": ("point", "idea"),
+    "excited": ("excited", "wow"),
+    "proud": ("wink", "wink_heart"),
     "sleep": ("sleep_cat",),
 }
 

@@ -139,7 +139,7 @@ class OllamaProvider:
     def generate(self, request: GenerationRequest, cancel: CancelToken | None = None) -> GenerationResult:
         if cancel is not None:
             cancel.raise_if_cancelled()
-        model = self._ensure_model()
+        model = (request.model or "").strip() or self._ensure_model()
         body = self._body(request, model, stream=False)
         try:
             response = self._client.post(f"{self.base_url}/api/chat", json=body, timeout=self._timeout)
@@ -161,7 +161,7 @@ class OllamaProvider:
                cancel: CancelToken | None = None) -> GenerationResult:
         if cancel is not None:
             cancel.raise_if_cancelled()
-        model = self._ensure_model()
+        model = (request.model or "").strip() or self._ensure_model()
         body = self._body(request, model, stream=True)
         parts: list[str] = []
         final: dict[str, Any] = {}

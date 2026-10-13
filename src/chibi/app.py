@@ -65,8 +65,12 @@ from chibi.core.events import (
     PermissionChanged,
     QuietModeChanged,
     SettingsChanged,
+    SpeechRequested,
     UserIdle,
     UserReturned,
+    VisionStateChanged,
+    VoiceStateChanged,
+    VoiceTranscript,
 )
 from chibi.core.logging_setup import setup_logging
 from chibi.desktop.controller import CharacterController
@@ -74,6 +78,9 @@ from chibi.desktop.qt_bridge import QtEventPump
 from chibi.desktop.screen_service import ScreenService
 from chibi.desktop.tray import TrayIcon, make_icon_from_pixmap, vector_icon
 from chibi.emotion.engine import EmotionEngine
+from chibi.games import GAME_IDS, GAME_TITLES
+from chibi.games.hub import GamesHub
+from chibi.games.rewards import GameRewards
 from chibi.gaming.games_db import GameDatabase
 from chibi.gaming.sessions import GameSessionTracker
 from chibi.memory.database import Database
@@ -100,8 +107,12 @@ from chibi.settings.first_run import FirstRunDialog
 from chibi.settings.settings_dialog import SettingsDialog
 from chibi.settings.status_window import StatusWindow
 from chibi.settings.theme import apply_dark_theme
+from chibi.tamagotchi.gifts import GiftService
 from chibi.tamagotchi.needs import finite_number
 from chibi.tamagotchi.service import KEY_LAST_SEEN, TamagotchiService
+from chibi.vision.integration import SeenObservation, VisionIntegration, VisionStatusView, is_look_request
+from chibi.voice.integration import AZURE_KEY_NAME, DownloadProgress, VoiceIntegration, VoiceStatus
+from chibi.voice.models import ModelSpec
 
 log = logging.getLogger(__name__)
 
@@ -111,6 +122,10 @@ QUIET_STATE_KEY = "quiet_until"
 LAST_SHUTDOWN_KEY = "last_shutdown"
 #: Shown by a second launch.  No name: hers is in the database the running instance owns.
 ALREADY_RUNNING_TEXT = "Chibi Companion уже запущено — вона чекає на тебе на робочому столі 🙂"
+#: Her chat answer to "подивись на екран" while the frame is being analysed.
+LOOKING_REPLY = "Зараз гляну!"
+#: A voice command heard while the chat is still answering the previous message.
+BUSY_REPLY = "Почула, але ще відповідаю на попереднє — повтори за мить, добре?"
 
 
 class ChibiApp(QObject):
@@ -203,6 +218,41 @@ class ChibiApp(QObject):
         )
         self._screen = ScreenService(self.bus, lambda: self._settings, self._controller.own_window_ids,
                                      parent=self)
+
+        # -- windows (created lazily) ---------------------------------------------------
+        self._chat: ChatWindow | None = None
+        self._status: StatusWindow | None = None
+        self._settings_dialog: SettingsDialog | None = None
+        self._first_run_dialog: FirstRunDialog | None = None
+        self._tray: TrayIcon | None = None
+        #: Collects vision notices while the chat asks her to look (shown as her reply).
+        self._look_notices: list[str] | None = None
+
+        # -- voice (Phase 4): every line she says can be voiced; the mic feeds the chat --------
+        self._voice = VoiceIntegration(
+            self.bus, lambda: self._settings, self.permissions, self._secrets, self._composer,
+            notify=self._notify_voice, on_change=self._sync_voice_ui, is_visible=self._controller.is_visible,
+            clock=self._clock, parent=self,
+        )
+        self._controller.set_speech_router(self._route_speech)
+
+        # -- screen vision (Phase 3): only allowed game windows, only with permission ----------
+        self._vision = VisionIntegration(
+            self.bus, lambda: self._settings, self.permissions, self._ai, self._composer, self._clock,
+            games=lambda: self._games, memory=self._memory, backend=self._backend,
+            quiet=lambda: self._reactions.quiet_active or self._settings.behavior.do_not_disturb,
+            on_spoken=self._reactions.note_unsolicited, notify=self._vision_notice,
+            own_windows=self._controller.own_window_ids, parent=self,
+        )
+
+        # -- gifts and mini-games (Phase 5); before AppStarted, which grants the daily stars ---
+        self._gifts = GiftService(self.bus, self._state, self._clock, self._tamagotchi, self._composer,
+                                  self._memory, lambda: self._settings)
+        self._game_rewards = GameRewards(self._gifts.wallet, self._tamagotchi, self._composer)
+        self._games_hub = GamesHub(self._game_rewards, self._gifts, self._composer, rng=self._rng,
+                                   name=lambda: self._settings.character.name,
+                                   portrait=self._controller.portrait_pixmap, parent=self)
+
         self._context_menu = self._build_context_menu()
         self._tray = self._build_tray()
         if self._tray is None and self._settings.character.click_through:
@@ -215,12 +265,6 @@ class ChibiApp(QObject):
             except Exception:  # memory is what counts; any later apply saves it again
                 log.exception("could not save the click-through change")
 
-        # -- windows (created lazily) ---------------------------------------------------
-        self._chat: ChatWindow | None = None
-        self._status: StatusWindow | None = None
-        self._settings_dialog: SettingsDialog | None = None
-        self._first_run_dialog: FirstRunDialog | None = None
-
         # -- wiring -----------------------------------------------------------------------
         self.bus.subscribe(PermissionChanged, lambda _e: self._sync_observation())
         self.bus.subscribe(ObservationStopped, lambda _e: self._sync_observation())
@@ -230,6 +274,9 @@ class ChibiApp(QObject):
         self.bus.subscribe(UserReturned, lambda _e: self._set_away(False))
         self.bus.subscribe(FullscreenChanged, self._on_fullscreen)
         self.bus.subscribe(ObservationStopped, lambda _e: self._forget_activity())
+        self.bus.subscribe(VoiceTranscript, self._on_transcript)
+        self.bus.subscribe(VoiceStateChanged, lambda _e: self._sync_voice_ui())
+        self.bus.subscribe(VisionStateChanged, self._on_vision_state)
         self._controller.state_changed.connect(self._on_state_changed)
         self._controller.context_menu_requested.connect(self._show_context_menu)
         self._controller.window.scale_requested.connect(self._on_scale_requested)
@@ -250,6 +297,7 @@ class ChibiApp(QObject):
     def start(self) -> None:
         away = self._away_seconds()
         self._controller.start()  # subscribes to the bus: must precede any dispatch
+        self._voice.start()
         self._screen.start()
         self._tamagotchi_timer.start(TAMAGOTCHI_TICK_MS)
         self._reactions_timer.start(REACTIONS_TICK_MS)
@@ -280,9 +328,16 @@ class ChibiApp(QObject):
         self._run_steps("shutdown", (
             lambda: self.bus.publish(AppShuttingDown()),
             lambda: self._monitor.stop(timeout=2.0),
+            # Before the AI service: an analysis or a voiced line in flight would
+            # otherwise wait for a callback that never comes.  (AppShuttingDown is
+            # only queued and may never be dispatched during aboutToQuit.)
+            self._vision.shutdown,
+            self._voice.shutdown,
             self._screen.stop,
             self._tamagotchi_timer.stop,
             self._reactions_timer.stop,
+            self._games_hub.close_all,
+            self._gifts.close,
             self._sessions.flush,
             self._decisions.close,
             self._composer.close,
@@ -336,6 +391,9 @@ class ChibiApp(QObject):
         if new.ai != old.ai:
             # Synchronously: the AI page tests the connection right after applying.
             self._ai.reconfigure()
+        if new.voice != old.voice or new.character.name != old.character.name:
+            # Synchronously too: "Прослухати" applies the edits and speaks at once.
+            self._voice.reconfigure()
         if new.activity != old.activity:
             privacy = PrivacyFilter(new.activity.excluded_processes)
             if new.activity.excluded_processes != old.activity.excluded_processes:
@@ -384,9 +442,8 @@ class ChibiApp(QObject):
         # Talking to her counts as attention (needs) but must not trigger a
         # second, separate "interaction" line: the reply is the line.
         self._tamagotchi.interact(InteractionKind.TALK, announce=False)
-        reply = self._responder.respond(text)
-        if reply.text or reply.state:
-            self._controller.say(reply.text, reply.state, reply.portrait, solicited=True)
+        reply = self._look_reply(text) or self._responder.respond(text)
+        self._say_reply(reply)
         return reply
 
     def send_chat_stream(self, text: str, on_delta: Callable[[str], None],
@@ -398,14 +455,57 @@ class ChibiApp(QObject):
 
         def finish(reply: ChatReply | None) -> None:
             reply = self._responder.respond(text) if reply is None else self._apply_chat_action(reply)
-            if reply.text or reply.state:
-                self._controller.say(reply.text, reply.state, reply.portrait, solicited=True)
+            self._say_reply(reply)
             on_done(reply)
 
-        if self._brain.available(Purpose.CHAT):
+        look = self._look_reply(text)
+        if look is not None:
+            # The answer about the screen comes from vision once the frame is analysed.
+            self._say_reply(look)
+            on_done(look)
+        elif self._brain.available(Purpose.CHAT):
             self._brain.chat(text, on_delta, finish)
         else:
             finish(None)
+
+    def _look_reply(self, text: str) -> ChatReply | None:
+        """"Подивись на екран" in the chat: ask vision to look.  Her reply says she is
+        looking, or (when she cannot) why not - never a made-up description."""
+        if not is_look_request(text):
+            return None
+        self._look_notices = []
+        try:
+            looking = self._vision.request()
+            notices = self._look_notices
+        finally:
+            self._look_notices = None
+        if looking:
+            return ChatReply(text=LOOKING_REPLY, state="curious", portrait="question")
+        if notices:
+            return ChatReply(text=notices[-1], state="thinking", portrait="thinking")
+        return None
+
+    def _say_reply(self, reply: ChatReply) -> None:
+        if reply.text or reply.state:
+            self._voice.route(SpeechRequested(text=reply.text, state=reply.state, portrait=reply.portrait,
+                                              solicited=True, source="chat"), self._show_routed)
+
+    def _show_routed(self, event: SpeechRequested, seconds: float | None) -> None:
+        self._controller.say(event.text, event.state, event.portrait, seconds, solicited=event.solicited)
+
+    def _route_speech(self, event: SpeechRequested,
+                      show: Callable[[SpeechRequested, float | None], None]) -> None:
+        """Every ``SpeechRequested`` passes here (the controller's speech router)."""
+
+        def companion_show(routed: SpeechRequested, seconds: float | None) -> None:
+            # Gaming companion mode: over a running game a voiced comment is heard,
+            # not read - no bubble on top of the game, only her talking.
+            if (seconds is not None and not routed.solicited and self._settings.gaming.companion_mode
+                    and self._current_game() is not None):
+                routed = replace(routed, text="")
+            show(routed, seconds)
+
+        self._voice.route(event, companion_show)
 
     def _apply_chat_action(self, reply: ChatReply) -> ChatReply:
         """Carry out what the model asked for ("поїж", "помовч"); the reply's action
@@ -477,6 +577,64 @@ class ChibiApp(QObject):
     def emotion(self) -> dict[str, float]:
         return self._emotion.values()
 
+    # -- voice (settings page "Голос") --------------------------------------------------------
+
+    def voice_status(self) -> VoiceStatus:
+        return self._voice.status()
+
+    def voice_models(self) -> list[tuple[ModelSpec, bool]]:
+        return self._voice.models()
+
+    def voice_download(self, model_id: str, on_progress: Callable[[int, int], None],
+                       on_done: Callable[[bool, str], None]) -> None:
+        self._voice.download(model_id, on_progress, on_done)
+
+    def voice_cancel_download(self) -> None:
+        self._voice.cancel_download()
+
+    def voice_download_state(self) -> DownloadProgress | None:
+        return self._voice.download_state()
+
+    def voice_remove_model(self, model_id: str) -> None:
+        self._voice.remove(model_id)
+
+    def voice_has_azure_key(self) -> bool:
+        return self._voice.has_azure_key()
+
+    def voice_set_azure_key(self, key: str) -> None:
+        self._voice.set_azure_key(key)
+
+    def voice_test(self, on_done: Callable[[bool, str], None]) -> None:
+        self._voice.test_voice(on_done=on_done)
+
+    def voice_devices(self) -> tuple[list[str], list[str]]:
+        return self._voice.devices()
+
+    # -- screen vision (settings page "Бачення екрана") ------------------------------------------
+
+    def vision_status(self) -> VisionStatusView:
+        return self._vision.status_view()
+
+    def vision_recent(self) -> list[SeenObservation]:
+        return self._vision.recent_observations()
+
+    def vision_clear_history(self) -> None:
+        self._vision.clear_history()
+
+    def vision_games(self) -> list[tuple[str, str]]:
+        return self._vision.game_choices()
+
+    def look_at_screen(self) -> None:
+        self._vision.request()
+
+    # -- gifts and mini-games ------------------------------------------------------------------------
+
+    def open_game(self, game_id: str) -> None:
+        self._games_hub.open_game(game_id)
+
+    def open_shop(self) -> None:
+        self._games_hub.open_shop()
+
     def game_totals(self) -> list[GameTotals]:
         return self._game_repo.totals()
 
@@ -497,6 +655,7 @@ class ChibiApp(QObject):
 
     def wipe_history(self) -> None:
         self._db.wipe_history()
+        self._vision.clear_history()
         # Games still running stay tracked, from now on: the monitor won't announce
         # them again, so dropping them would lose the rest of the session too.
         self._sessions.restart_open()
@@ -510,7 +669,8 @@ class ChibiApp(QObject):
         self._db.wipe_all()
         self._memory.clear()  # drops the in-process search cache of deleted texts
         self._short_term.clear()
-        for name in KEY_NAMES.values():  # "everything" includes the API keys
+        self._vision.clear_history()
+        for name in (*KEY_NAMES.values(), AZURE_KEY_NAME):  # "everything" includes the API keys
             try:
                 self._secrets.set(name, "")
             except Exception as exc:
@@ -519,6 +679,8 @@ class ChibiApp(QObject):
         self._reactions.clear_quiet()
         self._tamagotchi.load()  # nothing stored any more -> fresh defaults
         self._emotion.load()
+        self._games_hub.close_all()
+        self._gifts.load()  # wallet, inventory and her keepsakes back to empty
         self._sessions = GameSessionTracker(self.bus, self._game_repo, self._clock, self.permissions)
         self._first_run = True
         self.apply_settings(Settings())
@@ -542,7 +704,8 @@ class ChibiApp(QObject):
 
     def show_chat(self) -> None:
         if self._chat is None:
-            self._chat = ChatWindow(self)
+            self._chat = ChatWindow(self, on_mic=self._toggle_voice)
+            self._sync_voice_ui()
         self.bus.publish(CharacterInteraction(kind=InteractionKind.TALK))
         self._raise(self._chat)
 
@@ -596,8 +759,10 @@ class ChibiApp(QObject):
         self._action(menu, "Покликати", self._controller.call_over)
         self._action(menu, "Погладити", self.pet)
         self._action(menu, "Погодувати", self.feed)
-        voice = self._action(menu, "Сказати голосом (з'явиться у фазі 4)", lambda: None)
-        voice.setEnabled(False)
+        self._act_voice = self._action(menu, "Сказати голосом", lambda: self._toggle_voice("menu"))
+        self._action(menu, "Подивитися на екран", self.look_at_screen)
+        self._add_games_menu(menu)
+        self._action(menu, "Подарунки", self.open_shop)
         menu.addSeparator()
         self._action(menu, "Подивитися стан", self.show_status)
         self._action(menu, "Налаштування", self.show_settings)
@@ -617,6 +782,8 @@ class ChibiApp(QObject):
         self._act_show = self._action(menu, "Сховати", self._toggle_visible)
         self._action(menu, "Поговорити", self.show_chat)
         self._action(menu, "Подивитися стан", self.show_status)
+        self._add_games_menu(menu)
+        self._action(menu, "Крамничка подарунків", self.open_shop)
         self._action(menu, "Налаштування", self.show_settings)
         self._action(menu, "Пам'ять", lambda: self.show_settings("memory"))
         self._action(menu, "Приватність і дозволи", lambda: self.show_settings("privacy"))
@@ -636,6 +803,11 @@ class ChibiApp(QObject):
         tray.activated.connect(self._on_tray_activated)
         return tray
 
+    def _add_games_menu(self, menu: QMenu) -> None:
+        games = menu.addMenu("Пограти")
+        for game_id in GAME_IDS:
+            self._action(games, GAME_TITLES[game_id], lambda g=game_id: self.open_game(g))
+
     def _action(self, menu: QMenu, text: str, slot: Callable[[], object], *,
                 checkable: bool = False) -> QAction:
         action = QAction(text, menu)
@@ -649,6 +821,11 @@ class ChibiApp(QObject):
         dnd = self._settings.behavior.do_not_disturb
         self._act_dnd.setChecked(dnd)
         self._act_stop.setEnabled(observing)
+        voice = self._voice.status()
+        self._act_voice.setEnabled(voice.stt_ready)
+        self._act_voice.setText("Перестати слухати" if voice.state in ("listening", "standby")
+                                else "Сказати голосом")
+        self._act_voice.setToolTip("" if voice.stt_ready else voice.stt_reason)
         if self._tray is not None:
             self._act_tray_dnd.setChecked(dnd)
             self._act_tray_stop.setEnabled(observing)
@@ -705,6 +882,65 @@ class ChibiApp(QObject):
             self._tray.set_observing(self.permissions.any_observation_active())
         self._refresh_menus()
 
+    # -- voice and vision glue ---------------------------------------------------------------
+
+    def _toggle_voice(self, source: str = "button") -> None:
+        reason = self._voice.toggle_listening(source)
+        if not reason:
+            return
+        if self._chat is not None and self._chat.isVisible():
+            self._chat.add_system_line(reason)
+        else:
+            self._notify_voice(reason)
+
+    def _sync_voice_ui(self) -> None:
+        """The voice integration reconfigured or changed state: microphone button,
+        tray "listening" badge."""
+        st = self._voice.status()
+        if self._chat is not None:
+            self._chat.set_voice_input(st.stt_ready, st.stt_reason, st.hotkey if st.hotkey_active else "")
+            self._chat.set_voice_state(st.state)
+        if self._tray is not None:
+            self._tray.set_listening(st.state in ("listening", "standby"))
+
+    def _notify_voice(self, message: str) -> None:
+        """A voice problem the user should know about (no model, no device...)."""
+        if self._tray is not None and self._tray.tray.isVisible():
+            self._tray.show_message(self._settings.character.name, message)
+        else:
+            # Directly, not via SpeechRequested: a message about the voice is not voiced.
+            self._controller.say(message, "thinking", solicited=True)
+
+    def _vision_notice(self, message: str) -> None:
+        if self._look_notices is not None:  # the chat asked: the notice becomes her reply
+            self._look_notices.append(message)
+            return
+        self._controller.say(message, "thinking", "thinking", solicited=True)
+
+    def _on_transcript(self, event: VoiceTranscript) -> None:
+        """What the user said (local recognition) goes to the chat.  Never logged."""
+        if not self.permissions.is_granted(Permission.MICROPHONE):
+            return  # revoked while the transcript was queued
+        text = event.text.strip()
+        if not text:
+            return
+        chat = self._chat
+        if chat is not None and chat.isVisible():
+            if chat.is_waiting():
+                chat.add_system_line(BUSY_REPLY)
+                return
+            draft = chat.input.text()  # what the user was typing stays
+            chat.input.setText(text)
+            chat.send()
+            chat.input.setText(draft)
+        else:
+            self.send_chat_stream(text, lambda _delta: None, lambda _reply: None)
+
+    def _on_vision_state(self, event: VisionStateChanged) -> None:
+        if self._tray is not None:
+            watching = event.state in ("watching", "analyzing")
+            self._tray.set_watching(event.app_title if watching else "")
+
     # -- what she knows about the moment (for the AI brain and the decision engine) ----
 
     def _on_ai_status(self, event: AIStatusChanged) -> None:
@@ -745,7 +981,7 @@ class ChibiApp(QObject):
         return BrainContext(
             activity_category=category, activity_app=app,
             game_title=game[0] if game else None, game_minutes=game[1] if game else None,
-            observation=None, user_away=self._user_away,
+            observation=self._vision.latest_observation(), user_away=self._user_away,
         )
 
     def _initiative_context(self) -> InitiativeContext:

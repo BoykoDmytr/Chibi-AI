@@ -226,6 +226,20 @@ def test_event_descriptions_use_the_longest_prefix():
     assert describe_event("something.unknown")
 
 
+def test_every_phase_3_5_phrase_key_has_its_own_description():
+    import json
+    from importlib import resources
+
+    from chibi.ai.prompts import DEFAULT_EVENT_DESCRIPTION
+    data = resources.files("chibi.personality") / "data"
+    for name in ("phrases_vision_uk.json", "phrases_games_uk.json"):
+        for key in json.loads((data / name).read_text("utf-8"))["phrases"]:
+            assert describe_event(key) != DEFAULT_EVENT_DESCRIPTION, key
+    assert "переміг" in describe_event("vision.victory")
+    assert "<observation>" in describe_event("vision.look.combat")
+    assert describe_event("gift.plush_cat") == describe_event("gift.cake")
+
+
 def test_purpose_for_keys():
     assert purpose_for(["idle.joke"]) is Purpose.INITIATIVE
     assert purpose_for(["initiative.ask_game"]) is Purpose.INITIATIVE

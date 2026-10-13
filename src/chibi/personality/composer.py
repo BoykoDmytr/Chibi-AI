@@ -45,7 +45,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
-from chibi.ai.prompts import purpose_for
+from chibi.ai.prompts import BANK_ONLY_PREFIXES, purpose_for
 from chibi.ai.types import Purpose
 from chibi.core.clock import Clock
 from chibi.core.config import Settings
@@ -160,7 +160,7 @@ class SpeechComposer:
 
     def _use_ai(self, keys: tuple[str, ...]) -> bool:
         brain = self._brain
-        if brain is None:
+        if brain is None or keys[0].startswith(BANK_ONLY_PREFIXES):
             return False
         try:
             if not self._settings().ai.use_for_reactions:

@@ -25,6 +25,9 @@ DATA_FILES = (
     ("chibi.personality", "data/phrases_uk.json"),
     ("chibi.privacy", "data/private_apps.json"),
     ("chibi.activity", "data/app_categories.json"),
+    ("chibi.personality", "data/phrases_vision_uk.json"),
+    ("chibi.personality", "data/phrases_games_uk.json"),
+    ("chibi.tamagotchi", "data/gifts.json"),
     ("chibi.voice", "data/pronunciations_uk.json"),
 )
 

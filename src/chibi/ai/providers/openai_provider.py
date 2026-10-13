@@ -288,10 +288,14 @@ class OpenAIProvider:
                 messages.append({"role": turn.role.value, "content": turn.text})
         return messages
 
+    def model_for(self, request: GenerationRequest) -> str:
+        return (request.model or "").strip() or self.model
+
     def _body(self, request: GenerationRequest, *, stream: bool) -> dict[str, Any]:
-        if not self.model:
+        model = self.model_for(request)
+        if not model:
             raise ProviderRequestError("no model", user_message="Вибери модель в налаштуваннях AI.")
-        body: dict[str, Any] = {"model": self.model, "messages": self._messages(request), "stream": stream}
+        body: dict[str, Any] = {"model": model, "messages": self._messages(request), "stream": stream}
         body["max_completion_tokens" if self._is_openai else "max_tokens"] = max(1, request.max_tokens)
         if request.json_mode:
             body["response_format"] = {"type": "json_object"}
@@ -299,7 +303,7 @@ class OpenAIProvider:
             body["stream_options"] = {"include_usage": True}
         return body
 
-    def _raise_for_status(self, response: httpx2.Response) -> None:
+    def _raise_for_status(self, response: httpx2.Response, model: str | None = None) -> None:
         if response.status_code < 400:
             return
         try:
@@ -308,7 +312,7 @@ class OpenAIProvider:
             payload = None
         retry_after = parse_retry_after(response.headers.get("retry-after"))
         log.warning("%s request failed: HTTP %s", self.name, response.status_code)
-        raise status_error(response.status_code, service=self.SERVICE, model=self.model,
+        raise status_error(response.status_code, service=self.SERVICE, model=model or self.model,
                            retry_after=retry_after, code=_error_code(payload))
 
     def _bad_payload(self) -> ProviderRequestError:
@@ -326,7 +330,7 @@ class OpenAIProvider:
                                          headers=self._headers(), timeout=self._timeout)
         except httpx2.HTTPError as exc:
             raise transport_error(exc, service=self.SERVICE) from None
-        self._raise_for_status(response)
+        self._raise_for_status(response, body["model"])
         try:
             data = response.json()
             choice = data["choices"][0]
@@ -357,7 +361,7 @@ class OpenAIProvider:
                                      timeout=self._timeout) as response:
                 if response.status_code >= 400:
                     response.read()
-                    self._raise_for_status(response)
+                    self._raise_for_status(response, body["model"])
                 for payload in _sse_data(response.iter_lines(), cancel):
                     if payload == "[DONE]":
                         break
@@ -427,7 +431,7 @@ class OpenAIProvider:
                 cached = min(_int(details.get("cached_tokens")), prompt)
         stop = {"stop": "end_turn", "length": "max_tokens"}.get(finish, finish)
         return GenerationResult(
-            text=text, provider=self.name, model=self.model,
+            text=text, provider=self.name, model=self.model_for(request),
             usage=Usage(input_tokens=prompt - cached, output_tokens=completion, cache_read_tokens=cached),
             stop_reason=stop,
         )

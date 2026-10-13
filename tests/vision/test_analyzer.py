@@ -166,17 +166,16 @@ def test_the_analysis_is_local_exactly_when_the_ai_provider_is():
     assert not make(ai, main, "openai").is_local  # api.openai.com
 
 
-def test_vision_model_override_is_reported_unsupported_and_the_ai_model_is_used(caplog):
-    # AIService has no per-request model: the request carries none and the analyzer says so.
-    assert analyzer_module.MODEL_OVERRIDE_SUPPORTED is False
+def test_vision_model_override_goes_on_the_request():
     ai, main = FakeAI(), MainThread()
-    with caplog.at_level("INFO"):
-        analyzer = ProviderFrameAnalyzer(ai, main.post, AISettings(provider="ollama"),
-                                         VisionSettings(model="llava"), probe=None)
-    assert analyzer.model_override == ""
-    assert "not supported" in caplog.text
+    analyzer = ProviderFrameAnalyzer(ai, main.post, AISettings(provider="ollama"),
+                                     VisionSettings(model=" llava "), probe=None)
+    assert analyzer.model_override == "llava"
     analyze(main, analyzer)
-    assert not hasattr(ai.requests[0], "model")
+    assert ai.requests[0].model == "llava"
+    plain = make(ai, main)
+    analyze(main, plain)
+    assert ai.requests[1].model is None
 
 
 def test_unusable_answer_raises_analysis_error():

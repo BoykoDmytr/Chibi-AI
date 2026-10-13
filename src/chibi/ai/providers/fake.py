@@ -74,7 +74,7 @@ class FakeProvider:
     def _result(self, request: GenerationRequest, text: str) -> GenerationResult:
         prompt = len(request.system) + len(request.context) + sum(len(t.text) for t in request.turns)
         return GenerationResult(
-            text=text, provider=self.name, model=self.model,
+            text=text, provider=self.name, model=request.model or self.model,
             usage=Usage(input_tokens=max(1, prompt // 4), output_tokens=max(1, len(text) // 4)),
             stop_reason="end_turn",
         )

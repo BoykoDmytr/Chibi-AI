@@ -4,7 +4,9 @@ The tray is where the user always finds her (and the kill switch), even
 when she is hidden or click-through.  Privacy is visible here: while any
 observation permission is active the icon carries a small green "eye"
 badge and the tooltip says so - the user should never have to wonder
-whether the app is watching.
+whether the app is watching.  While the microphone is actually open the
+badge turns red (a "recording" dot) and the tooltip says she is listening;
+while she is looking at a game window the tooltip names it.
 
 Icons are built from a portrait (rounded face crop) or, without a pack,
 from the vector chibi's face.
@@ -25,10 +27,13 @@ log = logging.getLogger(__name__)
 
 OBSERVING_ON = "Спостереження активне"
 OBSERVING_OFF = "Спостереження вимкнене"
+LISTENING = "Слухає мікрофон"
+WATCHING = "Дивиться на вікно: {title}"
 
 #: Sizes rendered into the icons (Windows picks 16/20/24/32 depending on DPI).
 ICON_SIZES: tuple[int, ...] = (16, 20, 24, 32, 40, 48, 64)
 _BADGE_GREEN = QColor(46, 196, 110)
+_BADGE_RED = QColor(232, 64, 72)
 
 
 def _rounded(image: QImage, size: int) -> QPixmap:
@@ -87,8 +92,9 @@ def vector_icon() -> QIcon:
     return icon
 
 
-def with_badge(icon: QIcon, sizes: tuple[int, ...] = ICON_SIZES) -> QIcon:
-    """*icon* with a green "eye" dot in the bottom-right corner."""
+def with_badge(icon: QIcon, sizes: tuple[int, ...] = ICON_SIZES, *, recording: bool = False) -> QIcon:
+    """*icon* with a green "eye" dot in the bottom-right corner (a plain red dot
+    when *recording*: the microphone is open)."""
     badged = QIcon()
     for size in sizes:
         pixmap = icon.pixmap(size, size)
@@ -102,9 +108,9 @@ def with_badge(icon: QIcon, sizes: tuple[int, ...] = ICON_SIZES) -> QIcon:
             r = max(2.6, min(w, h) * 0.2)
             c = QPointF(w - r - 0.5, h - r - 0.5)
             painter.setPen(QPen(QColor(255, 255, 255), max(1.0, r * 0.3)))
-            painter.setBrush(_BADGE_GREEN)
+            painter.setBrush(_BADGE_RED if recording else _BADGE_GREEN)
             painter.drawEllipse(c, r, r)
-            if r >= 4.5:  # big enough for a little eye glyph
+            if r >= 4.5 and not recording:  # big enough for a little eye glyph
                 eye = QPainterPath(QPointF(c.x() - r * 0.62, c.y()))
                 eye.quadTo(c.x(), c.y() - r * 0.62, c.x() + r * 0.62, c.y())
                 eye.quadTo(c.x(), c.y() + r * 0.62, c.x() - r * 0.62, c.y())
@@ -132,6 +138,8 @@ class TrayIcon(QObject):
         self._base_icon = icon if icon is not None and not icon.isNull() else vector_icon()
         self._name = name
         self._observing = False
+        self._listening = False
+        self._watching = ""
         self._tray = QSystemTrayIcon(self._base_icon, self)
         if menu is not None:
             self._tray.setContextMenu(menu)
@@ -181,14 +189,41 @@ class TrayIcon(QObject):
         self._observing = observing
         self._refresh()
 
+    @property
+    def listening(self) -> bool:
+        return self._listening
+
+    def set_listening(self, listening: bool) -> None:
+        """The microphone is open right now (not merely permitted)."""
+        listening = bool(listening)
+        if listening == self._listening:
+            return
+        self._listening = listening
+        self._refresh()
+
+    def set_watching(self, title: str) -> None:
+        """She is looking at the allowed window *title* ("" = not looking)."""
+        title = (title or "").strip()
+        if title == self._watching:
+            return
+        self._watching = title
+        self._refresh()
+
     def show_message(self, title: str, text: str, seconds: float = 5.0) -> None:
         self._tray.showMessage(title, text, QSystemTrayIcon.MessageIcon.Information,
                                max(1000, round(seconds * 1000)))
 
     def _refresh(self) -> None:
-        self._tray.setIcon(with_badge(self._base_icon) if self._observing else self._base_icon)
-        status = OBSERVING_ON if self._observing else OBSERVING_OFF
-        self._tray.setToolTip(f"{self._name}\n{status}")
+        if self._listening:
+            self._tray.setIcon(with_badge(self._base_icon, recording=True))
+        else:
+            self._tray.setIcon(with_badge(self._base_icon) if self._observing else self._base_icon)
+        lines = [self._name, OBSERVING_ON if self._observing or self._listening else OBSERVING_OFF]
+        if self._listening:
+            lines.append(LISTENING)
+        if self._watching:
+            lines.append(WATCHING.format(title=self._watching))
+        self._tray.setToolTip("\n".join(lines))
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):

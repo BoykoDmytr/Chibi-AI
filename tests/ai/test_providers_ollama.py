@@ -229,3 +229,11 @@ def test_supports_vision_on_old_ollama_without_capabilities():
 ])
 def test_is_local_by_host(url, local):
     assert make(Server(), url=url).is_local is local
+
+
+def test_request_model_override_skips_model_resolution():
+    server = Server(api_chat=[chat_json("ok")])
+    p = make(server, model="")
+    result = p.generate(req(model="llava:7b"))
+    assert server.bodies("/api/chat")[0]["model"] == "llava:7b" and result.model == "llava:7b"
+    assert not server.bodies("/api/tags") and p.model == ""
