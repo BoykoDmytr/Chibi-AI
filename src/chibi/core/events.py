@@ -374,6 +374,21 @@ class VoiceStateChanged(Event):
 
 
 @dataclass(frozen=True, slots=True)
+class ConversationActive(Event):
+    """The user is talking with her right now: speaking, being recognised, waiting
+    for her answer or hearing it, or inside the follow-up window - also a typed
+    chat reply in flight.  Published by the app on every change.  While active,
+    background AI work (screen analysis, observer decisions, memory extraction,
+    AI-phrased reactions) waits, so her answer never queues behind it."""
+
+    active: bool
+
+    @property
+    def priority(self) -> Priority:
+        return Priority.HIGH
+
+
+@dataclass(frozen=True, slots=True)
 class VoiceTranscript(Event):
     """What the user said to her, recognised locally.  Never logged.
 

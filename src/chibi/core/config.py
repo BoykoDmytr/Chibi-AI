@@ -152,6 +152,9 @@ class AISettings:
     context_turns: int = _range(12, 2, 60)
     #: Relevant long-term memories sent with each request.
     memory_items: int = _range(6, 0, 20)
+    #: Ollama: keep the model in memory this long after the last request (its own
+    #: default unloads it after 5 minutes, and reloading takes 5-20 s).
+    keep_model_loaded_minutes: int = _range(30, 5, 240)
 
     def __post_init__(self) -> None:
         if self.provider not in AI_PROVIDERS:
