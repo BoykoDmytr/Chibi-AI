@@ -71,6 +71,11 @@ class BehaviorSettings:
     sleep_after_idle_minutes: int = _range(10, 2, 240)
 
 
+#: Longest character description the user can write for her (see ``persona``).
+PERSONA_MAX_CHARS = 1500
+_PERSONA_STRIP = re.compile(r"[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u2028-\u202e\u2066-\u2069]")
+
+
 @dataclass
 class PersonalitySettings:
     """0..100 sliders.  In Phase 1 (no AI) they steer the offline phrase
@@ -83,6 +88,14 @@ class PersonalitySettings:
     affection: int = _range(60, 0, 100)
     independence: int = _range(50, 0, 100)
     commentary_frequency: int = _range(40, 0, 100)
+    #: Her character in the user's own words (background, manner, interests...),
+    #: given to the AI model.  The app's own rules (Ukrainian, privacy, the reply
+    #: format) still come first; the phrase bank (no AI) cannot follow it.
+    persona: str = ""
+
+    def __post_init__(self) -> None:
+        text = _PERSONA_STRIP.sub("", self.persona.replace("\r\n", "\n").replace("\r", "\n"))
+        self.persona = re.sub(r"\n{3,}", "\n\n", text).strip()[:PERSONA_MAX_CHARS]
 
 
 @dataclass
@@ -161,6 +174,10 @@ STT_MODELS = ("whisper-base", "whisper-small", "whisper-medium")
 #: Which of her lines are spoken aloud: everything, only answers to the user, none.
 SPEAK_MODES = ("all", "replies", "off")
 PTT_MODES = ("toggle", "hold")
+#: "push": the key or the microphone button; "name": the microphone stays open and
+#: she answers when called by name, then follows the conversation for a while;
+#: "open": the microphone stays open and everything she hears is meant for her.
+LISTEN_MODES = ("push", "name", "open")
 
 
 @dataclass
@@ -187,7 +204,17 @@ class VoiceSettings:
     end_silence_ms: int = _range(800, 400, 2500)
     max_utterance_seconds: int = _range(15, 5, 60)
     #: Experimental: microphone stays open waiting for "Мія, ...".
+    #: How she listens (see LISTEN_MODES).  "" only while loading data from before
+    #: this setting existed: then ``wake_phrase_enabled`` decides.
+    listen_mode: str = ""
+    #: "name" mode: after her answer, how long she keeps listening without her name.
+    follow_up_seconds: int = _range(20, 0, 120)
+    #: Pause the open microphone while a voice-call app (Discord, Teams, Zoom...) is in front.
+    pause_in_calls: bool = True
+    #: Deprecated: read ``listen_mode``.  Kept in step with it (``listen_mode != "push"``)
+    #: so data written by older versions loads as before.
     wake_phrase_enabled: bool = False
+    #: Keep the open microphone (name / open modes) while a fullscreen game is in front.
     wake_in_fullscreen: bool = False
     #: Empty -> system default device.
     input_device: str = ""
@@ -196,6 +223,9 @@ class VoiceSettings:
     cpu_threads: int = _range(2, 1, 8)
 
     def __post_init__(self) -> None:
+        if self.listen_mode not in LISTEN_MODES:
+            self.listen_mode = "name" if self.wake_phrase_enabled else "push"
+        self.wake_phrase_enabled = self.listen_mode != "push"
         for attr, allowed in (("tts_engine", TTS_ENGINES), ("piper_speaker", PIPER_SPEAKERS),
                               ("azure_voice", AZURE_VOICES), ("speak", SPEAK_MODES),
                               ("stt_model", STT_MODELS), ("ptt_mode", PTT_MODES)):
@@ -214,13 +244,21 @@ class VoiceSettings:
 
 
 VISION_MODES = ("off", "manual", "auto", "game")
+#: "allowed": only the apps on the lists; "foreground": whatever window is in front,
+#: except private apps (and browsers only while window titles may be read, so
+#: private tabs, banking and mail are recognised).
+VISION_SCOPES = ("allowed", "foreground")
+#: "events": she comments on notable game events; "observer": the model decides,
+#: for games and work alike, whether what she sees is worth a word.
+VISION_COMMENTARY = ("events", "observer")
 
 
 @dataclass
 class VisionSettings:
     """Phase 3.  Capture needs Permission.SCREEN_CAPTURE; frames go to a cloud
-    model only with Permission.CLOUD_VISION.  Only listed apps are ever
-    captured, and never one the privacy filter marks private."""
+    model only with Permission.CLOUD_VISION.  Only the window in front is ever
+    captured - from the allowed lists, or (``scope="foreground"``) any - and
+    never one the privacy filter marks private."""
 
     mode: str = "off"
     interval_seconds: int = _range(30, 10, 600)
@@ -235,10 +273,18 @@ class VisionSettings:
     model: str = ""
     #: Look less often while the PC is busy (GAME mode).
     adapt_to_load: bool = True
+    #: Which windows she may look at (see VISION_SCOPES).
+    scope: str = "allowed"
+    #: What makes her speak about what she sees (see VISION_COMMENTARY).
+    commentary: str = "events"
 
     def __post_init__(self) -> None:
         if self.mode not in VISION_MODES:
             self.mode = "off"
+        if self.scope not in VISION_SCOPES:
+            self.scope = "allowed"
+        if self.commentary not in VISION_COMMENTARY:
+            self.commentary = "events"
         self.model = self.model.strip()[:120]
         self.allowed_games = [g for g in dict.fromkeys(self.allowed_games)
                               if re.fullmatch(r"[a-z0-9_:.\-]{1,80}", g)]

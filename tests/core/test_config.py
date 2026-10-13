@@ -1,4 +1,10 @@
-from chibi.core.config import Settings
+from chibi.core.config import (
+    PERSONA_MAX_CHARS,
+    PersonalitySettings,
+    Settings,
+    VisionSettings,
+    VoiceSettings,
+)
 
 
 def test_defaults_roundtrip():
@@ -106,3 +112,25 @@ def test_new_sections_round_trip():
     s.vision.allowed_games = ["cs2"]
     s.gaming.reaction_frequency = 20
     assert Settings.from_dict(s.to_dict()) == s
+
+
+def test_listen_mode_migrates_the_old_wake_phrase_switch():
+    assert VoiceSettings().listen_mode == "push" and not VoiceSettings().wake_phrase_enabled
+    assert Settings.from_dict({"voice": {"wake_phrase_enabled": True}}).voice.listen_mode == "name"
+    # Once listen_mode is stored it wins, and the old flag follows it.
+    pushed = Settings.from_dict({"voice": {"wake_phrase_enabled": True, "listen_mode": "push"}}).voice
+    assert pushed.listen_mode == "push" and not pushed.wake_phrase_enabled
+    assert Settings.from_dict({"voice": {"listen_mode": "open"}}).voice.wake_phrase_enabled
+    assert Settings.from_dict({"voice": {"listen_mode": "always"}}).voice.listen_mode == "push"
+
+
+def test_persona_is_cleaned_and_capped():
+    p = PersonalitySettings(persona="  Вона\r\n\r\n\r\n\r\nлюбить‮ ігри\x00 " + "я" * 2000)
+    assert p.persona.startswith("Вона\n\nлюбить ігри")
+    assert len(p.persona) == PERSONA_MAX_CHARS
+
+
+def test_vision_scope_and_commentary_are_validated():
+    v = Settings.from_dict({"vision": {"scope": "everything", "commentary": "observer"}}).vision
+    assert (v.scope, v.commentary) == ("allowed", "observer")
+    assert VisionSettings().scope == "allowed" and VisionSettings().commentary == "events"
