@@ -147,7 +147,22 @@ CLIPS: dict[str, dict] = {
                        F("wave_1", 500)], "loop": False, "facing": "front", "fx": {"bob": 0.006}},
     "point": {"frames": [F("gesture_4", 1600)], "loop": False, "facing": "front",
               "overlay": "exclaim"},
-
+    # Phase 5: livelier actions and emotions, made of the frames above plus the
+    # renderer's procedural effects (chibi.desktop.renderers).  Frame timings
+    # follow the effect cycles: a jump is 1.25 s (crouch 225 ms, air 625 ms,
+    # landing 212 ms, rest 188 ms), a dance sway 1.11 s (beat 278 ms), an
+    # excited hop 320 ms and a stretch 3.2 s (up 1 s, hold 0.8 s, down 1 s).
+    "jump": {"frames": [F("cheer_0", 225), F("cheer_6", 625), F("cheer_2", 212), F("cheer_0", 188)],
+             "loop": True, "facing": "front", "fx": {"jump": 0.12, "squash": 0.10}},
+    "dance": {"frames": [F("cheer_1", 278), F("cheer_3", 278), F("cheer_4", 278), F("cheer_3", 278)],
+              "loop": True, "facing": "front", "fx": {"sway": 6.0, "bob": 0.018}, "overlay": "hearts"},
+    "excited": {"frames": [F("cheer_2", 160), F("cheer_5", 160), F("cheer_6", 160), F("cheer_5", 160)],
+                "loop": True, "facing": "front", "fx": {"bounce": 0.025, "shake": 0.004, "squash": 0.06},
+                "overlay": "sparkle"},
+    "proud": {"frames": [F("front_3", 2600), F("gesture_0", 1100)], "loop": True, "facing": "front",
+              "fx": {"tilt": 3.0, "breathe": 0.012}, "overlay": "blush", "blend_ms": 200},
+    "stretch": {"frames": [F("gesture_5", 2800), F("front_0", 400)], "loop": False, "facing": "front",
+                "fx": {"stretch": 0.07}, "blend_ms": 200},
 }
 
 # Blink frames are swapped in for ~150 ms, so their head must sit exactly where
@@ -179,6 +194,11 @@ STATES: dict[str, dict] = {
     "yawn": {"clip": "yawn", "portrait": "tired"},
     "bye": {"clip": "bye", "portrait": "bye"},
     "point": {"clip": "point", "portrait": "point"},
+    "jump": {"clip": "jump", "portrait": "joyful"},
+    "dance": {"clip": "dance", "portrait": "music"},
+    "excited": {"clip": "excited", "portrait": "excited"},
+    "proud": {"clip": "proud", "portrait": "wink"},
+    "stretch": {"clip": "stretch", "portrait": "smile"},
 }
 
 

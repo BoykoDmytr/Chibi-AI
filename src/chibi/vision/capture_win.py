@@ -227,9 +227,13 @@ def exclude_from_capture(hwnd: int) -> bool:  # pragma: no cover - Windows only
     if sys.platform != "win32":
         return False
     import ctypes
+    from ctypes import wintypes
 
     WDA_EXCLUDEFROMCAPTURE = 0x11
     try:
-        return bool(ctypes.WinDLL("user32").SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE))
-    except (OSError, AttributeError):
+        user32 = ctypes.WinDLL("user32")
+        user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
+        user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+        return bool(user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE))
+    except (OSError, AttributeError, ctypes.ArgumentError):
         return False

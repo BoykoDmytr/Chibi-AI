@@ -159,7 +159,11 @@ def is_installed(spec: ModelSpec, root: Path | None = None) -> bool:
 
 
 def remove(spec: ModelSpec, root: Path | None = None) -> None:
-    shutil.rmtree(model_dir(spec, root), ignore_errors=True)
+    directory = model_dir(spec, root)
+    # The marker goes first: if Windows keeps a file locked (a loaded engine),
+    # the model must still stop counting as installed.
+    (directory / _MARKER).unlink(missing_ok=True)
+    shutil.rmtree(directory, ignore_errors=True)
 
 
 class DownloadError(RuntimeError):

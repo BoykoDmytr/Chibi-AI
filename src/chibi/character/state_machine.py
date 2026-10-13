@@ -68,6 +68,13 @@ DEFAULT_ACTION_SECONDS: Mapping[CharacterState, float] = MappingProxyType(
         S.YAWN: 1.8,
         S.BYE: 2.2,
         S.POINT: 1.6,
+        # Phase 5.  Lengths are whole effect cycles of their clips (see the
+        # renderer's fx timing), so they end on the ground and upright:
+        S.JUMP: 2.5,  # two jumps of 1.25 s
+        S.DANCE: 4.4,  # four sway cycles of 1.11 s
+        S.EXCITED: 2.5,  # about eight little hops of 0.32 s
+        S.PROUD: 3.0,
+        S.STRETCH: 3.2,  # one stretch: up 1 s, hold 0.8 s, down 1 s, rest
     }
 )
 

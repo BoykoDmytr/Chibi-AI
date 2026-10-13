@@ -12,15 +12,37 @@ One frame (:meth:`CharacterController.step`):
    changed, keep the bubble on her head, retune the frame timer.
 
 Frame rate adapts: 30 fps while something moves fast (walking, falling,
-dragged, hop/shake/swing effects), 15 fps for calm states, 8 fps asleep,
-halved in eco mode and *stopped* while she is hidden - then a 1 s coarse
-timer keeps the state machine and behavior ticking at no visible cost.
+dragged, hop/shake/swing/jump/bounce/sway effects, the landing squash),
+10 fps for calm states, 5 fps asleep, halved in eco mode and *stopped*
+while she is hidden - then a 1 s coarse timer keeps the state machine and
+behavior ticking at no visible cost.  At the calm rates a tick is pulled in
+to land on the next frame change, so a 140 ms blink lasts its 140 ms (up to
+the OS timer's resolution) instead of 100 or 200, and is never skipped at
+5 fps.
+
+Initiative actions (``InitiativeAction`` from the decision engine) are
+silent gestures at ``BEHAVIOR`` priority - below anything she reacts to or
+the user asks for, above idle fidgets: wave, jump, dance, sit, a nap (only
+when she is tired and nobody is around: yawn first, then sleep) and a short
+walk towards the cursor.  None of them happens while she is hidden, dragged,
+falling or asleep; walking needs walking enabled, an unlocked position and
+no eco mode; eco mode also skips the dance and shortens the jump to one hop.
+Unknown actions are ignored.
+
+Idle variety: now and then the behavior's fidget (look around, smile)
+becomes a stretch instead, and she stretches after waking up by herself.
+After a drop she lands with a short squash (and a little rebound).
 
 Speech: a line gets ``clamp(2.2 + 0.055 * len, 3, 12)`` seconds.  Lines
 the user asked for (``solicited``) replace whatever is showing; unsolicited
 lines wait in a short queue (2, oldest dropped) and are dropped entirely
 while she is hidden - and when the user asks for quiet or turns on Do Not
 Disturb (they were chosen before that).
+
+With a speech router installed (:meth:`CharacterController.set_speech_router`,
+the voice integration), a ``SpeechRequested`` goes to the router first; it
+calls ``show(event, seconds)`` - at once, or when the line's audio starts -
+and the line then goes through :meth:`say` as usual.
 
 Activity events (games, user idle/returned) only change her while app
 observation is permitted: one queued just before the kill switch is
@@ -50,7 +72,7 @@ from PySide6.QtGui import QCursor, QGuiApplication, QPainter, QPixmap, QScreen
 
 from chibi.character.animation import CharacterPack, Clip, FramePlayer
 from chibi.character.behavior import AutonomousBehavior, BehaviorContext, Decision
-from chibi.character.movement import Movement, Rect
+from chibi.character.movement import BOUNCE_FACTOR, Movement, Rect
 from chibi.character.state_machine import (
     DEFAULT_ACTION_SECONDS,
     FALLBACK_ACTION_SECONDS,
@@ -68,6 +90,7 @@ from chibi.core.events import (
     FullscreenChanged,
     GameEnded,
     GameStarted,
+    InitiativeAction,
     InteractionKind,
     InteractionOutcome,
     ObservationStopped,
@@ -84,10 +107,13 @@ from chibi.desktop import overlays
 from chibi.desktop.bubble import SpeechBubble
 from chibi.desktop.character_window import CharacterWindow
 from chibi.desktop.renderers import (
+    IMPULSE_SQUASH_MAX,
+    JUMP_PERIOD,
     CharacterRenderer,
     SpriteRenderer,
     VectorRenderer,
     VisualState,
+    blink_change_in,
     vector_clip_for,
 )
 from chibi.memory.repositories import StateRepository
@@ -122,7 +148,17 @@ FPS_CALM = 10
 FPS_SLEEP = 5
 HIDDEN_TICK_MS = 1000
 #: Effects that move a lot per frame and look choppy below 30 fps.
-FAST_FX = frozenset({"hop", "shake", "swing"})
+FAST_FX = frozenset({"hop", "shake", "swing", "jump", "bounce", "sway"})
+#: At calm rates a tick is pulled in to land on the next frame change when that
+#: is due sooner than the regular tick: this much after it (ms), so the frame
+#: has certainly started, but never sooner than the floor (ms).
+BOUNDARY_TICK_SLACK_MS = 1
+BOUNDARY_TICK_MIN_MS = 4
+
+#: The landing squash after a drop: how long it lasts (s) and the impact speed
+#: (px/s) that gives the full squash; a gentler landing squashes less.
+LANDING_SQUASH_SECONDS = 0.3
+LANDING_FULL_IMPACT = 1700.0
 
 DECIDE_INTERVAL = 1.0
 CURSOR_POLL_INTERVAL = 0.25
@@ -149,6 +185,33 @@ POSITION_KEY = "window_position"
 #: Saving after every short stroll would be pointless disk churn.
 POSITION_SAVE_INTERVAL = 30.0
 
+# -- initiative actions (InitiativeAction from the decision engine) ------------------------------
+#: Autonomous intent: loses to every reaction and user request, beats fidgets and strolls.
+INITIATIVE_PRIORITY = P.BEHAVIOR
+#: "approach_cursor" walks at most this far (px at scale 1.0), stops this far
+#: short of the cursor, and does not bother with a shorter walk than the last.
+APPROACH_MAX_DISTANCE = 260.0
+APPROACH_GAP = 70.0
+APPROACH_MIN_STEP = 30.0
+#: "sit": how long the request's priority is held.  The posture itself lasts
+#: until her behavior stands her up (30-90 s later, see AutonomousBehavior).
+INITIATIVE_SIT_HOLD = 3.0
+#: "sleep" is a nap only when she is this tired (tamagotchi energy, 0..100)...
+NAP_MAX_ENERGY = 40.0
+#: ...nobody has clicked her (or typed, when that is observed) for this long (s)...
+NAP_MIN_IDLE_SECONDS = 180.0
+#: ...and she did not wake up within this many seconds.
+NAP_WAKE_GRACE_SECONDS = 600.0
+#: She yawns first; the nap follows within this many seconds or not at all.
+NAP_YAWN_WINDOW = 6.0
+#: Eco mode: a jump is a single hop (s).
+ECO_JUMP_SECONDS = JUMP_PERIOD
+
+#: Idle variety: the share of the behavior's fidgets that become a stretch.
+#: Fidgets come every 9-22 s while nothing else happens, so a stretch is
+#: rare: about one in four minutes of standing around.
+IDLE_STRETCH_CHANCE = 0.06
+
 _MOVING = frozenset({S.WALK, S.RUN})
 _DEFAULT_NEEDS = (30.0, 80.0, 70.0, 20.0)  # hunger, energy, happiness, boredom
 
@@ -157,6 +220,33 @@ def speech_seconds(text: str) -> float:
     """How long a line stays: longer lines longer, within 3..12 s."""
     seconds = SPEECH_BASE_SECONDS + SPEECH_SECONDS_PER_CHAR * len(text)
     return min(max(seconds, SPEECH_MIN_SECONDS), SPEECH_MAX_SECONDS)
+
+
+def landing_squash(seconds_since_impact: float, strength: float) -> float:
+    """Squash (> 0) or stretch (< 0) of her landing, as a fraction of her height.
+
+    Full squash at the impact, a small stretch on the rebound halfway, gone
+    after :data:`LANDING_SQUASH_SECONDS`: ``cos(2 pi x) * (1 - x)^2``, scaled by
+    the impact *strength* (0..1).
+    """
+    if not (0.0 <= seconds_since_impact < LANDING_SQUASH_SECONDS) or not math.isfinite(strength):
+        return 0.0
+    x = seconds_since_impact / LANDING_SQUASH_SECONDS
+    k = min(max(strength, 0.0), 1.0)
+    return k * IMPULSE_SQUASH_MAX * math.cos(2.0 * math.pi * x) * (1.0 - x) ** 2
+
+
+def idle_variety(decision: Decision, rng: random.Random) -> Decision:
+    """Now and then a fidget (look around, smile) becomes a stretch.
+
+    :class:`AutonomousBehavior` already decides *when* she fidgets - only
+    when nothing else happens - so this just widens *what* she does, without
+    a second timer.  *rng* is the controller's own, so the behavior's seeded
+    sequence is not disturbed.
+    """
+    if decision.state is S.IDLE and decision.variant is not None and rng.random() < IDLE_STRETCH_CHANCE:
+        return Decision(S.STRETCH, decision.priority, reason="stretch")
+    return decision
 
 
 # -- screens and positions (pure logic, tested without real monitors) --------------------------
@@ -274,6 +364,12 @@ class PermissionChecker(Protocol):
     def is_granted(self, permission: Permission) -> bool: ...
 
 
+#: ``show(event, seconds)``: put a routed line in her bubble; ``seconds`` None = reading time.
+SpeechShow = Callable[[SpeechRequested, float | None], None]
+#: ``router(event, show)``: decides how a line is delivered (voice) and calls *show*, now or later.
+SpeechRouter = Callable[[SpeechRequested, SpeechShow], None]
+
+
 @dataclass(frozen=True)
 class _Line:
     text: str
@@ -326,10 +422,18 @@ class CharacterController(QObject):
         self._sm = CharacterStateMachine(clock)
         self._sm.add_listener(self._on_state_change)
         self._behavior = AutonomousBehavior(self._rng)
+        # Seeded from the shared rng's state without drawing from it: the
+        # behavior's (seeded, tested) sequence stays exactly as it was.
+        try:
+            self._variety_rng = random.Random(hash(self._rng.getstate()))
+        except (NotImplementedError, TypeError):  # e.g. SystemRandom has no state
+            self._variety_rng = random.Random()
         self._vector = VectorRenderer()
         self._use_vector = self._wants_vector(self._cfg)
         self._renderer: CharacterRenderer = self._make_renderer()
         self._player = FramePlayer(self._clip_for(S.IDLE))
+        #: Seconds the current player has played (unwrapped): one-shot effects run on it.
+        self._clip_age = 0.0
         self._variant_active = False
         self._change_count = 0
         self._facing = Facing.FRONT
@@ -354,6 +458,7 @@ class CharacterController(QObject):
 
         self._speech_until: float | None = None
         self._queue: deque[_Line] = deque()
+        self._speech_router: SpeechRouter | None = None
         self._portraits: dict[str, QPixmap | None] = {}
 
         now = clock.monotonic()
@@ -373,6 +478,22 @@ class CharacterController(QObject):
         self._ungaming_pending = False
         self._walk_priority = P.AMBIENT
         self._call_walk = False
+        #: Animation time of the last impact on the floor (landing squash), and how hard it was (0..1).
+        self._impact_t: float | None = None
+        self._impact_strength = 0.0
+        #: A nap was started (yawn): monotonic deadline for lying down afterwards.
+        self._nap_until: float | None = None
+        self._last_posture = S.IDLE
+        #: Monotonic time she last woke up (any posture change out of SLEEP).
+        self._woke_at: float | None = None
+        self._initiatives: dict[str, Callable[[], bool]] = {
+            "wave": self._initiative_wave,
+            "jump": self._initiative_jump,
+            "dance": self._initiative_dance,
+            "sit": self._initiative_sit,
+            "sleep": self._initiative_sleep,
+            "approach_cursor": self._initiative_approach,
+        }
         self._last_visual_key: tuple | None = None
         self._visual_dirty = True
         self._last_position_save = -math.inf
@@ -476,7 +597,11 @@ class CharacterController(QObject):
         overlay = clip.overlay
         if overlay is None and self._sm.current is S.SLEEP:
             overlay = "zzz"  # packs may not draw Zs themselves; sleeping always shows them
-        return VisualState(self._sm.current, facing, self._anim_t, self._player.sample(), clip, overlay)
+        squash = 0.0
+        if self._impact_t is not None:
+            squash = landing_squash(self._anim_t - self._impact_t, self._impact_strength)
+        return VisualState(self._sm.current, facing, self._anim_t, self._player.sample(), clip, overlay,
+                           self._clip_age, squash)
 
     # -- lifecycle ------------------------------------------------------------------------
 
@@ -505,6 +630,7 @@ class CharacterController(QObject):
             bus.subscribe(ForegroundAppChanged, self._on_foreground),
             bus.subscribe(QuietModeChanged, self._on_quiet_requested),
             bus.subscribe(DoNotDisturbChanged, self._on_quiet_requested),
+            bus.subscribe(InitiativeAction, self._on_initiative),
         ]
         self._hook_screens()
         self.apply_settings()
@@ -545,7 +671,7 @@ class CharacterController(QObject):
             self._use_vector = not self._use_vector
             self._renderer = self._make_renderer()
             self._variant_active = False
-            self._player = FramePlayer(self._clip_for(self._sm.current))
+            self._set_player(self._clip_for(self._sm.current))
             relayout = True
         if c.scale != self._scale:
             self._scale = c.scale
@@ -603,6 +729,13 @@ class CharacterController(QObject):
         if solicited:
             self._mark_interaction()
         self._start_line(_Line(text, target, portrait, seconds), solicited, show)
+
+    def set_speech_router(self, router: SpeechRouter | None) -> None:
+        """Hand every ``SpeechRequested`` to *router* (the voice integration) instead
+        of showing it directly; None restores direct display.  The router must call
+        ``show(event, seconds)`` exactly once - right away, or when the line's audio
+        starts - unless the user cut the line off."""
+        self._speech_router = router
 
     def request_state(self, state: CharacterState | str, priority: StatePriority = P.USER,
                       duration: float | None = None, variant: str | None = None) -> bool:
@@ -721,13 +854,29 @@ class CharacterController(QObject):
     def _tick_movement(self, dt: float) -> None:
         mv = self._movement
         was_falling = mv.falling
+        vy_before = mv.vy
         if dt > 0:
             mv.tick(dt)
         if self._sm.posture in _MOVING and not mv.walking and not self._sm.dragged:
             self._finish_walk()
+        if was_falling and not mv.held:
+            if not mv.falling:
+                self._impact(vy_before)  # landed (gently, or after the bounce)
+            elif vy_before > 0.0 > mv.vy:
+                self._impact(-mv.vy / BOUNCE_FACTOR)  # hit the floor hard and bounced
         if was_falling and not mv.falling and not mv.held:
             self._update_area()
             self._save_position(force=True)
+        if self._impact_t is not None and self._anim_t - self._impact_t >= LANDING_SQUASH_SECONDS:
+            self._impact_t = None
+
+    def _impact(self, speed: float) -> None:
+        """She hit the floor at *speed* px/s: squash for a moment (see :func:`landing_squash`)."""
+        if not math.isfinite(speed) or speed <= 0.0:
+            return
+        self._impact_t = self._anim_t
+        self._impact_strength = min(1.0, speed / LANDING_FULL_IMPACT)
+        self._visual_dirty = True
 
     def _tick_behavior(self, now: float) -> None:
         self._cfg = self._read_settings()
@@ -736,6 +885,8 @@ class CharacterController(QObject):
         if self._ungaming_pending and (self._games or self._sm.posture is not S.GAMING
                                        or self._request(S.IDLE, P.REACTION, GAMING_HOLD)):
             self._ungaming_pending = False
+        if self._nap_until is not None:
+            self._continue_nap(now)
         ctx = self._behavior_context(now)
         try:
             decision = self._behavior.decide(ctx)
@@ -747,11 +898,16 @@ class CharacterController(QObject):
 
     def _advance_animation(self, dt: float) -> None:
         self._player.advance(dt * 1000.0)
+        self._clip_age += dt
         if self._variant_active and self._player.finished:
             # a one-shot fidget ended: back to the state's main clip
             self._variant_active = False
-            self._player = FramePlayer(self._clip_for(self._sm.current))
+            self._set_player(self._clip_for(self._sm.current))
             self._visual_dirty = True
+
+    def _set_player(self, clip: Clip) -> None:
+        self._player = FramePlayer(clip)
+        self._clip_age = 0.0
 
     # -- behavior -------------------------------------------------------------------------
 
@@ -783,8 +939,15 @@ class CharacterController(QObject):
         )
 
     def _apply_decision(self, d: Decision) -> None:
+        if d.state is S.IDLE and d.variant is not None and self._sm.posture is S.IDLE:
+            d = idle_variety(d, self._variety_rng)
         log.debug("decision %s -> %s", d.reason, d.state.value if d.state else None)
         if d.state is None:
+            return
+        if self._sm.asleep and d.state is S.IDLE:
+            # Her behavior wakes her (rested, the user is around): a good stretch first.
+            if self._request(S.IDLE, d.priority, d.duration):
+                self._request(S.STRETCH, d.priority)
             return
         if d.state in _MOVING:
             c = self._cfg.character
@@ -842,6 +1005,7 @@ class CharacterController(QObject):
             self._play(self._clip_for(self._sm.current, variant), variant=True)
         elif not changed and not self._variant_active and not self._player.clip.loop:
             self._player.restart()  # the same one-shot again (a second wave) plays again
+            self._clip_age = 0.0
         self._visual_dirty = True
         return True
 
@@ -852,6 +1016,9 @@ class CharacterController(QObject):
             self._facing = mv.facing  # keep looking where she was walking
             mv.stop()
             self._call_walk = False
+        if self._last_posture is S.SLEEP and change.posture is not S.SLEEP:
+            self._woke_at = self._clock.monotonic()
+        self._last_posture = change.posture
         self._variant_active = False
         self._play(self._clip_for(change.current))
         self._visual_dirty = True
@@ -862,7 +1029,7 @@ class CharacterController(QObject):
     def _play(self, clip: Clip, variant: bool = False) -> None:
         if not variant and clip is self._player.clip and clip.loop:
             return  # same looping clip: keep its phase, no visible restart
-        self._player = FramePlayer(clip)
+        self._set_player(clip)
         self._variant_active = variant and not clip.loop
 
     def _clip_for(self, state: CharacterState, variant: str | None = None) -> Clip:
@@ -951,7 +1118,26 @@ class CharacterController(QObject):
     # -- bus handlers -----------------------------------------------------------------------
 
     def _on_speech(self, event: SpeechRequested) -> None:
-        self.say(event.text, event.state, event.portrait, None, event.solicited)
+        router = self._speech_router
+        if router is None:
+            self._show_speech(event, None)
+            return
+        shown = False
+
+        def show(routed: SpeechRequested, seconds: float | None) -> None:
+            nonlocal shown
+            shown = True
+            self._show_speech(routed, seconds)
+
+        try:
+            router(event, show)
+        except Exception as exc:  # a broken router must never cost her the line
+            log.error("speech router failed (%s); showing the line as text", type(exc).__name__)
+            if not shown:
+                self._show_speech(event, None)
+
+    def _show_speech(self, event: SpeechRequested, seconds: float | None) -> None:
+        self.say(event.text, event.state, event.portrait, seconds, event.solicited)
 
     def _on_fullscreen(self, event: FullscreenChanged) -> None:
         self._fullscreen = bool(event.active)
@@ -1068,6 +1254,117 @@ class CharacterController(QObject):
     def _mark_interaction(self) -> None:
         self._last_interaction = self._clock.monotonic()
 
+    # -- initiative actions ----------------------------------------------------------------
+
+    def _on_initiative(self, event: InitiativeAction) -> None:
+        """An autonomous action from the decision engine (silent: fine in quiet
+        mode and do-not-disturb, which only silence her)."""
+        action = event.action if isinstance(event.action, str) else ""
+        handler = self._initiatives.get(action)
+        if handler is None:
+            log.debug("ignoring unknown initiative action %r", action[:40])
+            return
+        if not self._can_take_initiative():
+            log.debug("initiative %s skipped: she is busy or not on screen", action)
+            return
+        try:
+            done = handler()
+        except Exception:
+            log.exception("initiative %s failed", action)
+            return
+        log.debug("initiative %s %s", action, "started" if done else "skipped")
+
+    def _can_take_initiative(self) -> bool:
+        """She is on screen, standing (not dragged, not falling) and awake.
+        Asleep, the state machine would reject BEHAVIOR requests anyway; checking
+        here also keeps the nap and the walk from preparing anything."""
+        mv = self._movement
+        return (self._started and not self._shutdown and self.is_visible() and not self._sm.dragged
+                and not mv.held and not mv.falling and not self._sm.asleep)
+
+    def _initiative_wave(self) -> bool:
+        return self._request(S.WAVE, INITIATIVE_PRIORITY)
+
+    def _initiative_jump(self) -> bool:
+        if self._sm.posture is S.GAMING:
+            return False  # hopping around next to the user's game distracts
+        return self._request(S.JUMP, INITIATIVE_PRIORITY, ECO_JUMP_SECONDS if self._eco else None)
+
+    def _initiative_dance(self) -> bool:
+        if self._eco or self._sm.posture is S.GAMING:
+            return False  # four seconds at full frame rate: not while the PC struggles or on battery saver
+        return self._request(S.DANCE, INITIATIVE_PRIORITY)
+
+    def _initiative_sit(self) -> bool:
+        if self._sm.posture not in (S.IDLE, S.WALK):
+            return False  # already sitting, or watching a game, or running to the user
+        # A short hold: the posture stays until her behavior stands her up again.
+        return self._request(S.SIT, INITIATIVE_PRIORITY, INITIATIVE_SIT_HOLD)
+
+    def _initiative_sleep(self) -> bool:
+        """A nap - only when she is tired and nobody is around (the decision
+        engine picks it from boredom; the tamagotchi decides if she *can*).
+        She yawns first and lies down once the yawn is over (``_continue_nap``)."""
+        now = self._clock.monotonic()
+        if self._sm.posture not in (S.IDLE, S.SIT) or not self._nap_allowed(now):
+            return False
+        if not self._request(S.YAWN, INITIATIVE_PRIORITY):
+            return False
+        self._nap_until = now + NAP_YAWN_WINDOW
+        return True
+
+    def _nap_allowed(self, now: float) -> bool:
+        if self._read_needs()[1] >= NAP_MAX_ENERGY:
+            return False  # not tired: her own sleep logic would only wake her again
+        if self.idle_seconds() < NAP_MIN_IDLE_SECONDS or self._cursor_near:
+            return False  # the user is around
+        return self._woke_at is None or now - self._woke_at >= NAP_WAKE_GRACE_SECONDS
+
+    def _continue_nap(self, now: float) -> None:
+        """Lie down after the nap's yawn, if nothing changed meanwhile."""
+        if self._nap_until is None or now >= self._nap_until or not self._can_take_initiative():
+            self._nap_until = None
+            return
+        if self._sm.current is not self._sm.posture:
+            return  # still yawning (or something else is showing): wait
+        self._nap_until = None
+        if self._sm.posture in (S.IDLE, S.SIT) and self._nap_allowed(now):
+            self._request(S.SLEEP, INITIATIVE_PRIORITY)
+
+    def _initiative_approach(self) -> bool:
+        """Walk a short way towards the cursor's x, staying on her screen."""
+        c = self._cfg.character
+        mv = self._movement
+        if c.lock_position or not c.walking_enabled or self._eco or not mv.on_ground:
+            return False
+        if mv.walking or self._sm.posture not in (S.IDLE, S.SIT):
+            return False
+        walk_range = mv.walk_range
+        if walk_range is None:
+            return False
+        try:
+            cursor_x = float(self._cursor_fn().x())
+        except Exception:
+            log.exception("cursor position unavailable")
+            return False
+        if not math.isfinite(cursor_x):
+            return False
+        k = self._scale
+        dx = cursor_x - mv.x
+        step = min(abs(dx) - APPROACH_GAP * k, APPROACH_MAX_DISTANCE * k)
+        target = min(max(mv.x + math.copysign(max(step, 0.0), dx), walk_range[0]), walk_range[1])
+        distance = abs(target - mv.x)
+        if distance < APPROACH_MIN_STEP * k:
+            return False  # close enough already (or pressed against her screen's edge)
+        speed = WALK_SPEED * k
+        if not self._request(S.WALK, INITIATIVE_PRIORITY, distance / speed + 2.0):
+            return False
+        self._call_walk = False
+        self._walk_priority = INITIATIVE_PRIORITY
+        mv.walk_to(target, speed)
+        self._update_timer()
+        return True
+
     # -- window signals ---------------------------------------------------------------------
 
     def _on_clicked(self) -> None:
@@ -1085,6 +1382,8 @@ class CharacterController(QObject):
             return
         self._mark_interaction()
         if self._request(S.DRAGGED, P.DRAG):
+            self._impact_t = None  # picked up mid-squash: she dangles, unsquashed
+            self._nap_until = None
             self._movement.place(self._movement.x, self._movement.y)
             self._bus.publish(CharacterInteraction(kind=InteractionKind.DRAG_START))
             self._update_timer()
@@ -1303,7 +1602,8 @@ class CharacterController(QObject):
             return 0
         mv = self._movement
         clip = self._player.clip
-        if mv.walking or mv.falling or self._sm.dragged or not FAST_FX.isdisjoint(clip.fx):
+        if (mv.walking or mv.falling or self._sm.dragged or self._impact_t is not None
+                or not FAST_FX.isdisjoint(clip.fx)):
             fps = FPS_FAST
         elif self._sm.current is S.SLEEP:
             fps = FPS_SLEEP
@@ -1323,12 +1623,31 @@ class CharacterController(QObject):
             self._hidden_timer.stop()
             interval = max(1, round(1000 / fps))
             # Precise only while it matters: coarse timers let Windows coalesce wake-ups.
-            timer_type = Qt.TimerType.PreciseTimer if fps >= FPS_FAST else Qt.TimerType.CoarseTimer
+            precise = fps >= FPS_FAST
+            if not precise:
+                # Land the next tick on the next frame change (a blink) when it is due
+                # sooner than the regular tick.  Precise: a coarse timer may fire up to
+                # 5 % early and miss the frame it was meant for.
+                due = self._ms_to_visual_change()
+                if due is not None and due + BOUNDARY_TICK_SLACK_MS < interval:
+                    interval = max(BOUNDARY_TICK_MIN_MS, math.ceil(due) + BOUNDARY_TICK_SLACK_MS)
+                    precise = True
+            timer_type = Qt.TimerType.PreciseTimer if precise else Qt.TimerType.CoarseTimer
             if (not self._frame_timer.isActive() or self._frame_timer.interval() != interval
                     or self._frame_timer.timerType() != timer_type):
                 self._frame_timer.setTimerType(timer_type)
                 self._frame_timer.start(interval)
         self._fps = fps
+
+    def _ms_to_visual_change(self) -> float | None:
+        """Milliseconds until the picture next changes discretely: the clip's next
+        frame (sprites) or the vector chibi's next blink edge; None if unknown."""
+        if self._use_vector or self._pack is None:
+            if self._sm.current is S.SLEEP:
+                return None  # eyes closed: no blink to land on
+            seconds = blink_change_in(self._anim_t)
+            return None if seconds is None else seconds * 1000.0
+        return self._player.ms_to_next_change()
 
     # -- painting ---------------------------------------------------------------------------
 
@@ -1340,8 +1659,9 @@ class CharacterController(QObject):
         key = (v.state, v.facing, v.clip.name if v.clip else None, v.overlay,
                frame.frame_id if frame else None, frame.next_frame_id if frame else None,
                round(frame.blend, 2) if frame else 0.0, self._window_size)
-        # Effects, overlays and the vector chibi (blinking) change with time itself.
-        animated = self._use_vector or bool(v.clip and v.clip.fx) or v.overlay is not None
+        # Effects, overlays, the landing squash and the vector chibi (blinking) change with time itself.
+        animated = (self._use_vector or bool(v.clip and v.clip.fx) or v.overlay is not None
+                    or self._impact_t is not None)
         if animated or self._visual_dirty or key != self._last_visual_key:
             self._last_visual_key = key
             self._visual_dirty = False

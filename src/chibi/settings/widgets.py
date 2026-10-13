@@ -60,6 +60,11 @@ STATE_NAMES_UK: dict[str, str] = {
     "yawn": "Позіхає",
     "bye": "Прощається",
     "point": "Щось показує",
+    "jump": "Стрибає",
+    "dance": "Танцює",
+    "excited": "У захваті",
+    "proud": "Пишається собою",
+    "stretch": "Потягується",
     "dragged": "Її переносять",
 }
 
@@ -86,6 +91,11 @@ STATE_PORTRAITS: dict[str, str] = {
     "yawn": "tired",
     "bye": "bye",
     "point": "point",
+    "jump": "joyful",
+    "dance": "music",
+    "excited": "excited",
+    "proud": "wink",
+    "stretch": "smile",
     "dragged": "wow",
 }
 

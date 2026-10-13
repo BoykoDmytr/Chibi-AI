@@ -81,8 +81,14 @@ def _effective_ms(ms: float) -> int:
 class Clip:
     """A named animation.  ``facing`` is the direction the *art* looks in, so
     the renderer knows when it has to mirror; ``fx`` are procedural modifiers
-    (breathe/bob/hop/shake as a fraction of figure height, tilt/swing in
-    degrees) and ``overlay`` a drawn effect such as ``"anger"``."""
+    and ``overlay`` a drawn effect such as ``"anger"``.
+
+    Effects (``chibi.desktop.renderers.fx_transform`` has the timing):
+    breathe/bob/hop/shake/bounce/jump are amplitudes as a fraction of the
+    figure height, tilt/swing/sway are degrees, squash/stretch are scale
+    fractions (``squash`` deforms in step with the clip's jump, hop or
+    bounce).  Unknown keys are kept and ignored by the renderer, so a pack
+    made for a newer build still loads."""
 
     name: str
     frames: tuple[ClipFrame, ...]
@@ -461,6 +467,39 @@ class FramePlayer:
 
     def restart(self) -> None:
         self.elapsed_ms = 0.0
+
+    def ms_to_next_change(self) -> float | None:
+        """Milliseconds until :meth:`sample` next changes *discretely*: a
+        different frame starts (or its cross-fade begins), or a non-loop clip
+        ends.  None while a cross-fade is running (the change is continuous)
+        or when nothing will change any more (a finished clip, a loop of one
+        image).
+
+        Lets the frame timer land a tick exactly on a short frame such as a
+        blink instead of stretching or skipping it at a low frame rate.
+        Allocation-free: it is asked once per frame.
+        """
+        if self.finished:
+            return None
+        frames = self._clip.frames
+        count = len(frames)
+        t = self._position()
+        i = bisect.bisect_right(self._starts, t) - 1
+        shown = frames[i].frame_id
+        remaining = self._starts[i] + self._durations[i] - t  # until frame i ends
+        for _ in range(count):
+            nxt = i + 1
+            if nxt >= count:
+                if not self._clip.loop:
+                    return max(0.0, remaining)  # the clip ends: a fidget hands back
+                nxt = 0
+            if frames[nxt].frame_id != shown:
+                window = min(float(self._clip.blend_ms), self._durations[i] / 2)
+                due = remaining - window
+                return due if due > 0.0 else None
+            remaining += self._durations[nxt]
+            i = nxt
+        return None  # every frame shows the same image
 
     def advance(self, dt_ms: float) -> FrameSample:
         """Move time forward by *dt_ms* (any size; non-positive or NaN is ignored)."""

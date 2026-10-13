@@ -11,11 +11,13 @@ sample, clip); a renderer turns that into pixels.  Two implementations:
   It is the fallback when the pack is missing or broken (and a setting), so
   it has to express every :class:`CharacterState` on its own.
 
-Procedural effects (``clip.fx``: breathe, bob, hop, shake, tilt, swing) are
-painter transforms around the feet anchor, shared by both renderers via
-:func:`fx_transform`.  :meth:`CharacterRenderer.extents` reports how far
-anything can reach from the anchor *including* those effects, which is what
-the controller sizes the transparent window with - nothing is ever clipped.
+Procedural effects (``clip.fx``: breathe, bob, hop, shake, tilt, swing and,
+since Phase 5, jump, bounce, squash, sway, stretch) are painter transforms
+around the feet anchor, shared by both renderers via :func:`fx_transform`;
+:attr:`VisualState.squash` adds the landing squash after a drop.
+:meth:`CharacterRenderer.extents` reports how far anything can reach from the
+anchor *including* those effects, which is what the controller sizes the
+transparent window with - nothing is ever clipped.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ import logging
 import math
 from collections import OrderedDict
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import product
 from pathlib import Path
 from types import MappingProxyType
@@ -61,6 +63,9 @@ class VisualState:
     the vector chibi's blinking loop on it).  ``frame``/``clip`` come from
     the controller's :class:`~chibi.character.animation.FramePlayer`;
     ``overlay`` is drawn by the controller, renderers ignore it.
+    ``clip_t`` is the time since the clip started (one-shot effects such as
+    a jump start from its beginning; None = use ``t``), ``squash`` an extra
+    squash (> 0) or stretch (< 0) about the feet - the landing after a drop.
     """
 
     state: CharacterState
@@ -69,6 +74,8 @@ class VisualState:
     frame: FrameSample | None = None
     clip: Clip | None = None
     overlay: str | None = None
+    clip_t: float | None = None
+    squash: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -121,22 +128,121 @@ class CharacterRenderer(Protocol):
 # -- procedural effects -------------------------------------------------------------------------
 
 #: Effects understood by :func:`fx_transform`; others in a manifest are ignored.
-FX_KEYS: tuple[str, ...] = ("breathe", "bob", "hop", "shake", "tilt", "swing")
+FX_KEYS: tuple[str, ...] = ("breathe", "bob", "hop", "shake", "tilt", "swing",
+                            "jump", "bounce", "squash", "sway", "stretch")
+
+#: One jump (``jump``): crouch, air, landing and a beat of rest, in seconds.
+JUMP_PERIOD = 1.25
+_JUMP_CROUCH = 0.18  # fractions of the period
+_JUMP_AIR = 0.50
+_JUMP_LAND = 0.17
+#: ``bounce``: quick little hops per second (``hop`` keeps its 1.5 Hz).
+BOUNCE_HZ = 3.125
+HOP_HZ = 1.5
+#: ``sway``: dance rhythm in Hz.  Its extremes and centre crossings fall on
+#: the beats of ``bob`` (1.8 Hz bumps twice a cycle), so the two dance together.
+SWAY_HZ = 0.9
+#: ``stretch``: one slow stretch (s) - up, hold, down, rest.
+STRETCH_PERIOD = 3.2
+_STRETCH_UP = 1.0
+_STRETCH_HOLD = 0.8
+_STRETCH_DOWN = 1.0
+#: How much she stretches *in the air* relative to her squash on the ground
+#: (deform -1..1 maps to stretch..squash; this is the stretch end).
+AIR_STRETCH = 0.6
+#: :attr:`VisualState.squash` (the landing squash after a drop) is clamped to
+#: this range: squashed up to 15 %, stretched up to 4 % on the rebound.  The
+#: window extents include it for every clip.
+IMPULSE_SQUASH_MAX = 0.15
+IMPULSE_STRETCH_MAX = 0.04
+#: Squash/stretch never flips or flattens her, whatever a pack asks for.
+_DEFORM_LIMIT = 0.5
+
+
+def _smoothstep(x: float) -> float:
+    x = 0.0 if x < 0.0 else 1.0 if x > 1.0 else x
+    return x * x * (3.0 - 2.0 * x)
+
+
+def hop_cycle(phase: float) -> tuple[float, float]:
+    """``(lift, deform)`` of a hop at *phase* (cycles; any real number).
+
+    The first half of a cycle is in the air: ``lift = sin(pi v)`` (the same arc
+    as the ``hop`` effect) and she is stretched while moving fast up or down,
+    ``deform = -AIR_STRETCH * sin(2 pi v)^2``.  The second half is on the
+    ground: no lift and a squash ``deform = sin(pi w)`` that peaks between the
+    hops.  Deform is 0 at every contact, so it is continuous.
+    """
+    p = phase - math.floor(phase)
+    if p < 0.5:
+        v = 2.0 * p
+        return math.sin(math.pi * v), -AIR_STRETCH * math.sin(2.0 * math.pi * v) ** 2
+    return 0.0, math.sin(math.pi * (2.0 * p - 1.0))
+
+
+def jump_cycle(phase: float) -> tuple[float, float]:
+    """``(lift, deform)`` of one big jump at *phase* (cycles).
+
+    Crouch (anticipation squash), take-off into a ballistic arc with stretch
+    on the way up and down, a landing squash, then a beat of rest.  Lift is
+    0..1 (times the ``jump`` amplitude), deform is -AIR_STRETCH..1 (times the
+    ``squash`` amount; positive = squashed).
+    """
+    u = phase - math.floor(phase)
+    if u < _JUMP_CROUCH:
+        return 0.0, math.sin(math.pi * u / _JUMP_CROUCH)
+    u -= _JUMP_CROUCH
+    if u < _JUMP_AIR:
+        v = u / _JUMP_AIR
+        return math.sin(math.pi * v), -AIR_STRETCH * math.sin(2.0 * math.pi * v) ** 2
+    u -= _JUMP_AIR
+    if u < _JUMP_LAND:
+        return 0.0, math.sin(math.pi * u / _JUMP_LAND)
+    return 0.0, 0.0
+
+
+def stretch_envelope(seconds: float) -> float:
+    """0..1: how far into a stretch she is, *seconds* after the clip started
+    (eased up, held, eased down, rest; repeats every :data:`STRETCH_PERIOD`)."""
+    u = math.fmod(seconds, STRETCH_PERIOD)
+    if u < 0.0:
+        u += STRETCH_PERIOD
+    if u < _STRETCH_UP:
+        return _smoothstep(u / _STRETCH_UP)
+    u -= _STRETCH_UP
+    if u < _STRETCH_HOLD:
+        return 1.0
+    u -= _STRETCH_HOLD
+    if u < _STRETCH_DOWN:
+        return 1.0 - _smoothstep(u / _STRETCH_DOWN)
+    return 0.0
+
+
+def _clamp_impulse(squash: float) -> float:
+    if not math.isfinite(squash):
+        return 0.0
+    return min(max(squash, -IMPULSE_STRETCH_MAX), IMPULSE_SQUASH_MAX)
 
 
 def _fx_matrix(fx: Mapping[str, float], breathe: float, bob: float, hop: float, shake: float,
-               tilt: float, swing: float, height: float, pivot_y: float) -> QTransform:
+               tilt: float, swing: float, height: float, pivot_y: float, jump: float = 0.0,
+               bounce: float = 0.0, deform: float = 0.0, sway: float = 0.0, stretch: float = 0.0,
+               impulse: float = 0.0) -> QTransform:
     """The effect transform for explicit wave values (sines already evaluated).
 
-    Order (outermost first): translate (shake/bob/hop), tilt about the feet,
-    swing about the head top, breathe scale about the feet.
+    Order (outermost first): translate (shake/bob/hop/bounce/jump), tilt and
+    sway about the feet, swing about the head top, then one scale about the
+    feet combining breathe, squash-and-stretch (``deform`` times ``squash``,
+    plus the landing ``impulse``) and ``stretch``.  A clip with only the
+    original effects gets exactly the transform it always had.
     """
     tr = QTransform()
     dx = fx.get("shake", 0.0) * height * shake
-    dy = -(fx.get("bob", 0.0) * height * bob + fx.get("hop", 0.0) * height * hop)
+    dy = -height * (fx.get("bob", 0.0) * bob + fx.get("hop", 0.0) * hop
+                    + fx.get("bounce", 0.0) * bounce + fx.get("jump", 0.0) * jump)
     if dx or dy:
         tr.translate(dx, dy)
-    tilt_deg = fx.get("tilt", 0.0) * tilt
+    tilt_deg = fx.get("tilt", 0.0) * tilt + fx.get("sway", 0.0) * sway
     if tilt_deg:
         tr.rotate(tilt_deg)
     swing_deg = fx.get("swing", 0.0) * swing
@@ -144,33 +250,81 @@ def _fx_matrix(fx: Mapping[str, float], breathe: float, bob: float, hop: float, 
         tr.translate(0.0, pivot_y)
         tr.rotate(swing_deg)
         tr.translate(0.0, -pivot_y)
+    sx = sy = 1.0
     a = fx.get("breathe", 0.0)
     if a and breathe:
-        tr.scale(1.0 - a / 2.0 * breathe, 1.0 + a * breathe)
+        sx, sy = 1.0 - a / 2.0 * breathe, 1.0 + a * breathe
+    k = fx.get("squash", 0.0) * deform + impulse  # > 0 squashed, < 0 stretched
+    if k:
+        k = min(max(k, -_DEFORM_LIMIT), _DEFORM_LIMIT)
+        sx *= 1.0 + k / 2.0
+        sy *= 1.0 - k
+    s = fx.get("stretch", 0.0) * stretch
+    if s:
+        s = min(max(s, -_DEFORM_LIMIT), _DEFORM_LIMIT)
+        sx *= 1.0 - s / 2.0
+        sy *= 1.0 + s
+    if sx != 1.0 or sy != 1.0:
+        tr.scale(sx, sy)
     return tr
 
 
-def fx_transform(fx: Mapping[str, float], t: float, height_px: float, pivot_y: float) -> QTransform:
+_NO_FX: Mapping[str, float] = MappingProxyType({})
+
+
+def fx_transform(fx: Mapping[str, float], t: float, height_px: float, pivot_y: float,
+                 clip_t: float | None = None, squash: float = 0.0) -> QTransform:
     """Transform (relative to the feet anchor) for a clip's *fx* at time *t*.
 
-    Amplitudes of breathe/bob/hop/shake are fractions of the figure height,
-    tilt/swing are degrees.  *pivot_y* is the head top (negative, px above
-    the feet) that ``swing`` rotates about - she dangles from where she is
-    held while dragged.
+    Amplitudes of breathe/bob/hop/shake/bounce/jump are fractions of the
+    figure height, tilt/swing/sway are degrees, squash/stretch are scale
+    fractions.  *pivot_y* is the head top (negative, px above the feet) that
+    ``swing`` rotates about - she dangles from where she is held while dragged.
+
+    Looping effects run on the continuous time *t*.  ``jump`` and ``stretch``
+    are one-shot motions that must start at the beginning (a jump that began
+    mid-air would make her teleport up), so they run on *clip_t*, the seconds
+    since the clip started (falls back to *t*).  ``squash`` follows the clip's
+    jump, else its hop, else its bounce; on its own it does nothing.  *squash*
+    (the argument) is an extra squash (> 0) or stretch (< 0) applied on top -
+    the landing after a drop - clamped to the impulse range.
     """
+    impulse = _clamp_impulse(squash)
     if not fx or not math.isfinite(t):
+        if impulse:
+            return _fx_matrix(_NO_FX, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, height_px, pivot_y, impulse=impulse)
         return QTransform()
     two_pi = 2.0 * math.pi
+    ct = clip_t if clip_t is not None and math.isfinite(clip_t) else t
+    get = fx.get
+    jump = jump_deform = bounce = bounce_deform = deform = 0.0
+    if get("jump"):
+        jump, jump_deform = jump_cycle(ct / JUMP_PERIOD)
+    if get("bounce"):
+        bounce, bounce_deform = hop_cycle(t * BOUNCE_HZ)
+    if get("squash"):
+        if get("jump"):
+            deform = jump_deform
+        elif get("hop"):
+            deform = hop_cycle(t * HOP_HZ)[1]
+        else:
+            deform = bounce_deform
     return _fx_matrix(
         fx,
         breathe=math.sin(two_pi * t / 3.4),
         bob=abs(math.sin(two_pi * t * 1.8)),
-        hop=max(0.0, math.sin(two_pi * t * 1.5)),
+        hop=max(0.0, math.sin(two_pi * t * HOP_HZ)),
         shake=math.sin(two_pi * t * 13.0),
         tilt=math.sin(two_pi * t / 2.6),
         swing=math.sin(two_pi * t * 1.1),
         height=height_px,
         pivot_y=pivot_y,
+        jump=jump,
+        bounce=bounce,
+        deform=deform,
+        sway=math.sin(two_pi * t * SWAY_HZ),
+        stretch=stretch_envelope(ct) if get("stretch") else 0.0,
+        impulse=impulse,
     )
 
 
@@ -179,15 +333,25 @@ def _fx_extremes(fx: Mapping[str, float]) -> Iterator[tuple[float, ...]]:
 
     Each wave is sampled at its extremes (rotations also in between, since a
     rotated corner can peak inside the range); keys a clip does not use stay 0.
+    The landing squash (:data:`IMPULSE_SQUASH_MAX`) can happen in any clip, so
+    it is always sampled.  Order matches :func:`_fx_matrix`'s wave arguments.
     """
     rot = (-1.0, -0.5, 0.0, 0.5, 1.0)
+    on = (0.0, 1.0)
     breathe = (-1.0, 0.0, 1.0) if fx.get("breathe") else (0.0,)
-    bob = (0.0, 1.0) if fx.get("bob") else (0.0,)
-    hop = (0.0, 1.0) if fx.get("hop") else (0.0,)
+    bob = on if fx.get("bob") else (0.0,)
+    hop = on if fx.get("hop") else (0.0,)
     shake = (-1.0, 0.0, 1.0) if fx.get("shake") else (0.0,)
     tilt = rot if fx.get("tilt") else (0.0,)
     swing = rot if fx.get("swing") else (0.0,)
-    return product(breathe, bob, hop, shake, tilt, swing)
+    jump = on if fx.get("jump") else (0.0,)
+    bounce = on if fx.get("bounce") else (0.0,)
+    moving = fx.get("jump") or fx.get("hop") or fx.get("bounce")
+    deform = (-AIR_STRETCH, 0.0, 1.0) if fx.get("squash") and moving else (0.0,)
+    sway = rot if fx.get("sway") else (0.0,)
+    stretch = on if fx.get("stretch") else (0.0,)
+    impulse = (-IMPULSE_STRETCH_MAX, 0.0, IMPULSE_SQUASH_MAX)
+    return product(breathe, bob, hop, shake, tilt, swing, jump, bounce, deform, sway, stretch, impulse)
 
 
 def _fx_bounds(box: Extents, fx: Mapping[str, float], height: float, pivot_y: float) -> Extents:
@@ -196,7 +360,9 @@ def _fx_bounds(box: Extents, fx: Mapping[str, float], height: float, pivot_y: fl
                QPointF(-box.left, box.down), QPointF(box.right, box.down))
     left = right = up = down = -math.inf
     for values in _fx_extremes(fx):
-        tr = _fx_matrix(fx, *values, height=height, pivot_y=pivot_y)
+        breathe, bob, hop, shake, tilt, swing, jump, bounce, deform, sway, stretch, impulse = values
+        tr = _fx_matrix(fx, breathe, bob, hop, shake, tilt, swing, height, pivot_y, jump, bounce, deform,
+                        sway, stretch, impulse)
         for corner in corners:
             p = tr.map(corner)
             left = max(left, -p.x())
@@ -410,7 +576,7 @@ class SpriteRenderer:
 
         info = self._pack.frames[sample.frame_id]
         pivot = -info.anchor[1] * height_px / self._pack.reference_height * info.scale
-        tr = fx_transform(clip.fx, visual.t, height_px, pivot)
+        tr = fx_transform(clip.fx, visual.t, height_px, pivot, visual.clip_t, visual.squash)
         painter.save()
         try:
             painter.translate(anchor)
@@ -528,6 +694,8 @@ _HEAD_STAND = QPointF(0.0, -69.0)
 _SIT_DROP = 9.0
 _HEAD_SLEEP = QPointF(-17.0, -26.0)
 _RUN_LEAN_DEG = 7.0
+#: Arm poses drawn before the head instead of over it.
+_ARMS_BEHIND_HEAD = frozenset({"crossed", "stretch"})
 
 
 def _vclip(name: str, fx: Mapping[str, float] | None = None, overlay: str | None = None,
@@ -564,6 +732,12 @@ VECTOR_CLIPS: Mapping[str, Clip] = MappingProxyType({
     "bye": _vclip("bye", {"bob": 0.006}),
     "point": _vclip("point", None, "exclaim"),
     "dragged": _vclip("dragged", {"swing": 9.0}),
+    # Phase 5: same effects as the mia pack's clips
+    "jump": _vclip("jump", {"jump": 0.12, "squash": 0.10}, ms=1250),
+    "dance": _vclip("dance", {"sway": 6.0, "bob": 0.018}, "hearts"),
+    "excited": _vclip("excited", {"bounce": 0.025, "shake": 0.004, "squash": 0.06}, "sparkle"),
+    "proud": _vclip("proud", {"tilt": 3.0, "breathe": 0.012}, "blush"),
+    "stretch": _vclip("stretch", {"stretch": 0.07}, loop=False, ms=3200),
 })
 
 #: Fidget variants per state, mirroring the mia pack.
@@ -589,7 +763,7 @@ class _Look:
     mouth: str = "smile"  # smile | cat | open_smile | talk | o | big_o | pout | wavy | flat | chew | tongue
     blush: float = 0.35
     arms: str = "down"  # down | swing | wave | bye | up | held | point | chin | mouth | snack | hold
-    #                     | together | crossed | lap | surprise
+    #                     | together | crossed | lap | surprise | dance | stretch
     legs: str = "stand"  # stand | walk | run | dangle | sit
     pose: str = "stand"  # stand | sit | sleep
     look_x: float = 0.0  # iris offset, -1..1 (positive: toward her facing)
@@ -603,28 +777,39 @@ def _wave01(t: float, hz: float) -> float:
     return 0.5 + 0.5 * math.sin(2.0 * math.pi * hz * t)
 
 
+_BLINK_PERIOD = 3.9
+_BLINK_SECONDS = 0.13
+_BLINK_OFFSET = 1.3
+
+
 def _blinking(t: float) -> bool:
     """A short blink every ~4 s (offset so she doesn't blink right at t=0)."""
-    return math.fmod(t + 1.3, 3.9) < 0.13
+    return math.fmod(t + _BLINK_OFFSET, _BLINK_PERIOD) < _BLINK_SECONDS
 
 
-def _look_for(state: CharacterState, clip_name: str, t: float) -> _Look:
-    blink = _blinking(t)
-    open_eyes = "closed" if blink else "open"
-    if clip_name == "idle_smile":
-        return _Look(eyes="happy" if blink else "open", mouth="cat", blush=0.6)
-    if clip_name == "idle_look":
-        return _Look(eyes=open_eyes, look_x=1.0)
-    if clip_name == "greet":
-        return _Look(eyes="happy", mouth="open_smile", arms="wave", blush=0.6)
-    table: dict[CharacterState, _Look] = {
+def blink_change_in(t: float) -> float | None:
+    """Seconds until the vector chibi's eyes next open or close (None for a
+    time that is not finite).  The controller lands a frame on it so a blink
+    lasts its 130 ms at any frame rate instead of 0 or 200 ms."""
+    if not math.isfinite(t):
+        return None
+    phase = math.fmod(t + _BLINK_OFFSET, _BLINK_PERIOD)
+    if phase < 0.0:
+        phase += _BLINK_PERIOD
+    return (_BLINK_SECONDS - phase) if phase < _BLINK_SECONDS else (_BLINK_PERIOD - phase)
+
+
+def _build_looks(open_eyes: str) -> Mapping[CharacterState, _Look]:
+    """Every state's look with eyes *open_eyes* where they blink ("open" or
+    "closed").  Built once per eye state: looking a pose up is per frame."""
+    return MappingProxyType({
         S.IDLE: _Look(eyes=open_eyes),
         S.WALK: _Look(eyes=open_eyes, arms="swing", legs="walk", look_x=0.8),
         S.RUN: _Look(eyes=open_eyes, mouth="open_smile", arms="swing", legs="run", look_x=1.0),
         S.SIT: _Look(eyes=open_eyes, arms="lap", legs="sit", pose="sit"),
         S.SLEEP: _Look(eyes="closed", brows="none", mouth="cat", pose="sleep", blush=0.45),
         S.GAMING: _Look(eyes="half", mouth="tongue", arms="hold", look_y=1.0, prop="gamepad"),
-        S.TALK: _Look(eyes=open_eyes, mouth="talk", talk_open=_wave01(t, 4.2)),
+        S.TALK: _Look(eyes=open_eyes, mouth="talk"),  # talk_open is filled in per frame
         S.LAUGH: _Look(eyes="happy", mouth="open_smile", arms="together", blush=0.8),
         S.HAPPY: _Look(eyes=open_eyes, mouth="open_smile", arms="up", blush=0.7, sparkle_eyes=True),
         S.ANGRY: _Look(eyes="angry", brows="angry", mouth="pout", arms="crossed", blush=0.55),
@@ -639,8 +824,38 @@ def _look_for(state: CharacterState, clip_name: str, t: float) -> _Look:
         S.BYE: _Look(eyes=open_eyes, brows="sad", mouth="smile", arms="bye"),
         S.POINT: _Look(eyes=open_eyes, brows="raised", mouth="open_smile", arms="point", look_x=1.0),
         S.DRAGGED: _Look(eyes="squeeze", mouth="wavy", arms="held", legs="dangle", blush=0.55),
-    }
-    return table.get(state, _Look(eyes=open_eyes))
+        # Phase 5
+        S.JUMP: _Look(eyes="happy", mouth="open_smile", arms="up", blush=0.7),
+        S.DANCE: _Look(eyes="happy", mouth="open_smile", arms="dance", legs="walk", blush=0.7),
+        S.EXCITED: _Look(eyes=open_eyes, brows="raised", mouth="open_smile", arms="surprise", blush=0.8,
+                         sparkle_eyes=True),
+        S.PROUD: _Look(eyes="happy", brows="raised", mouth="cat", arms="crossed", blush=0.5),
+        S.STRETCH: _Look(eyes="closed", brows="sad", mouth="o", arms="stretch"),
+    })
+
+
+_LOOKS_OPEN = _build_looks("open")
+_LOOKS_BLINK = _build_looks("closed")
+_IDLE_SMILE = _Look(eyes="open", mouth="cat", blush=0.6)
+_IDLE_SMILE_BLINK = _Look(eyes="happy", mouth="cat", blush=0.6)
+_IDLE_LOOK = _Look(eyes="open", look_x=1.0)
+_IDLE_LOOK_BLINK = _Look(eyes="closed", look_x=1.0)
+_GREET = _Look(eyes="happy", mouth="open_smile", arms="wave", blush=0.6)
+
+
+def _look_for(state: CharacterState, clip_name: str, t: float) -> _Look:
+    blink = _blinking(t)
+    if clip_name == "idle_smile":
+        return _IDLE_SMILE_BLINK if blink else _IDLE_SMILE
+    if clip_name == "idle_look":
+        return _IDLE_LOOK_BLINK if blink else _IDLE_LOOK
+    if clip_name == "greet":
+        return _GREET
+    looks = _LOOKS_BLINK if blink else _LOOKS_OPEN
+    look = looks.get(state, looks[S.IDLE])
+    if state is S.TALK:
+        return replace(look, talk_open=_wave01(t, 4.2))
+    return look
 
 
 def _pen(color: QColor, width: float) -> QPen:
@@ -842,7 +1057,7 @@ class VectorRenderer:
             painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             painter.translate(anchor)
             pivot = -height_px if look.pose != "sleep" else -0.5 * height_px
-            tr = fx_transform(clip.fx, t, height_px, pivot)
+            tr = fx_transform(clip.fx, t, height_px, pivot, visual.clip_t, visual.squash)
             if not tr.isIdentity():
                 painter.setTransform(tr, True)
             painter.scale(height_px / 100.0, height_px / 100.0)
@@ -873,10 +1088,12 @@ class VectorRenderer:
         self._hair_back(p, sway)
         self._hood(p)
         self._torso(p)
-        if look.arms == "crossed":
+        # Crossed arms and a stretch go behind the head (a stretch reaches up behind it).
+        behind = look.arms in _ARMS_BEHIND_HEAD
+        if behind:
             self._arms(p, look.arms, t, walk_phase)
         self._head(p, look, t, look_x)
-        if look.arms != "crossed":
+        if not behind:
             self._arms(p, look.arms, t, walk_phase)
         if look.prop == "gamepad":
             self._gamepad(p, QPointF(0.0, -33.5))
@@ -1006,6 +1223,13 @@ class VectorRenderer:
             return elbow, QPointF(elbow.x() + 13.0 * math.cos(a), elbow.y() + 13.0 * math.sin(a))
         if mode == "up":
             return pt(20.5, -52.0), pt(24.5, -63.5)
+        if mode == "dance":
+            # one arm up on each beat of the sway (same rhythm as the "sway" effect)
+            r = max(0.0, side * math.sin(2.0 * math.pi * SWAY_HZ * t))
+            return pt(15.0 + 5.5 * r, -38.0 - 14.0 * r), pt(16.5 + 8.0 * r, -27.5 - 36.0 * r)
+        if mode == "stretch":
+            # both arms reaching up behind her head, hands peeking over the hair
+            return pt(25.0, -66.0), pt(12.5, -94.0)
         if mode == "held":
             return pt(17.5, -61.0), pt(15.5, -75.0)
         if mode == "surprise":

@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "gifts": [
+    {
+      "id": "apple",
+      "name": "Яблуко",
+      "icon": "🍎",
+      "price": 4,
+      "kind": "treat",
+      "description": "Хрустке й соковите. Трохи втамовує голод.",
+      "effects": {"hunger": -8, "energy": 2, "happiness": 2, "friendship_xp": 1},
+      "reaction_keys": ["gift.apple"],
+      "state": "eat",
+      "portrait": "eat"
+    },
+    {
+      "id": "cookie",
+      "name": "Печиво",
+      "icon": "🍪",
+      "price": 5,
+      "kind": "treat",
+      "description": "Класика! Перед печивом вона не встоїть.",
+      "effects": {"hunger": -10, "happiness": 4, "friendship_xp": 1},
+      "reaction_keys": ["gift.cookie"],
+      "state": "eat",
+      "portrait": "eat"
+    },
+    {
+      "id": "cocoa",
+      "name": "Какао",
+      "icon": "☕",
+      "price": 8,
+      "kind": "treat",
+      "description": "Тепле какао з маршмелоу: зігріває й додає сил.",
+      "effects": {"hunger": -6, "energy": 6, "happiness": 6, "friendship_xp": 1},
+      "reaction_keys": ["gift.cocoa"],
+      "state": "happy",
+      "portrait": "drink"
+    },
+    {
+      "id": "stickers",
+      "name": "Наліпки",
+      "icon": "✨",
+      "price": 10,
+      "kind": "treat",
+      "description": "Блискучі наліпки, щоб прикрасити все довкола.",
+      "effects": {"boredom": -15, "happiness": 5, "friendship_xp": 1},
+      "reaction_keys": ["gift.stickers"],
+      "state": "happy",
+      "portrait": "excited"
+    },
+    {
+      "id": "flower",
+      "name": "Квітка",
+      "icon": "🌷",
+      "price": 12,
+      "kind": "treat",
+      "description": "Ніжний тюльпан. Від такого вона червоніє.",
+      "effects": {"happiness": 8, "affection": 6, "friendship_xp": 2},
+      "reaction_keys": ["gift.flower"],
+      "state": "shy",
+      "portrait": "shy"
+    },
+    {
+      "id": "book",
+      "name": "Книжка",
+      "icon": "📖",
+      "price": 15,
+      "kind": "treat",
+      "description": "Книжка з пригодами: нудьгу як рукою зніме.",
+      "effects": {"boredom": -20, "happiness": 5, "friendship_xp": 2},
+      "reaction_keys": ["gift.book"],
+      "state": "curious",
+      "portrait": "thinking"
+    },
+    {
+      "id": "star_keychain",
+      "name": "Брелок-зірочка",
+      "icon": "⭐",
+      "price": 20,
+      "kind": "keepsake",
+      "description": "Брелок, що світиться в темряві. Залишиться з нею назавжди.",
+      "effects": {"happiness": 8, "affection": 5, "friendship_xp": 3},
+      "reaction_keys": ["gift.star_keychain"],
+      "state": "happy",
+      "portrait": "wink_heart",
+      "memory": "Мені подарували брелок-зірочку"
+    },
+    {
+      "id": "cake",
+      "name": "Торт",
+      "icon": "🎂",
+      "price": 25,
+      "kind": "treat",
+      "description": "Святковий торт! Навіть якщо сьогодні й не свято.",
+      "effects": {"hunger": -25, "energy": 4, "happiness": 12, "friendship_xp": 3},
+      "reaction_keys": ["gift.cake"],
+      "state": "happy",
+      "portrait": "joyful"
+    },
+    {
+      "id": "plush_cat",
+      "name": "Плюшевий котик",
+      "icon": "🐱",
+      "price": 30,
+      "kind": "keepsake",
+      "description": "М'якенький котик для обіймів. Залишиться з нею назавжди.",
+      "effects": {"happiness": 10, "affection": 8, "boredom": -10, "friendship_xp": 4},
+      "reaction_keys": ["gift.plush_cat"],
+      "state": "shy",
+      "portrait": "joyful",
+      "memory": "Мені подарували плюшевого котика"
+    },
+    {
+      "id": "headphones",
+      "name": "Навушники",
+      "icon": "🎧",
+      "price": 40,
+      "kind": "keepsake",
+      "description": "Навушники для її улюбленої музики. Залишаться з нею назавжди.",
+      "effects": {"happiness": 12, "boredom": -15, "friendship_xp": 5},
+      "reaction_keys": ["gift.headphones"],
+      "state": "happy",
+      "portrait": "music",
+      "memory": "Мені подарували навушники"
+    }
+  ]
+}

@@ -14,17 +14,24 @@ model (and which one) or is in offline mode with only simple phrases.
   logged.
 * History lives only in this window's memory (capped), nothing is written to
   disk - the tooltip on the message area says so.
+* The microphone button next to the input talks to her by voice: a click
+  calls the ``on_mic`` callback (the app toggles listening).  The app tells
+  the window whether voice input works (:meth:`ChatWindow.set_voice_input` -
+  disabled with the reason as tooltip otherwise) and what the voice is doing
+  (:meth:`ChatWindow.set_voice_state`): the button stays pressed exactly while
+  she listens, whatever started it (button, hotkey, wake phrase).
 """
 
 from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QPixmap, QShowEvent
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QScrollArea, QToolButton, QVBoxLayout, QWidget
 
 from chibi.settings.facade import AIStatusView, AppFacade, ChatReply
 from chibi.settings.widgets import (
@@ -35,6 +42,7 @@ from chibi.settings.widgets import (
     is_alive,
     make_button,
     make_label,
+    set_style_property,
 )
 
 log = logging.getLogger(__name__)
@@ -61,6 +69,17 @@ PLACEHOLDER_OFFLINE = "Напиши щось… (наприклад, «прив�
 PLACEHOLDER_ONLINE = "Напиши їй що завгодно…"
 ERROR_LINE = "Щось пішло не так — спробуй ще раз."
 TIMEOUT_LINE = "Вона так і не відповіла — спробуй ще раз."
+
+#: Microphone button: the glyph while idle / listening / recognising.
+MIC_IDLE_TEXT = "🎤"
+MIC_LISTENING_TEXT = "🔴"
+MIC_BUSY_TEXT = "⏳"
+MIC_TOOLTIP = "Сказати голосом"
+MIC_LISTENING_TOOLTIP = "Слухаю… Натисни ще раз, коли договориш."
+MIC_BUSY_TOOLTIP = "Розбираю сказане…"
+MIC_UNAVAILABLE = "Голосове введення недоступне"
+#: Shown until the app reports whether voice input works.
+MIC_NOT_SET_UP = "Спершу налаштуй голос (Налаштування → Голос)."
 
 #: ChatReply.action -> system line (``{name}`` = her name)
 ACTION_LINES: dict[str, str] = {
@@ -122,9 +141,17 @@ class _Pending:
 
 
 class ChatWindow(QWidget):
-    def __init__(self, facade: AppFacade, parent: QWidget | None = None) -> None:
+    def __init__(self, facade: AppFacade, parent: QWidget | None = None, *,
+                 on_mic: Callable[[], None] | None = None) -> None:
+        """*on_mic* is called when the microphone button is clicked (the app
+        toggles listening); without it the button stays disabled."""
         super().__init__(parent, Qt.WindowType.Window)
         self._facade = facade
+        self._on_mic = on_mic
+        self._voice_available = False
+        self._voice_reason = MIC_NOT_SET_UP
+        self._voice_hotkey = ""
+        self._voice_state = "off"
         self._rows: list[QWidget] = []
         self._bubbles: list[QLabel] = []
         self._avatars: dict[str, QPixmap | None] = {}
@@ -165,10 +192,21 @@ class ChatWindow(QWidget):
         self.input.submitted.connect(self.send)
         self.send_button = make_button("Надіслати", "primary")
         self.send_button.clicked.connect(self.send)
+        self.mic_button = QToolButton()
+        self.mic_button.setObjectName("micButton")
+        self.mic_button.setCheckable(True)
+        self.mic_button.setAutoRaise(False)
+        self.mic_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.mic_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.mic_button.setAccessibleName("Мікрофон")
+        self.mic_button.clicked.connect(self._on_mic_clicked)
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
         bottom.addWidget(self.input, 1)
+        bottom.addWidget(self.mic_button)
         bottom.addWidget(self.send_button)
+        QWidget.setTabOrder(self.input, self.mic_button)
+        QWidget.setTabOrder(self.mic_button, self.send_button)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
@@ -187,6 +225,7 @@ class ChatWindow(QWidget):
 
         self._update_title()
         self.refresh_status()
+        self._update_mic()
 
     # --- public API ---------------------------------------------------------------------
 
@@ -254,6 +293,22 @@ class ChatWindow(QWidget):
     def message_count(self) -> int:
         return len(self._rows)
 
+    def set_voice_input(self, available: bool, reason: str = "", hotkey: str = "") -> None:
+        """Whether talking by voice works now; *reason* (Ukrainian) says why not,
+        *hotkey* is the push-to-talk combination for the tooltip ("" = none)."""
+        self._voice_available = bool(available)
+        self._voice_reason = reason.strip()
+        self._voice_hotkey = hotkey.strip()
+        self._update_mic()
+
+    def set_voice_state(self, state: str) -> None:
+        """A ``VoiceStateChanged`` state: "listening" keeps the button pressed."""
+        self._voice_state = str(state)
+        self._update_mic()
+
+    def is_listening(self) -> bool:
+        return self._voice_state == "listening"
+
     def refresh_status(self) -> None:
         """Show in the banner whether she talks through AI right now."""
         try:
@@ -268,6 +323,42 @@ class ChatWindow(QWidget):
         self._status_failed = False
         self.banner.setText(banner_text(view))
         self.input.setPlaceholderText(PLACEHOLDER_ONLINE if view.online else PLACEHOLDER_OFFLINE)
+
+    # --- microphone ---------------------------------------------------------------------------
+
+    def _on_mic_clicked(self) -> None:
+        # The button shows the voice's real state, not the click: a click that
+        # fails (no microphone) must not leave it looking pressed.
+        self.mic_button.setChecked(self.is_listening())
+        if self._on_mic is None or not self._voice_available:
+            return
+        try:
+            self._on_mic()
+        except Exception as exc:
+            log.error("voice input toggle failed: %s", type(exc).__name__)
+
+    def _update_mic(self) -> None:
+        button = self.mic_button
+        listening = self.is_listening()
+        busy = self._voice_state == "transcribing"
+        usable = self._on_mic is not None and self._voice_available
+        button.setChecked(listening)
+        button.setEnabled(usable and not busy)
+        button.setText(MIC_LISTENING_TEXT if listening else MIC_BUSY_TEXT if busy else MIC_IDLE_TEXT)
+        if not usable:
+            reason = self._voice_reason or MIC_NOT_SET_UP
+            if reason[:2].istitle():  # "Мікрофон вимкнено…" -> "…: мікрофон вимкнено…" (not "AI")
+                reason = reason[0].lower() + reason[1:]
+            tooltip = f"{MIC_UNAVAILABLE}: {reason}"
+        elif listening:
+            tooltip = MIC_LISTENING_TOOLTIP
+        elif busy:
+            tooltip = MIC_BUSY_TOOLTIP
+        else:
+            tooltip = f"{MIC_TOOLTIP} ({self._voice_hotkey})" if self._voice_hotkey else MIC_TOOLTIP
+        button.setToolTip(tooltip)
+        button.setAccessibleDescription(tooltip)
+        set_style_property(button, "listening", listening)  # lets the theme style the pressed state
 
     # --- the reply in flight ------------------------------------------------------------------
 

@@ -33,6 +33,12 @@ class CharacterState(StrEnum):
     YAWN = "yawn"
     BYE = "bye"
     POINT = "point"
+    # Phase 5: livelier actions and emotions (existing frames + procedural effects)
+    JUMP = "jump"  # one big hop after another, with squash and stretch
+    DANCE = "dance"  # swaying to a beat only she hears
+    EXCITED = "excited"  # quick little hops, can barely stand still
+    PROUD = "proud"  # content smile, chin up
+    STRETCH = "stretch"  # a slow stretch upwards (after a nap, or just because)
     # held while the user drags her with the mouse
     DRAGGED = "dragged"
 

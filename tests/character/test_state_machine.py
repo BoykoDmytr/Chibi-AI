@@ -43,6 +43,7 @@ def test_default_durations_cover_every_action() -> None:
         S.TALK: 3.0, S.LAUGH: 2.5, S.HAPPY: 3.0, S.ANGRY: 3.0, S.SAD: 4.0, S.SURPRISED: 1.8,
         S.CURIOUS: 3.0, S.THINKING: 3.0, S.WAVE: 2.4, S.EAT: 3.0, S.SHY: 3.0, S.YAWN: 1.8,
         S.BYE: 2.2, S.POINT: 1.6,
+        S.JUMP: 2.5, S.DANCE: 4.4, S.EXCITED: 2.5, S.PROUD: 3.0, S.STRETCH: 3.2,
     }
 
 
@@ -452,3 +453,69 @@ def test_rejected_requests_do_not_notify(sm: CharacterStateMachine, changes: lis
     sm.request(S.WAVE, P.AMBIENT)
     sm.request(S.DRAGGED, P.USER)
     assert changes == [StateChange(S.IDLE, S.TALK, S.IDLE)]
+
+
+# -- Phase 5 actions ------------------------------------------------------------------------------
+
+NEW_ACTIONS = (S.JUMP, S.DANCE, S.EXCITED, S.PROUD, S.STRETCH)
+
+
+def test_new_states_are_transient_actions() -> None:
+    for state in NEW_ACTIONS:
+        assert state not in POSTURES
+        assert DEFAULT_ACTION_SECONDS[state] >= 2.5  # long enough to read as a gesture
+    assert DEFAULT_ACTION_SECONDS[S.DANCE] == max(DEFAULT_ACTION_SECONDS.values())
+
+
+@pytest.mark.parametrize("action", NEW_ACTIONS)
+def test_behavior_priority_sits_between_fidgets_and_reactions(clock: FakeClock,
+                                                               action: CharacterState) -> None:
+    sm = CharacterStateMachine(clock)
+    # beats an ambient fidget...
+    assert sm.request(S.CURIOUS, P.AMBIENT)
+    assert sm.request(action, P.BEHAVIOR)
+    assert sm.current is action
+    # ...which cannot cut it short, while a reaction or the user can
+    assert not sm.request(S.CURIOUS, P.AMBIENT)
+    assert sm.request(S.SURPRISED, P.REACTION)
+    # and never over a line said at REACTION
+    assert not sm.request(action, P.BEHAVIOR)
+    clock.advance(DEFAULT_ACTION_SECONDS[S.SURPRISED])
+    sm.tick()
+    assert sm.request(action, P.BEHAVIOR)
+    assert sm.request(S.TALK, P.USER)
+
+
+@pytest.mark.parametrize("action", NEW_ACTIONS)
+def test_new_actions_never_wake_her_from_behavior(clock: FakeClock, action: CharacterState) -> None:
+    sm = CharacterStateMachine(clock)
+    sm.request(S.SLEEP, P.BEHAVIOR)
+    assert not sm.request(action, P.BEHAVIOR)
+    assert sm.asleep
+    assert sm.request(action, P.REACTION)  # a reaction may (wakes her, like any action)
+    assert sm.posture is S.IDLE
+
+
+@pytest.mark.parametrize("action", NEW_ACTIONS)
+def test_new_actions_return_to_the_posture(clock: FakeClock, action: CharacterState) -> None:
+    sm = CharacterStateMachine(clock)
+    sm.request(S.SIT)
+    assert sm.request(action, P.BEHAVIOR)
+    assert sm.posture is S.SIT
+    clock.advance(DEFAULT_ACTION_SECONDS[action] - 0.01)
+    assert sm.tick() is None
+    clock.advance(0.02)
+    assert sm.tick() == StateChange(action, S.SIT, S.SIT)
+    assert sm.priority is P.AMBIENT
+
+
+@pytest.mark.parametrize("action", (S.JUMP, S.DANCE))
+def test_jumping_or_dancing_stops_a_stroll(clock: FakeClock, action: CharacterState) -> None:
+    sm = CharacterStateMachine(clock)
+    sm.request(S.WALK, P.AMBIENT)
+    assert sm.request(action, P.BEHAVIOR)
+    assert sm.posture is S.IDLE
+    # but not a walk the user asked for
+    sm.request(S.RUN, P.USER, 5.0)
+    assert not sm.request(action, P.BEHAVIOR)
+    assert sm.posture is S.RUN

@@ -842,6 +842,28 @@
     "chat.mood.calm": [
       {"id": "chat.mood.calm.01", "text": "Спокійно й затишно. Як чай із медом.", "tone": "warm", "state": "sit", "portrait": "calm"},
       {"id": "chat.mood.calm.02", "text": "Я спокійна, як кіт на підвіконні.", "tone": "warm", "state": "sit", "portrait": "smile"}
+    ],
+    "voice.not_heard": [
+      {"id": "voice.not_heard.01", "text": "Ой, я нічого не почула. Скажеш ще раз?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "voice.not_heard.02", "text": "Тиша в ефірі... Спробуєш ще раз?", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "voice.not_heard.03", "text": "Я слухала-слухала, а там тиша. Повториш?", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "voice.not_heard.04", "text": "Здається, до мене не долетіло ні слова. Ще разок?", "tone": "warm", "state": "shy", "portrait": "shy"}
+    ],
+    "voice.not_understood": [
+      {"id": "voice.not_understood.01", "text": "Ой, не розібрала. Повториш, будь ласка?", "tone": "warm", "state": "thinking", "portrait": "thinking"},
+      {"id": "voice.not_understood.02", "text": "Щось я не зрозуміла... Скажи ще раз, трішки чіткіше?", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "voice.not_understood.03", "text": "Перепрошую, не розчула. Ще разок?", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "voice.not_understood.04", "text": "Слова наче були, а зміст десь загубився. Повториш?", "tone": "playful", "state": "thinking", "portrait": "facepalm"}
+    ],
+    "voice.listening": [
+      {"id": "voice.listening.01", "text": "Слухаю!", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "voice.listening.02", "text": "Так-так, я тут. Слухаю.", "tone": "playful", "state": "curious", "portrait": "smile"},
+      {"id": "voice.listening.03", "text": "Я вся увага!", "tone": "warm", "state": "curious", "portrait": "smile"}
+    ],
+    "voice.error": [
+      {"id": "voice.error.01", "text": "Ой, мій слух дав збій. Спробуй ще раз або напиши мені в чаті.", "tone": "caring", "state": "sad", "portrait": "facepalm"},
+      {"id": "voice.error.02", "text": "Не вийшло розібрати — щось зламалося. Можеш написати мені в чаті?", "tone": "warm", "state": "sad", "portrait": "calm"},
+      {"id": "voice.error.03", "text": "Вуха підвели... Давай ще раз, а якщо не вийде — пиши в чаті.", "tone": "playful", "state": "sad", "portrait": "facepalm"}
     ]
   }
 }

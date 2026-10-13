@@ -1059,6 +1059,125 @@
    "loop": false,
    "facing": "front",
    "overlay": "exclaim"
+  },
+  "jump": {
+   "frames": [
+    {
+     "id": "cheer_0",
+     "ms": 225
+    },
+    {
+     "id": "cheer_6",
+     "ms": 625
+    },
+    {
+     "id": "cheer_2",
+     "ms": 212
+    },
+    {
+     "id": "cheer_0",
+     "ms": 188
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "jump": 0.12,
+    "squash": 0.1
+   }
+  },
+  "dance": {
+   "frames": [
+    {
+     "id": "cheer_1",
+     "ms": 278
+    },
+    {
+     "id": "cheer_3",
+     "ms": 278
+    },
+    {
+     "id": "cheer_4",
+     "ms": 278
+    },
+    {
+     "id": "cheer_3",
+     "ms": 278
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "sway": 6.0,
+    "bob": 0.018
+   },
+   "overlay": "hearts"
+  },
+  "excited": {
+   "frames": [
+    {
+     "id": "cheer_2",
+     "ms": 160
+    },
+    {
+     "id": "cheer_5",
+     "ms": 160
+    },
+    {
+     "id": "cheer_6",
+     "ms": 160
+    },
+    {
+     "id": "cheer_5",
+     "ms": 160
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "bounce": 0.025,
+    "shake": 0.004,
+    "squash": 0.06
+   },
+   "overlay": "sparkle"
+  },
+  "proud": {
+   "frames": [
+    {
+     "id": "front_3",
+     "ms": 2600
+    },
+    {
+     "id": "gesture_0",
+     "ms": 1100
+    }
+   ],
+   "loop": true,
+   "facing": "front",
+   "fx": {
+    "tilt": 3.0,
+    "breathe": 0.012
+   },
+   "overlay": "blush",
+   "blend_ms": 200
+  },
+  "stretch": {
+   "frames": [
+    {
+     "id": "gesture_5",
+     "ms": 2800
+    },
+    {
+     "id": "front_0",
+     "ms": 400
+    }
+   ],
+   "loop": false,
+   "facing": "front",
+   "fx": {
+    "stretch": 0.07
+   },
+   "blend_ms": 200
   }
  },
  "states": {
@@ -1152,6 +1271,26 @@
   "point": {
    "clip": "point",
    "portrait": "point"
+  },
+  "jump": {
+   "clip": "jump",
+   "portrait": "joyful"
+  },
+  "dance": {
+   "clip": "dance",
+   "portrait": "music"
+  },
+  "excited": {
+   "clip": "excited",
+   "portrait": "excited"
+  },
+  "proud": {
+   "clip": "proud",
+   "portrait": "wink"
+  },
+  "stretch": {
+   "clip": "stretch",
+   "portrait": "smile"
   }
  },
  "portraits": {

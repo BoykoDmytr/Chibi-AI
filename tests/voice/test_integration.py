@@ -1,0 +1,1215 @@
+"""VoiceIntegration: engines from settings/permissions/libraries, speech routing,
+push-to-talk, privacy (revoke, kill switch), models.  Engines, audio, the
+hotkey and the downloader are fakes; the VoiceService in between is real."""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from typing import ClassVar
+
+import numpy as np
+import pytest
+from PySide6.QtCore import QCoreApplication
+
+from chibi.ai.secrets import MemorySecretStore
+from chibi.core.config import Settings
+from chibi.core.events import (
+    AppShuttingDown,
+    CharacterInteraction,
+    DoNotDisturbChanged,
+    Event,
+    FullscreenChanged,
+    InteractionKind,
+    Permission,
+    QuietModeChanged,
+    SettingsChanged,
+    SpeechPlayback,
+    SpeechRequested,
+    VoiceStateChanged,
+    VoiceTranscript,
+)
+from chibi.memory.repositories import PermissionRepository
+from chibi.privacy import permissions as permissions_module
+from chibi.privacy.permissions import PermissionManager
+from chibi.voice import integration as integration_module
+from chibi.voice import models
+from chibi.voice.audio_io import AudioUnavailable
+from chibi.voice.hotkey_win import HotkeyError
+from chibi.voice.integration import (
+    AZURE_KEY_NAME,
+    AZURE_NEEDS_CLOUD,
+    AZURE_NO_KEY,
+    HOTKEY_WINDOWS_ONLY,
+    MIC_NOT_ALLOWED,
+    PIPER_MODEL_MISSING,
+    STT_MODEL_MISSING,
+    STT_OFF,
+    TTS_OFF,
+    VOICE_MODULE_MISSING,
+    VoiceIntegration,
+)
+from chibi.voice.models import CATALOG, DEFAULT_TTS_MODEL, DownloadCancelled, DownloadError
+from chibi.voice.stt import STTError, Transcript
+from chibi.voice.tts import AudioClip, TTSError
+
+SR = 16_000
+ALL_LIBS = frozenset({"numpy", "onnxruntime", "faster_whisper", "sounddevice"})
+ALL_MODELS = frozenset({DEFAULT_TTS_MODEL, "whisper-small", "whisper-base"})
+SECRET_TEXT = "мій секретний план на вечір"
+
+
+# --- fakes ---------------------------------------------------------------------------------------
+
+
+class ManualWorker:
+    """Runs jobs when the test says so (keeps ordering visible)."""
+
+    def __init__(self):
+        self.jobs = []
+        self.shut = False
+
+    def submit(self, job, priority=1):
+        self.jobs.append((priority, job))
+
+    def run_all(self):
+        while self.jobs:
+            self.jobs.sort(key=lambda j: j[0])
+            _, job = self.jobs.pop(0)
+            job()
+
+    def shutdown(self, timeout=None):
+        self.shut = True
+
+
+class FakeTTS:
+    is_local = True
+
+    def __init__(self, name="piper", speaker="", speed=1.0, get_key=None):
+        self.name = name
+        self.speaker = speaker
+        self.speed = speed
+        self.get_key = get_key
+        self.said = []
+        self.fail = False
+        self.loads = 0
+
+    def load(self):
+        self.loads += 1
+
+    def synthesize(self, text):
+        if self.fail:
+            raise TTSError("boom", user_message="Голос зламався.")
+        self.said.append(text)
+        if text == "🙂":
+            return AudioClip(np.zeros(0, dtype=np.int16), 22050)  # nothing to say aloud
+        return AudioClip(np.ones(22050, dtype=np.int16), 22050)  # 1 s
+
+
+class FakeSTT:
+    def __init__(self, model="whisper-small"):
+        self.model = model
+        self.text = SECRET_TEXT
+        self.error = None
+        self.loads = 0
+
+    def load(self):
+        self.loads += 1
+
+    def transcribe(self, audio, prompt=""):
+        if self.error:
+            raise self.error
+        return Transcript(self.text, len(audio) / SR)
+
+
+class FakeEngines:
+    def __init__(self):
+        self.built = []
+
+    def piper(self, voice):
+        self.built.append(("piper", voice.piper_speaker, voice.speed))
+        return FakeTTS("piper", voice.piper_speaker, voice.speed)
+
+    def azure(self, voice, get_key):
+        self.built.append(("azure", voice.azure_voice, voice.speed))
+        return FakeTTS("azure", voice.azure_voice, voice.speed, get_key)
+
+    def whisper(self, voice):
+        self.built.append(("whisper", voice.stt_model))
+        return FakeSTT(voice.stt_model)
+
+
+class FakeOutput:
+    def __init__(self):
+        self.device = None
+        self.playing = None
+        self.volumes = []
+
+    def play(self, clip, volume, on_done):
+        self.playing = on_done
+        self.volumes.append(volume)
+
+    def finish(self, completed=True):
+        done, self.playing = self.playing, None
+        done(completed)
+
+    def stop(self):
+        if self.playing:
+            self.finish(False)
+
+
+class FakeInput:
+    instances: ClassVar[list] = []
+
+    def __init__(self, device, fail=False):
+        self.device = device
+        self.callback = None
+        self.fail = fail
+        FakeInput.instances.append(self)
+
+    def start(self, on_audio):
+        if self.fail:
+            raise AudioUnavailable("no mic", user_message="Немає мікрофона.")
+        self.callback = on_audio
+
+    def stop(self):
+        self.callback = None
+
+    @property
+    def active(self):
+        return self.callback is not None
+
+
+class FakeHotkey:
+    def __init__(self, rig, text, on_press, on_release=None):
+        self.text = text
+        self.on_press = on_press
+        self.on_release = on_release
+        self.running = False
+        self.stops = 0
+        self._rig = rig
+
+    def start(self):
+        if self._rig.hotkey_error is not None:
+            raise self._rig.hotkey_error
+        self.running = True
+
+    def stop(self):
+        self.running = False
+        self.stops += 1
+
+    def press(self):  # what the hotkey thread does
+        self.on_press()
+
+    def release(self):
+        self.on_release()
+
+
+class FakeComposer:
+    """Like SpeechComposer + PhraseSelector: publishes a line whose source is the key."""
+
+    def __init__(self, bus):
+        self.bus = bus
+        self.calls = []
+
+    def compose(self, *keys, solicited=False, **variables):
+        self.calls.append((keys, solicited))
+        self.bus.publish(SpeechRequested(text=f"<{keys[0]}>", solicited=solicited, source=keys[0]))
+        return True
+
+
+def speech(seconds, amplitude=0.2):
+    t = np.arange(int(SR * seconds)) / SR
+    return (amplitude * np.sin(2 * np.pi * 180 * t)).astype(np.float32)
+
+
+def silence(seconds):
+    return (np.random.default_rng(0).standard_normal(int(SR * seconds)) * 0.001).astype(np.float32)
+
+
+class Rig:
+    def __init__(self, bus, permissions, clock, *, libs=ALL_LIBS, installed=ALL_MODELS,
+                 hotkey_supported=True, start=True):
+        FakeInput.instances.clear()
+        self.bus = bus
+        self.permissions = permissions
+        self.clock = clock
+        self.settings = Settings()
+        self.settings.voice.tts_enabled = True
+        self.settings.voice.stt_enabled = True
+        self.libs = set(libs)
+        self.installed = set(installed)
+        self.secrets = MemorySecretStore()
+        self.composer = FakeComposer(bus)
+        self.engines = FakeEngines()
+        self.output = FakeOutput()
+        self.worker = ManualWorker()
+        self.downloads = ManualWorker()
+        self.hotkeys: list[FakeHotkey] = []
+        self.hotkey_error = None
+        self.hotkey_supported = hotkey_supported
+        self.notes = []
+        self.visible = True
+        self.devices = (["USB Mic"], ["Speakers", "Headset"])
+        self.download_script = None
+        self.events: list[Event] = []
+        bus.subscribe(Event, self.events.append)
+        self.voice = VoiceIntegration(
+            bus, lambda: self.settings, permissions, self.secrets, self.composer,
+            notify=self.notes.append, is_visible=lambda: self.visible, clock=clock,
+            engines=self.engines,
+            installed=lambda spec: spec.id in self.installed,
+            libraries=lambda name: name in self.libs,
+            output_factory=self._output,
+            input_factory=lambda device: FakeInput(device),
+            list_devices=lambda: self.devices,
+            hotkey_factory=self._hotkey,
+            hotkey_supported=lambda: self.hotkey_supported,
+            voice_worker=self.worker,
+            download_worker=self.downloads,
+            downloader=self._download,
+            post=lambda fn: fn(),
+        )
+        if start:
+            self.voice.start()
+
+    def _output(self, device):
+        self.output.device = device
+        return self.output
+
+    def _hotkey(self, text, on_press, on_release=None):
+        hotkey = FakeHotkey(self, text, on_press, on_release)
+        self.hotkeys.append(hotkey)
+        return hotkey
+
+    def _download(self, spec, root, *, on_progress, cancel):
+        steps = self.download_script or [spec.size // 2, spec.size]
+        for done in steps:
+            if cancel.is_set():
+                raise DownloadCancelled()
+            on_progress(done, spec.size)
+        if cancel.is_set():
+            raise DownloadCancelled()
+        self.installed.add(spec.id)
+        return root
+
+    # -- helpers
+    @property
+    def service(self):
+        return self.voice.service
+
+    @property
+    def hotkey(self):
+        return next((h for h in reversed(self.hotkeys) if h.running), None)
+
+    @property
+    def mic(self):
+        return next((i for i in reversed(FakeInput.instances) if i.active), None)
+
+    def dispatch(self):
+        self.bus.dispatch_pending()
+
+    def grant(self, *perms):
+        for p in perms:
+            self.permissions.grant(p)
+        self.dispatch()
+
+    def revoke(self, permission):
+        self.permissions.revoke(permission)
+        self.dispatch()
+
+    def change(self, section="voice", **voice):
+        for name, value in voice.items():
+            setattr(self.settings.voice, name, value)
+        self.bus.publish(SettingsChanged(section=section))
+        self.dispatch()
+
+    def feed(self, audio, chunk=480):
+        for i in range(0, audio.size, chunk):
+            stream = self.mic
+            if stream is None:
+                return
+            self.clock.advance(chunk / SR)
+            stream.callback(audio[i:i + chunk])
+
+    def published(self, kind):
+        self.dispatch()
+        return [e for e in self.events if isinstance(e, kind)]
+
+
+@pytest.fixture
+def permissions(db, bus, clock, monkeypatch):
+    monkeypatch.setattr(permissions_module, "AVAILABLE", permissions_module.AVAILABLE | {
+        Permission.MICROPHONE, Permission.SCREEN_CAPTURE, Permission.CLOUD_VISION})
+    return PermissionManager(PermissionRepository(db), bus, clock)
+
+
+@pytest.fixture
+def rig(bus, permissions, clock):
+    return Rig(bus, permissions, clock)
+
+
+@pytest.fixture
+def heard(rig):
+    """A rig that can listen: microphone granted, recognition ready."""
+    rig.grant(Permission.MICROPHONE)
+    assert rig.voice.status().stt_ready
+    return rig
+
+
+class Shows:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, event, seconds):
+        self.calls.append((event.text, seconds))
+
+
+def line(text="Привіт!", solicited=False, source="test"):
+    return SpeechRequested(text=text, solicited=solicited, source=source)
+
+
+# --- engines from settings, permissions and libraries ----------------------------------------
+
+
+def test_starts_with_a_local_voice_and_no_recognition_without_the_microphone(rig):
+    status = rig.voice.status()
+    assert status.tts_ready and not status.stt_ready
+    assert status.stt_reason == MIC_NOT_ALLOWED
+    assert rig.engines.built == [("piper", "tetiana", 1.0)]  # recognition isn't even loaded
+    assert rig.service.state == "idle"
+    assert rig.hotkeys == []  # no hotkey without the microphone
+    assert [priority for priority, _job in rig.worker.jobs] == [2]  # preloaded in the background
+    rig.worker.run_all()
+    assert rig.service.tts.loads == 1
+
+
+def test_nothing_happens_before_start(bus, permissions, clock):
+    rig = Rig(bus, permissions, clock, start=False)
+    assert rig.service is None and rig.engines.built == []
+    shows = Shows()
+    rig.voice.route(line(), shows)
+    assert shows.calls == [("Привіт!", None)]
+
+
+def test_missing_voice_module_gives_a_clear_reason_and_text_only(bus, permissions, clock):
+    rig = Rig(bus, permissions, clock, libs=())
+    rig.grant(Permission.MICROPHONE)
+    status = rig.voice.status()
+    assert not status.tts_ready and not status.stt_ready
+    assert status.tts_reason == status.stt_reason == VOICE_MODULE_MISSING
+    assert "pip install .[voice]" in VOICE_MODULE_MISSING
+    assert rig.service is None and status.state == "off"
+    shows = Shows()
+    rig.voice.route(line(), shows)
+    assert shows.calls == [("Привіт!", None)]
+    assert rig.voice.toggle_listening() == VOICE_MODULE_MISSING
+    assert rig.voice.devices() == ([], [])
+
+
+def test_each_engine_needs_its_own_library(bus, permissions, clock):
+    rig = Rig(bus, permissions, clock, libs={"numpy", "sounddevice"})  # no onnxruntime, no whisper
+    rig.grant(Permission.MICROPHONE)
+    status = rig.voice.status()
+    assert status.tts_reason == VOICE_MODULE_MISSING
+    assert status.stt_reason == VOICE_MODULE_MISSING
+    # Azure needs neither: with the cloud permission and a key it works.
+    rig.secrets.set(AZURE_KEY_NAME, "k" * 32)
+    rig.grant(Permission.CLOUD_AI)
+    rig.change(tts_engine="azure")
+    assert rig.voice.status().tts_ready
+
+
+def test_models_not_downloaded(bus, permissions, clock):
+    rig = Rig(bus, permissions, clock, installed=())
+    rig.grant(Permission.MICROPHONE)
+    status = rig.voice.status()
+    assert status.tts_reason == PIPER_MODEL_MISSING
+    assert status.stt_reason == STT_MODEL_MISSING
+    assert rig.engines.built == []
+
+
+def test_switched_off_in_settings(rig):
+    rig.change(tts_enabled=False, stt_enabled=False)
+    status = rig.voice.status()
+    assert (status.tts_reason, status.stt_reason) == (TTS_OFF, STT_OFF)
+    assert rig.service.state == "off"
+
+
+def test_azure_needs_cloud_permission_and_a_key(rig):
+    rig.change(tts_engine="azure")
+    assert rig.voice.status().tts_reason == AZURE_NEEDS_CLOUD
+    assert "потрібен дозвіл на хмарний AI" in AZURE_NEEDS_CLOUD
+    rig.grant(Permission.CLOUD_AI)
+    assert rig.voice.status().tts_reason == AZURE_NO_KEY
+    rig.voice.set_azure_key("  secret-azure-key  ")
+    assert rig.secrets.get(AZURE_KEY_NAME) == "secret-azure-key"
+    assert rig.voice.has_azure_key()
+    assert rig.voice.status().tts_ready
+    engine = rig.service.tts
+    assert engine.name == "azure"
+    # The key is read per request and only while the permission holds.
+    assert engine.get_key() == "secret-azure-key"
+    rig.permissions.revoke(Permission.CLOUD_AI)  # in memory at once, before any dispatch
+    assert engine.get_key() is None
+    rig.dispatch()
+    assert rig.voice.status().tts_reason == AZURE_NEEDS_CLOUD
+    assert rig.service.tts is None
+
+
+def test_settings_changes_rebuild_only_what_changed(heard):
+    rig = heard
+    built = len(rig.engines.built)
+    rig.change(volume=40)
+    rig.change(section="behavior")
+    assert len(rig.engines.built) == built  # nothing the engines depend on
+    assert rig.service.volume == pytest.approx(0.4)
+    rig.change(piper_speaker="lada", speed=1.2)
+    assert rig.engines.built[-1] == ("piper", "lada", 1.2)
+    assert rig.service.tts.speaker == "lada"
+    rig.change(stt_model="whisper-base")
+    assert rig.engines.built[-1] == ("whisper", "whisper-base")
+    assert rig.service.stt.model == "whisper-base"
+
+
+def test_on_change_reports_every_reconfiguration(bus, permissions, clock):
+    rig = Rig(bus, permissions, clock, start=False)
+    seen = []
+    rig.voice._on_change = lambda: seen.append(rig.voice.status().stt_ready)
+    rig.voice.start()
+    rig.grant(Permission.MICROPHONE)
+    rig.revoke(Permission.MICROPHONE)
+    assert seen == [False, True, False]
+
+
+def test_service_options_follow_the_settings(heard):
+    rig = heard
+    rig.settings.character.name = "Аня"
+    rig.change(section="character", end_silence_ms=1200, max_utterance_seconds=30, output_device="Headset")
+    service = rig.service
+    assert service.prompt == "Аня, привіт."
+    assert service.wake_names[0] == "аня" and "мія" in service.wake_names
+    assert service.listen_config.end_silence_ms == 1200
+    assert service.listen_config.max_utterance_seconds == 30
+    assert service.wake_config.max_utterance_seconds <= integration_module.WAKE_MAX_SECONDS
+    assert rig.output.device == "Headset"
+
+
+def test_failing_engine_construction_is_reported_not_raised(rig, caplog):
+    def broken(voice):
+        raise RuntimeError("cannot open C:\\Users\\name\\model")
+
+    rig.engines.piper = broken
+    rig.change(piper_speaker="mykyta")
+    assert rig.voice.status().tts_reason == integration_module.TTS_BUILD_FAILED
+    assert "C:\\Users" not in caplog.text  # the message (paths) is never logged
+
+
+# --- speech routing ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("speak", "solicited", "voiced"), [
+    ("all", False, True), ("all", True, True),
+    ("replies", False, False), ("replies", True, True),
+    ("off", False, False), ("off", True, False),
+])
+def test_speak_modes(rig, speak, solicited, voiced):
+    rig.change(speak=speak)
+    shows = Shows()
+    rig.voice.route(line(solicited=solicited), shows)
+    rig.worker.run_all()
+    if voiced:
+        assert rig.service.tts.said == ["Привіт!"]
+        assert shows.calls == [("Привіт!", pytest.approx(1.0))]  # the bubble lasts as long as the audio
+    else:
+        assert rig.service.tts.said == []
+        assert shows.calls == [("Привіт!", None)]
+
+
+@pytest.mark.parametrize(("speak_when_hidden", "voiced"), [(True, True), (False, False)])
+def test_hidden_by_a_fullscreen_game(rig, speak_when_hidden, voiced):
+    rig.change(speak_when_hidden=speak_when_hidden)
+    rig.bus.publish(FullscreenChanged(active=True))
+    rig.dispatch()
+    rig.visible = False
+    shows = Shows()
+    rig.voice.route(line(), shows)
+    rig.worker.run_all()
+    assert bool(rig.service.tts.said) is voiced
+    assert len(shows.calls) == 1
+
+
+def test_fullscreen_without_hiding_her_is_normal(rig):
+    rig.settings.behavior.hide_on_fullscreen = False
+    rig.change(speak_when_hidden=False)
+    rig.bus.publish(FullscreenChanged(active=True))
+    rig.dispatch()
+    rig.voice.route(line(), Shows())
+    rig.worker.run_all()
+    assert rig.service.tts.said == ["Привіт!"]
+
+
+def test_hidden_by_the_user_voices_only_answers(rig):
+    rig.visible = False
+    rig.voice.route(line("сама по собі"), Shows())
+    rig.voice.route(line("відповідь", solicited=True), Shows())
+    rig.worker.run_all()
+    assert rig.service.tts.said == ["відповідь"]
+
+
+def test_voiced_line_shows_when_audio_starts_and_reports_playback(rig):
+    shows = Shows()
+    rig.voice.route(line(), shows)
+    assert shows.calls == []  # not before the audio
+    rig.worker.run_all()
+    assert shows.calls == [("Привіт!", pytest.approx(1.0))]
+    playback = rig.published(SpeechPlayback)
+    assert [(p.playing, p.duration) for p in playback] == [(True, pytest.approx(1.0))]
+    rig.output.finish()
+    assert [p.playing for p in rig.published(SpeechPlayback)] == [True, False]
+    assert len(shows.calls) == 1
+
+
+def test_failed_synthesis_falls_back_to_text_and_notifies_once(rig, clock):
+    rig.service.tts.fail = True
+    shows = Shows()
+    for _ in range(3):
+        rig.voice.route(line(solicited=True), shows)
+        rig.worker.run_all()
+    assert shows.calls == [("Привіт!", None)] * 3  # never lose a line
+    assert rig.notes == ["Голос зламався."]  # not spammy
+    clock.advance(integration_module.NOTIFY_REPEAT_SECONDS + 1)
+    rig.voice.route(line(solicited=True), shows)
+    rig.worker.run_all()
+    assert rig.notes == ["Голос зламався."] * 2
+
+
+def test_dropped_lines_are_shown_as_text(rig):
+    rig.service.max_queue = 1
+    shows = Shows()
+    rig.voice.route(line("перша"), shows)
+    rig.voice.route(line("друга"), shows)
+    rig.voice.route(line("третя"), shows)  # the queue is full: "друга" is dropped
+    assert shows.calls == [("друга", None)]
+
+
+def test_refused_lines_are_shown_as_text(heard):
+    rig = heard
+    rig.voice.toggle_listening()
+    shows = Shows()
+    rig.voice.route(line("коментар"), shows)  # never talk over the user
+    assert shows.calls == [("коментар", None)]
+
+
+def test_a_line_with_nothing_to_say_aloud_is_still_shown(rig):
+    shows = Shows()
+    rig.voice.route(line("🙂"), shows)
+    rig.worker.run_all()
+    assert shows.calls == [("🙂", None)]
+
+
+def test_gesture_without_text_is_not_voiced(rig):
+    shows = Shows()
+    rig.voice.route(SpeechRequested(text="", state="happy"), shows)
+    assert shows.calls == [("", None)]
+    rig.worker.run_all()
+    assert rig.service.tts.said == []
+
+
+def test_listening_line_is_never_spoken(rig):
+    shows = Shows()
+    rig.voice.route(line("Слухаю!", solicited=True, source="voice.listening"), shows)
+    rig.voice.route(line("Слухаю!", solicited=True, source="voice.listening:ai"), shows)
+    assert shows.calls == [("Слухаю!", None)] * 2
+    rig.worker.run_all()
+    assert rig.service.tts.said == []
+
+
+@pytest.mark.parametrize("kind", [InteractionKind.CLICK, InteractionKind.PET, InteractionKind.DRAG_START])
+def test_clicking_her_while_she_speaks_interrupts(rig, kind):
+    shows = Shows()
+    rig.voice.route(line("перша"), shows)
+    rig.voice.route(line("друга"), shows)
+    rig.worker.run_all()
+    assert shows.calls == [("перша", pytest.approx(1.0))]
+    rig.bus.publish(CharacterInteraction(kind=kind))
+    rig.dispatch()
+    assert rig.service.state == "idle"
+    assert shows.calls == [("перша", pytest.approx(1.0))]  # the user cut her off: "друга" is dropped
+    assert [p.playing for p in rig.published(SpeechPlayback)] == [True, False]
+
+
+def test_other_interactions_do_not_interrupt(rig):
+    rig.voice.route(line(), Shows())
+    rig.worker.run_all()
+    rig.bus.publish(CharacterInteraction(kind=InteractionKind.FEED))
+    rig.dispatch()
+    assert rig.service.state == "speaking"
+
+
+def test_settings_change_mid_line_shows_the_queued_line_as_text(rig):
+    shows = Shows()
+    rig.voice.route(line("перша"), shows)
+    rig.voice.route(line("друга"), shows)
+    rig.worker.run_all()
+    rig.change(piper_speaker="lada")  # rebuilds the voice: not the user's doing
+    assert shows.calls == [("перша", pytest.approx(1.0)), ("друга", None)]
+
+
+def test_quiet_stops_her_own_comment_but_keeps_the_answer(rig):
+    shows = Shows()
+    rig.voice.route(line("коментар"), shows)
+    rig.voice.route(line("Добре, мовчу.", solicited=True), shows)
+    rig.worker.run_all()
+    assert shows.calls == [("коментар", pytest.approx(1.0))]  # speaking her own comment
+    rig.bus.publish(QuietModeChanged(enabled=True))
+    rig.dispatch()
+    assert rig.output.playing is None  # the comment stopped mid-sentence
+    assert rig.service.state == "speaking"  # the answer is being synthesised
+    rig.worker.run_all()
+    assert rig.service.tts.said == ["коментар", "Добре, мовчу."]  # the answer is still said
+    assert shows.calls[-1] == ("Добре, мовчу.", pytest.approx(1.0))
+    rig.output.finish()
+    assert rig.service.state == "idle"
+    assert [p.playing for p in rig.published(SpeechPlayback)] == [True, False, True, False]
+
+
+def test_quiet_drops_queued_comments_without_showing_them(rig):
+    shows = Shows()
+    rig.voice.route(line("відповідь", solicited=True), shows)
+    rig.voice.route(line("коментар 1"), shows)
+    rig.voice.route(line("друга відповідь", solicited=True), shows)
+    rig.voice.route(line("коментар 2"), shows)
+    rig.worker.run_all()
+    rig.bus.publish(DoNotDisturbChanged(enabled=True))
+    rig.dispatch()
+    assert rig.output.playing is not None  # the answer playing now is not cut
+    rig.output.finish()
+    rig.worker.run_all()  # "коментар 1" comes up next and is skipped at once
+    rig.worker.run_all()
+    assert rig.service.tts.said[-1] == "друга відповідь"
+    rig.output.finish()
+    rig.worker.run_all()
+    assert rig.service.state == "idle"
+    assert [text for text, _ in shows.calls] == ["відповідь", "друга відповідь"]
+    assert [p.playing for p in rig.published(SpeechPlayback)] == [True, False, True, False]
+
+
+def test_skipping_a_cancelled_line_waits_for_the_service_and_rechecks(rig):
+    posted = []
+    rig.voice._post_override = posted.append  # like the queued Qt invoker: runs later
+
+    def deliver():  # the event loop delivers what the worker posted
+        while posted:
+            posted.pop(0)()
+
+    shows = Shows()
+    rig.voice.route(line("відповідь", solicited=True), shows)
+    rig.voice.route(line("коментар"), shows)
+    rig.worker.run_all()
+    deliver()
+    rig.bus.publish(QuietModeChanged(enabled=True))
+    rig.dispatch()
+    rig.output.finish()
+    deliver()
+    rig.worker.run_all()
+    posted.pop(0)()  # the cancelled comment starts playing ...
+    assert rig.output.playing is not None
+    assert len(posted) == 1  # ... and its skip is posted, not run inside the service
+    assert [text for text, _ in shows.calls] == ["відповідь"]
+    deliver()
+    assert rig.output.playing is None and rig.service.state == "idle"
+    # A stale skip (nothing cancelled is playing any more) never cuts an answer.
+    rig.voice.route(line("ще відповідь", solicited=True), shows)
+    rig.worker.run_all()
+    deliver()
+    rig.voice._skip_cancelled()
+    assert rig.output.playing is not None
+
+
+def test_quiet_off_and_answers_only_change_nothing(rig):
+    shows = Shows()
+    rig.voice.route(line("коментар"), shows)
+    rig.worker.run_all()
+    rig.bus.publish(QuietModeChanged(enabled=False))
+    rig.dispatch()
+    assert rig.service.state == "speaking"
+    rig.voice.route(line("відповідь", solicited=True), shows)
+    rig.output.finish()
+    rig.worker.run_all()
+    rig.bus.publish(QuietModeChanged(enabled=True))  # only an answer is left: kept
+    rig.dispatch()
+    assert rig.service.state == "speaking"
+    assert shows.calls[-1] == ("відповідь", pytest.approx(1.0))
+
+
+def test_stopping_observation_drops_her_comments(heard):
+    rig = heard
+    rig.grant(Permission.APP_METADATA)
+    shows = Shows()
+    rig.voice.route(line("про гру"), shows)
+    rig.voice.route(line("ще про гру"), shows)
+    rig.worker.run_all()
+    rig.revoke(Permission.APP_METADATA)
+    assert rig.service.state == "idle"
+    rig.worker.run_all()
+    assert rig.service.tts.said == ["про гру"]
+    assert shows.calls == [("про гру", pytest.approx(1.0))]
+    rig.voice.route(line("знову"), shows)
+    rig.voice.route(line("і ще"), shows)
+    rig.worker.run_all()
+    rig.permissions.stop_all_observation()
+    rig.dispatch()
+    rig.worker.run_all()
+    assert rig.service.state == "idle"
+    assert [text for text, _ in shows.calls] == ["про гру", "знову"]
+
+
+def test_interrupt_api(rig):
+    rig.voice.route(line(), Shows())
+    rig.worker.run_all()
+    rig.voice.interrupt()
+    assert rig.service.state == "idle"
+
+
+def test_route_after_shutdown_shows_text(rig):
+    rig.bus.publish(AppShuttingDown())
+    rig.dispatch()
+    shows = Shows()
+    rig.voice.route(line(), shows)
+    assert shows.calls == [("Привіт!", None)]
+
+
+def test_a_failing_show_callback_is_contained(rig, caplog):
+    def show(event, seconds):
+        raise RuntimeError(event.text)
+
+    rig.voice.route(line(SECRET_TEXT), show)
+    rig.worker.run_all()
+    assert "failed: RuntimeError" in caplog.text
+    assert SECRET_TEXT not in caplog.text
+
+
+# --- listening, transcripts, her short lines ---------------------------------------------------------
+
+
+def test_transcript_becomes_an_event_and_is_never_logged(heard, caplog):
+    rig = heard
+    caplog.set_level(logging.DEBUG)
+    assert rig.voice.toggle_listening("button") == ""
+    assert rig.mic is not None and rig.mic.device == ""
+    rig.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    rig.worker.run_all()
+    assert [e.text for e in rig.published(VoiceTranscript)] == [SECRET_TEXT]
+    assert SECRET_TEXT not in caplog.text
+    assert "listening" in [e.state for e in rig.published(VoiceStateChanged)]
+
+
+def test_nothing_heard_says_so(heard):
+    rig = heard
+    rig.voice.toggle_listening()
+    rig.voice.toggle_listening()  # pressed again at once: nothing was said
+    assert rig.composer.calls == [(("voice.not_heard",), True)]
+    assert rig.published(VoiceTranscript) == []
+
+
+def test_not_understood_and_errors_say_so(heard):
+    rig = heard
+    rig.service.stt.text = ""
+    rig.voice.toggle_listening()
+    rig.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    rig.worker.run_all()
+    rig.service.stt.error = STTError("decoder", user_message="Не вдалося розпізнати мовлення.")
+    rig.voice.toggle_listening()
+    rig.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    rig.worker.run_all()
+    assert [keys for keys, _ in rig.composer.calls] == [("voice.not_understood",), ("voice.error",)]
+    assert all(solicited for _, solicited in rig.composer.calls)
+    assert rig.notes == ["Не вдалося розпізнати мовлення."]
+
+
+def test_wake_phrase_shows_listening_as_a_bubble_only(heard):
+    rig = heard
+    rig.change(wake_phrase_enabled=True)
+    assert rig.service.state == "standby" and rig.mic is not None
+    rig.service.stt.text = "Міє!"
+    rig.feed(np.concatenate([speech(1.0), silence(1.0)]))
+    rig.worker.run_all()
+    assert rig.composer.calls == [(("voice.listening",), True)]
+    assert rig.service.state == "listening"
+    shows = Shows()
+    listening_line = rig.published(SpeechRequested)[-1]
+    rig.voice.route(listening_line, shows)
+    assert shows.calls == [("<voice.listening>", None)]  # shown now, never spoken
+
+
+def test_toggle_listening_without_recognition_returns_the_reason(rig):
+    assert rig.voice.toggle_listening() == MIC_NOT_ALLOWED
+    assert rig.mic is None
+
+
+def test_microphone_failure_is_notified(heard):
+    rig = heard
+    rig.voice._input_factory = lambda device: FakeInput(device, fail=True)
+    rig.voice.toggle_listening()
+    assert rig.notes == ["Немає мікрофона."]
+    assert rig.service.state == "idle"
+
+
+def test_input_device_comes_from_the_settings(heard):
+    rig = heard
+    rig.settings.voice.input_device = "USB Mic"
+    rig.voice.toggle_listening()
+    assert rig.mic.device == "USB Mic"
+
+
+# --- privacy: revoke and kill switch ---------------------------------------------------------------
+
+
+def test_revoking_the_microphone_closes_it_and_stops_the_hotkey(heard):
+    rig = heard
+    hotkey = rig.hotkey
+    assert hotkey is not None
+    rig.voice.toggle_listening()
+    assert rig.mic is not None
+    rig.revoke(Permission.MICROPHONE)
+    assert rig.mic is None
+    assert not hotkey.running and hotkey.stops == 1
+    status = rig.voice.status()
+    assert not status.stt_ready and status.stt_reason == MIC_NOT_ALLOWED
+    assert not status.hotkey_active
+    assert rig.service.stt is None  # the model's memory is freed too
+
+
+def test_kill_switch_closes_the_wake_microphone_and_the_hotkey(heard):
+    rig = heard
+    rig.change(wake_phrase_enabled=True)
+    assert rig.mic is not None
+    hotkey = rig.hotkey
+    rig.permissions.stop_all_observation()
+    rig.dispatch()
+    assert rig.mic is None
+    assert not hotkey.running
+    assert rig.service.state == "idle"
+    assert rig.voice.toggle_listening() == MIC_NOT_ALLOWED
+
+
+def test_revoke_drops_a_transcription_in_flight(heard):
+    rig = heard
+    rig.voice.toggle_listening()
+    rig.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    assert rig.service.state == "transcribing"  # heard while permitted, not recognised yet
+    rig.revoke(Permission.MICROPHONE)
+    rig.worker.run_all()
+    assert rig.published(VoiceTranscript) == []
+
+
+def test_audio_after_an_in_memory_revoke_is_dropped_on_the_audio_thread(heard):
+    rig = heard
+    rig.voice.toggle_listening()
+    rig.permissions.revoke(Permission.MICROPHONE)  # the main thread hasn't dispatched it yet
+    rig.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    assert rig.service.state == "listening"  # not a single chunk reached the detector
+    assert rig.worker.jobs == [] or all(priority == 2 for priority, _ in rig.worker.jobs)
+    rig.dispatch()
+    rig.worker.run_all()
+    assert rig.mic is None
+    assert rig.published(VoiceTranscript) == []
+
+
+def test_a_listen_after_an_in_memory_revoke_is_refused(heard):
+    rig = heard
+    rig.permissions.revoke(Permission.MICROPHONE)  # not dispatched yet
+    rig.voice.toggle_listening()
+    assert rig.mic is None
+
+
+def test_regranting_restores_recognition_and_the_hotkey(heard):
+    rig = heard
+    rig.revoke(Permission.MICROPHONE)
+    rig.grant(Permission.MICROPHONE)
+    assert rig.voice.status().stt_ready
+    assert rig.hotkey is not None
+
+
+# --- push-to-talk hotkey -------------------------------------------------------------------------------
+
+
+def test_hotkey_toggle_mode(heard):
+    rig = heard
+    hotkey = rig.hotkey
+    assert hotkey.text == "ctrl+alt+space" and hotkey.on_release is None
+    hotkey.press()
+    assert rig.service.state == "listening"
+    rig.feed(speech(0.6))
+    hotkey.press()
+    assert rig.service.state == "transcribing"
+    rig.worker.run_all()
+    assert [e.text for e in rig.published(VoiceTranscript)] == [SECRET_TEXT]
+
+
+def test_hotkey_hold_mode(heard):
+    rig = heard
+    rig.change(ptt_mode="hold")
+    hotkey = rig.hotkey
+    assert hotkey.on_release is not None
+    assert [h.running for h in rig.hotkeys] == [False, True]  # re-registered for the new mode
+    hotkey.press()
+    assert rig.service.state == "listening"
+    rig.feed(speech(0.6))
+    hotkey.release()
+    assert rig.service.state == "transcribing"
+
+
+def test_hotkey_press_interrupts_her(heard):
+    rig = heard
+    shows = Shows()
+    rig.voice.route(line(), shows)
+    rig.worker.run_all()
+    rig.hotkey.press()
+    assert rig.service.state == "listening"
+    assert [p.playing for p in rig.published(SpeechPlayback)] == [True, False]
+
+
+def test_hotkey_change_re_registers(heard):
+    rig = heard
+    first = rig.hotkey
+    rig.change(ptt_hotkey="ctrl+shift+space")
+    assert not first.running
+    assert rig.hotkey.text == "ctrl+shift+space"
+
+
+def test_hotkey_conflict_is_notified_and_the_button_still_works(bus, permissions, clock):
+    rig = Rig(bus, permissions, clock)
+    rig.hotkey_error = HotkeyError("taken", user_message="Комбінацію вже зайняла інша програма.")
+    rig.grant(Permission.MICROPHONE)
+    status = rig.voice.status()
+    assert status.stt_ready and not status.hotkey_active
+    assert status.hotkey_reason == "Комбінацію вже зайняла інша програма."
+    assert rig.notes == ["Комбінацію вже зайняла інша програма."]
+    rig.change(volume=50)
+    assert len(rig.hotkeys) == 1  # not retried on every settings change
+    assert rig.voice.toggle_listening() == ""
+    assert rig.mic is not None
+    rig.hotkey_error = None
+    rig.change(ptt_hotkey="f13")  # another combination is tried
+    assert rig.hotkey is not None and rig.voice.status().hotkey_reason == ""
+
+
+def test_no_hotkey_off_windows(bus, permissions, clock):
+    rig = Rig(bus, permissions, clock, hotkey_supported=False)
+    rig.grant(Permission.MICROPHONE)
+    status = rig.voice.status()
+    assert rig.hotkeys == []
+    assert status.stt_ready and status.hotkey_reason == HOTKEY_WINDOWS_ONLY
+    assert status.hotkey == "Ctrl + Alt + Пробіл"
+
+
+def test_late_hotkey_press_after_revoke_is_ignored(heard):
+    rig = heard
+    hotkey = rig.hotkey
+    rig.revoke(Permission.MICROPHONE)
+    hotkey.press()  # was already queued from the hotkey thread
+    assert rig.mic is None
+
+
+# --- fullscreen and shutdown ------------------------------------------------------------------------
+
+
+def test_fullscreen_pauses_the_wake_microphone(heard):
+    rig = heard
+    rig.change(wake_phrase_enabled=True)
+    assert rig.mic is not None
+    rig.bus.publish(FullscreenChanged(active=True))
+    rig.dispatch()
+    assert rig.mic is None and rig.service.state == "idle"
+    rig.bus.publish(FullscreenChanged(active=False))
+    rig.dispatch()
+    assert rig.mic is not None
+    rig.change(wake_in_fullscreen=True)
+    rig.bus.publish(FullscreenChanged(active=True))
+    rig.dispatch()
+    assert rig.mic is not None
+
+
+def test_shutdown_stops_everything(heard):
+    rig = heard
+    hotkey = rig.hotkey
+    rig.voice.toggle_listening()
+    rig.bus.publish(AppShuttingDown())
+    rig.dispatch()
+    assert not hotkey.running
+    assert rig.mic is None
+    assert rig.worker.shut and rig.downloads.shut
+    assert rig.voice.status().state == "off"
+    rig.voice.shutdown()  # idempotent
+
+
+# --- "Прослухати" --------------------------------------------------------------------------------------
+
+
+def test_test_voice_speaks_even_when_speech_is_off(rig):
+    rig.change(speak="off")
+    results = []
+    rig.voice.test_voice(on_done=lambda ok, message: results.append((ok, message)))
+    rig.worker.run_all()
+    assert rig.service.tts.said == ["Привіт! Я Мія. Ось так звучатиме мій голос."]
+    rig.output.finish()
+    assert results == [(True, "")]
+
+
+def test_test_voice_reports_why_not(bus, permissions, clock):
+    rig = Rig(bus, permissions, clock, installed=())
+    results = []
+    rig.voice.test_voice("Тест", on_done=lambda ok, message: results.append((ok, message)))
+    assert results == [(False, PIPER_MODEL_MISSING)]
+
+
+def test_test_voice_reports_a_failure(rig):
+    rig.service.tts.fail = True
+    results = []
+    rig.voice.test_voice(on_done=lambda ok, message: results.append((ok, message)))
+    rig.worker.run_all()
+    assert results == [(False, "Голос зламався.")]
+
+
+# --- devices ----------------------------------------------------------------------------------------
+
+
+def test_devices(rig):
+    assert rig.voice.devices() == (["USB Mic"], ["Speakers", "Headset"])
+
+    def broken():
+        raise AudioUnavailable("no portaudio")
+
+    rig.voice._list_devices = broken
+    assert rig.voice.devices() == ([], [])
+
+
+# --- models --------------------------------------------------------------------------------------------
+
+
+def test_models_lists_the_catalog(rig):
+    listed = {spec.id: installed for spec, installed in rig.voice.models()}
+    assert set(listed) == set(CATALOG)
+    assert listed[DEFAULT_TTS_MODEL] and not listed["whisper-medium"]
+
+
+def test_download_reports_progress_then_enables_the_engine(bus, permissions, clock, monkeypatch):
+    monkeypatch.setattr(integration_module, "PROGRESS_INTERVAL", 0.0)
+    rig = Rig(bus, permissions, clock, installed={DEFAULT_TTS_MODEL})
+    rig.grant(Permission.MICROPHONE)
+    assert rig.voice.status().stt_reason == STT_MODEL_MISSING
+    spec = CATALOG["whisper-small"]
+    progress, done = [], []
+    rig.voice.download("whisper-small", lambda d, t: progress.append((d, t)),
+                       lambda ok, m: done.append((ok, m)))
+    assert rig.voice.download_state().model_id == "whisper-small"
+    assert rig.engines.built == [("piper", "tetiana", 1.0)]  # nothing until the worker runs
+    rig.downloads.run_all()
+    assert progress == [(spec.size // 2, spec.size), (spec.size, spec.size)]
+    assert done == [(True, "Завантажено ✓")]
+    assert rig.voice.download_state() is None
+    assert rig.voice.status().stt_ready  # reconfigured with the new model
+
+
+def test_progress_is_throttled(rig):
+    rig.download_script = [1, 2, 3, 4, CATALOG["whisper-base"].size]
+    progress = []
+    rig.voice.download("whisper-base", lambda d, t: progress.append(d), lambda ok, m: None)
+    rig.downloads.run_all()
+    assert progress[0] == 1 and progress[-1] == CATALOG["whisper-base"].size
+    assert len(progress) < 5
+
+
+def test_download_can_be_cancelled(rig):
+    done = []
+    rig.voice.download("whisper-medium", lambda d, t: None, lambda ok, m: done.append((ok, m)))
+    rig.voice.cancel_download()
+    rig.downloads.run_all()
+    assert done == [(False, "Завантаження скасовано.")]
+    assert "whisper-medium" not in rig.installed
+    assert rig.voice.download_state() is None
+
+
+def test_one_download_at_a_time(rig):
+    first, second = [], []
+    rig.voice.download("whisper-medium", lambda d, t: None, lambda ok, m: first.append(ok))
+    rig.voice.download("whisper-base", lambda d, t: None, lambda ok, m: second.append((ok, m)))
+    assert second == [(False, "Зачекай, поки завантажиться інша модель.")]
+    rig.downloads.run_all()
+    assert first == [True]
+
+
+def test_download_errors_are_reported_without_details(rig, caplog):
+    def failing(spec, root, *, on_progress, cancel):
+        raise DownloadError("HTTP 500 for model.bin", user_message="Сервер відповів помилкою 500.")
+
+    rig.voice._downloader = failing
+    done = []
+    rig.voice.download("whisper-base", lambda d, t: None, lambda ok, m: done.append((ok, m)))
+    rig.downloads.run_all()
+    assert done == [(False, "Сервер відповів помилкою 500.")]
+
+    def crashing(spec, root, *, on_progress, cancel):
+        raise OSError("disk full at C:\\Users\\name")
+
+    rig.voice._downloader = crashing
+    rig.voice.download("whisper-base", lambda d, t: None, lambda ok, m: done.append((ok, m)))
+    rig.downloads.run_all()
+    assert done[-1] == (False, "Не вдалося завантажити модель.")
+    assert "C:\\Users" not in caplog.text
+
+
+def test_unknown_model_is_refused(rig):
+    done = []
+    rig.voice.download("../../etc", lambda d, t: None, lambda ok, m: done.append(ok))
+    assert done == [False]
+    assert rig.downloads.jobs == []
+
+
+def test_remove_releases_the_engine_and_deletes_the_files(bus, permissions, clock, tmp_path):
+    root = tmp_path / "models"
+    spec = CATALOG[DEFAULT_TTS_MODEL]
+    directory = models.model_dir(spec, root)
+    directory.mkdir(parents=True)
+    (directory / "installed.json").write_text("{}", encoding="utf-8")
+    (directory / f"{spec.id}.onnx").write_bytes(b"x")
+    rig = Rig(bus, permissions, clock, start=False)
+    rig.voice._models_root = root
+    rig.voice._installed = lambda s: (models.model_dir(s, root) / "installed.json").exists()
+    rig.voice.start()
+    assert rig.voice.status().tts_ready
+    rig.voice.remove(DEFAULT_TTS_MODEL)
+    assert not directory.exists()
+    assert rig.service.tts is None
+    assert rig.voice.status().tts_reason == PIPER_MODEL_MISSING
+
+
+def test_remove_is_refused_while_that_model_downloads(rig):
+    rig.voice.download(DEFAULT_TTS_MODEL, lambda d, t: None, lambda ok, m: None)
+    removed = []
+    rig.voice._remover = lambda spec, root: removed.append(spec.id)
+    rig.voice.remove(DEFAULT_TTS_MODEL)
+    assert removed == []
+
+
+def test_real_threads_marshal_back_to_the_main_thread(bus, permissions, clock, qapp):
+    """No ``post`` override: worker results come back through the queued Qt signal."""
+    threads = []
+
+    def downloader(spec, root, *, on_progress, cancel):
+        on_progress(spec.size, spec.size)
+
+    voice = VoiceIntegration(bus, Settings, permissions, MemorySecretStore(), None,
+                             libraries=lambda name: False, downloader=downloader)
+    voice.start()
+    voice.download("whisper-base", lambda d, t: threads.append(threading.current_thread()),
+                   lambda ok, m: threads.append(threading.current_thread()))
+    deadline = time.monotonic() + 5
+    while len(threads) < 2 and time.monotonic() < deadline:
+        QCoreApplication.processEvents()
+        time.sleep(0.01)
+    voice.shutdown()
+    assert threads == [threading.main_thread()] * 2

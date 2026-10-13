@@ -55,7 +55,7 @@ def test_mia_pack_loads(mia: CharacterPack, mia_manifest: dict[str, Any]) -> Non
 
 
 def test_mia_maps_every_character_state(mia: CharacterPack, mia_manifest: dict[str, Any]) -> None:
-    assert len(CharacterState) == 21
+    assert len(CharacterState) == 26
     assert set(mia.states) == set(CharacterState)
     for state in CharacterState:
         spec = mia_manifest["states"][state.value]
@@ -545,3 +545,91 @@ def test_player_clip_is_read_only() -> None:
     player = FramePlayer(make_clip(*ABC))
     with pytest.raises(AttributeError):
         player.clip = make_clip(("z", 1))  # type: ignore[misc]
+
+
+# -- FramePlayer.ms_to_next_change (frame-accurate ticks at low frame rates) ----------------------
+
+
+@pytest.mark.parametrize(("ms", "due"), [(0, 100), (40, 60), (100, 200), (299, 1), (300, 300), (550, 50)])
+def test_ms_to_next_change_in_a_loop(ms: float, due: float) -> None:
+    player = FramePlayer(make_clip(*ABC))
+    player.advance(ms)
+    assert player.ms_to_next_change() == pytest.approx(due)
+
+
+def test_ms_to_next_change_skips_repeated_images() -> None:
+    # a b a(100) a(100): from the third frame the next *different* image is b, after the wrap
+    player = FramePlayer(make_clip(("a", 100), ("b", 50), ("a", 100), ("a", 100)))
+    player.advance(150)
+    assert player.ms_to_next_change() == pytest.approx(200 + 100)
+
+
+def test_ms_to_next_change_points_at_the_start_of_a_cross_fade() -> None:
+    player = FramePlayer(make_clip(("a", 100), ("b", 100), blend_ms=40))
+    assert player.ms_to_next_change() == pytest.approx(60)
+    player.advance(70)  # inside the cross-fade: the picture changes continuously
+    assert player.ms_to_next_change() is None
+    player.advance(40)
+    assert player.ms_to_next_change() == pytest.approx(50)
+
+
+def test_ms_to_next_change_for_one_shots_and_static_clips() -> None:
+    player = FramePlayer(make_clip(*ABC, loop=False))
+    player.advance(450)
+    assert player.ms_to_next_change() == pytest.approx(150)  # the clip ends: a fidget hands back
+    player.advance(150)
+    assert player.finished and player.ms_to_next_change() is None
+    assert FramePlayer(make_clip(("a", 500))).ms_to_next_change() is None
+    assert FramePlayer(make_clip(("a", 500), ("a", 300))).ms_to_next_change() is None
+    single_shot = FramePlayer(make_clip(("a", 500), loop=False))
+    assert single_shot.ms_to_next_change() == pytest.approx(500)
+
+
+def test_ms_to_next_change_lands_on_the_mia_blinks(mia: CharacterPack) -> None:
+    player = FramePlayer(mia.clips["idle"])
+    blinks = []
+    for _ in range(40):
+        due = player.ms_to_next_change()
+        assert due is not None and due > 0
+        player.advance(due)
+        if player.sample().frame_id in ("front_1", "front_6"):
+            blinks.append((player.sample().frame_id, player.ms_to_next_change()))
+    # every blink is reached exactly at its start and lasts its full length
+    assert blinks and {ms for _, ms in blinks} <= {160.0, 140.0, 170.0}
+
+
+# -- Phase 5 states in the real pack --------------------------------------------------------------
+
+
+def test_mia_new_states(mia: CharacterPack) -> None:
+    expected = {
+        CharacterState.JUMP: ("jump", "joyful"),
+        CharacterState.DANCE: ("dance", "music"),
+        CharacterState.EXCITED: ("excited", "excited"),
+        CharacterState.PROUD: ("proud", "wink"),
+        CharacterState.STRETCH: ("stretch", "smile"),
+    }
+    for state, (clip, portrait) in expected.items():
+        spec = mia.states[state]
+        assert (spec.clip, spec.portrait) == (clip, portrait)
+        assert mia.portrait_for(state) is not None and mia.portrait_for(state).is_file()
+    assert mia.clips["jump"].fx == {"jump": 0.12, "squash": 0.10}
+    assert mia.clips["dance"].overlay == "hearts"
+    assert mia.clips["excited"].overlay == "sparkle"
+    assert not mia.clips["stretch"].loop
+
+
+def test_manifest_matches_the_build_tool() -> None:
+    """manifest.json's clips and states are generated from tools/build_sprites.py's
+    tables (the raw sheets are not in the repository, so the manifest is rewritten
+    from them): both must say the same."""
+    pytest.importorskip("numpy")
+    pytest.importorskip("PIL")
+    pytest.importorskip("scipy")
+    import build_sprites
+
+    manifest = json.loads((MIA_DIR / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["clips"] == build_sprites.CLIPS
+    assert manifest["states"] == build_sprites.STATES
+    used = {f["id"] for clip in build_sprites.CLIPS.values() for f in clip["frames"]}
+    assert used == set(manifest["frames"])  # the new clips need no new art

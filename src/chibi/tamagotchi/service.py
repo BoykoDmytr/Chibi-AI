@@ -31,7 +31,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
@@ -67,6 +67,8 @@ CLICK_WINDOW_SECONDS = 5.0
 _MAX_TRACKED = 32
 #: NeedsChanged is published once a need moved at least this far.
 PUBLISH_THRESHOLD = 1.0
+#: What :meth:`TamagotchiService.apply_effect` may change.
+EFFECT_FIELDS: frozenset[str] = frozenset({*STAT_NAMES, "friendship_xp"})
 
 
 def _count_recent(times: deque[float], now: float, window: float) -> int:
@@ -260,6 +262,39 @@ class TamagotchiService:
             self._bus.publish(InteractionOutcome(kind=kind, outcome=outcome))
         self._publish_needs(force=True)
         return outcome
+
+    def apply_effect(self, deltas: Mapping[str, float], *, reason: str) -> Needs:
+        """Add ``deltas`` (need name -> change) to her needs, e.g. a gift or a mini-game.
+
+        Elapsed time is settled first, so the effect lands on the needs as
+        they are now.  Every result is clamped by :class:`Needs`; unknown
+        names and values that are not finite numbers are ignored (logged), and
+        a negative ``friendship_xp`` is ignored because friendship never
+        shrinks.  A gift or a game means the user is around, which keeps
+        boredom from growing fast.  The change is saved at once - a gift must
+        survive a crash - and ``NeedsChanged`` is always published so every
+        open window shows it.  ``reason`` is our own label ("gift.cookie"),
+        used for the log only.  Returns a copy of the new needs.
+        """
+        if self._advance():
+            self.save()
+        self._last_activity = self._clock.monotonic()
+        values: dict[str, float] = {}
+        for name, delta in deltas.items():
+            number = finite_number(delta)
+            if name not in EFFECT_FIELDS or number is None:
+                log.warning("effect %s: ignoring invalid delta for %r", reason, name)
+                continue
+            if name == "friendship_xp" and number < 0:
+                log.warning("effect %s: friendship never decreases; delta ignored", reason)
+                continue
+            values[name] = getattr(self.needs, name) + number
+        if values:
+            self.needs = dataclasses.replace(self.needs, **values)
+        log.debug("effect %s applied to %d need(s)", reason, len(values))
+        self.save()
+        self._publish_needs(force=True)
+        return dataclasses.replace(self.needs)
 
     # -- bus handlers ---------------------------------------------------------------------
 

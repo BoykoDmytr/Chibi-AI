@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "phrases": {
+    "vision.player_death": [
+      {"id": "vision.player_death.01", "text": "Ахах, та що ж ти робиш?! Навіть я б краще зіграла!", "tone": "sarcastic", "state": "laugh", "portrait": "laugh"},
+      {"id": "vision.player_death.02", "text": "Гаразд-гаразд, наступного разу точно вийде!", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "vision.player_death.03", "text": "Ой! Ну нічого, у грі «{game}» це майже традиція.", "tone": "playful", "state": "surprised", "portrait": "wow", "requires": ["game"]},
+      {"id": "vision.player_death.04", "text": "Хто ж так стрибає?.. Добре, роблю вигляд, що нічого не бачила.", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "vision.player_death.05", "text": "Ох. Видихни, ковтни водички — і ще раз. Я в тебе вірю!", "tone": "caring", "state": "happy", "portrait": "joy"},
+      {"id": "vision.player_death.06", "text": "Знову екран смерті? Схоже, він уже скучив за тобою.", "tone": "sarcastic", "state": "laugh", "portrait": "facepalm"},
+      {"id": "vision.player_death.07", "text": "Не страшно! Кожна спроба — це розвідка боєм.", "tone": "warm", "state": "point", "portrait": "point"},
+      {"id": "vision.player_death.08", "text": "Ай! Цей момент був підступний, без жартів.", "tone": "warm", "state": "sad", "portrait": "offended"},
+      {"id": "vision.player_death.09", "text": "Мінус одне життя, плюс трохи досвіду. Чесний обмін!", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "vision.player_death.10", "text": "{game} сьогодні кусається. Але впертості тобі не позичати!", "tone": "warm", "state": "point", "portrait": "excited", "requires": ["game"]}
+    ],
+    "vision.victory": [
+      {"id": "vision.victory.01", "text": "Перемога! Ти молодець — я аж підскочила!", "tone": "warm", "state": "happy", "portrait": "joyful"},
+      {"id": "vision.victory.02", "text": "Ура-а! У тебе вийшло! Я знала, що так і буде.", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "vision.victory.03", "text": "Ого, оце клас! Можна я теж трішки погріюся в променях слави?", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "vision.victory.04", "text": "Перемога в грі «{game}»! Записую в літопис наших звершень.", "tone": "playful", "state": "happy", "portrait": "excited", "requires": ["game"]},
+      {"id": "vision.victory.05", "text": "Ну от, а хтось хвилювався. Красиво!", "tone": "playful", "state": "happy", "portrait": "wink_heart"},
+      {"id": "vision.victory.06", "text": "Бачу перемогу! Тепер можна й чаю — заслужено.", "tone": "caring", "state": "happy", "portrait": "smile"},
+      {"id": "vision.victory.07", "text": "Чесно? Я трохи вболівала за суперників. Жартую, це було неймовірно!", "tone": "sarcastic", "state": "laugh", "portrait": "laugh"},
+      {"id": "vision.victory.08", "text": "Тріумф! Я б аплодувала, але мої оплески надто тихі.", "tone": "playful", "state": "laugh", "portrait": "joyful"}
+    ],
+    "vision.boss_fight": [
+      {"id": "vision.boss_fight.01", "text": "Ого, бос! Я тихенько посиджу, не відволікатиму.", "tone": "caring", "state": "sit", "portrait": "shy"},
+      {"id": "vision.boss_fight.02", "text": "Це ж бос! Тримайся, я подумки на твоєму боці.", "tone": "warm", "state": "surprised", "portrait": "wow"},
+      {"id": "vision.boss_fight.03", "text": "Великий, страшний і з купою здоров'я. Класичний бос.", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "vision.boss_fight.04", "text": "О, начальство прийшло! У грі «{game}» боси не жартують.", "tone": "playful", "state": "point", "portrait": "point", "requires": ["game"]},
+      {"id": "vision.boss_fight.05", "text": "Бос на горизонті! Глибокий вдих — і вперед.", "tone": "caring", "state": "point", "portrait": "excited"},
+      {"id": "vision.boss_fight.06", "text": "Мені вже страшно, а битися ж тобі. Удачі!", "tone": "warm", "state": "surprised", "portrait": "surprised"},
+      {"id": "vision.boss_fight.07", "text": "Цей бос явно не знає, з ким зв'язався.", "tone": "playful", "state": "laugh", "portrait": "wink"}
+    ],
+    "vision.level_up": [
+      {"id": "vision.level_up.01", "text": "Новий рівень! Наш герой росте й міцніє.", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "vision.level_up.02", "text": "Рівень вище! Ще трішки — і боси почнуть тебе боятися.", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "vision.level_up.03", "text": "О, левел-ап! Святкую маленьким танцем.", "tone": "playful", "state": "happy", "portrait": "joyful"},
+      {"id": "vision.level_up.04", "text": "Прокачка йде! У грі «{game}» тепер усе трохи простіше.", "tone": "warm", "state": "point", "portrait": "point", "requires": ["game"]},
+      {"id": "vision.level_up.05", "text": "Ще один рівень у скарбничку. Ти молодець!", "tone": "warm", "state": "happy", "portrait": "wink_heart"},
+      {"id": "vision.level_up.06", "text": "Рівень підріс, а я ще не обідала. Несправедливо!", "tone": "sarcastic", "state": "talk", "portrait": "eat"}
+    ],
+    "vision.achievement": [
+      {"id": "vision.achievement.01", "text": "Досягнення! Я б повісила його на холодильник.", "tone": "playful", "state": "happy", "portrait": "joy"},
+      {"id": "vision.achievement.02", "text": "Ого, ачівка! Дай-но подивлюся… Гарна!", "tone": "playful", "state": "curious", "portrait": "wow"},
+      {"id": "vision.achievement.03", "text": "Нове досягнення — офіційно засвідчую: ти молодець!", "tone": "warm", "state": "point", "portrait": "point"},
+      {"id": "vision.achievement.04", "text": "У грі «{game}» на одне досягнення більше. Колекція росте!", "tone": "warm", "state": "happy", "portrait": "joyful", "requires": ["game"]},
+      {"id": "vision.achievement.05", "text": "Ачівку розблоковано! А мені за вболівання щось дадуть?", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "vision.achievement.06", "text": "Таке не кожного дня буває. Пишаюся!", "tone": "warm", "state": "happy", "portrait": "wink_heart"}
+    ],
+    "vision.new_area": [
+      {"id": "vision.new_area.01", "text": "Нове місце! Цікаво, що тут ховається?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "vision.new_area.02", "text": "О, тут ми ще не були. Обережно: у кущах завжди хтось сидить.", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "vision.new_area.03", "text": "Нова локація! Я б тут погуляла.", "tone": "warm", "state": "curious", "portrait": "smile"},
+      {"id": "vision.new_area.04", "text": "Ого, яка краса. У грі «{game}» вміють малювати світи.", "tone": "warm", "state": "surprised", "portrait": "wow", "requires": ["game"]},
+      {"id": "vision.new_area.05", "text": "Нова територія — нові пригоди. І, мабуть, нові вороги.", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "vision.new_area.06", "text": "Позначаю собі: тут гарно і трохи моторошно.", "tone": "playful", "state": "curious", "portrait": "idea"}
+    ],
+    "vision.low_health": [
+      {"id": "vision.low_health.01", "text": "Ой-ой, здоров'я зовсім мало! Я аж нігті гризу.", "tone": "warm", "state": "surprised", "portrait": "wow"},
+      {"id": "vision.low_health.02", "text": "Червона смужка! Тримайся, тримайся!", "tone": "caring", "state": "surprised", "portrait": "surprised"},
+      {"id": "vision.low_health.03", "text": "Мені одній тут страшно? Здоров'я ж на волосинці!", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "vision.low_health.04", "text": "Ох, герой ледве тримається. Дихаємо рівно!", "tone": "caring", "state": "sad", "portrait": "offended"},
+      {"id": "vision.low_health.05", "text": "Здоров'я тане, а мої нерви разом із ним.", "tone": "playful", "state": "sad", "portrait": "facepalm"},
+      {"id": "vision.low_health.06", "text": "Тільки не зараз! У грі «{game}» так легко не здаються.", "tone": "warm", "state": "point", "portrait": "point", "requires": ["game"]}
+    ],
+    "vision.loot": [
+      {"id": "vision.loot.01", "text": "О, здобич! Щось блискуче?", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "vision.loot.02", "text": "Трофеї! Я б усе забрала, навіть каміння.", "tone": "playful", "state": "happy", "portrait": "joy"},
+      {"id": "vision.loot.03", "text": "Нова здобич. Інвентар скоро трісне.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "vision.loot.04", "text": "Скарби! У грі «{game}» люблять приємні сюрпризи.", "tone": "warm", "state": "happy", "portrait": "excited", "requires": ["game"]},
+      {"id": "vision.loot.05", "text": "Лут! Моє скарболюбне серце радіє.", "tone": "playful", "state": "happy", "portrait": "joyful"},
+      {"id": "vision.loot.06", "text": "Дивись-но, щось випало. Корисне чи ні?", "tone": "playful", "state": "thinking", "portrait": "thinking"}
+    ],
+    "vision.generic": [
+      {"id": "vision.generic.01", "text": "Ого, там щось цікаве відбувається!", "tone": "warm", "state": "surprised", "portrait": "wow"},
+      {"id": "vision.generic.02", "text": "Я все бачу! Ну, майже все.", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "vision.generic.03", "text": "Ух ти! Гарний момент.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "vision.generic.04", "text": "Оце так момент у грі «{game}»!", "tone": "playful", "state": "surprised", "portrait": "wow", "requires": ["game"]},
+      {"id": "vision.generic.05", "text": "Я тут, дивлюся й уболіваю!", "tone": "caring", "state": "happy", "portrait": "wink_heart"},
+      {"id": "vision.generic.06", "text": "Хм, цікаво… Продовжуй, я спостерігаю.", "tone": "playful", "state": "thinking", "portrait": "thinking"}
+    ],
+    "vision.look": [
+      {"id": "vision.look.01", "text": "Подивилася! Поки нічого особливого, граємо далі.", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "vision.look.02", "text": "Бачу гру «{game}». Усе під контролем!", "tone": "warm", "state": "point", "portrait": "point", "requires": ["game"]},
+      {"id": "vision.look.03", "text": "Глянула: спокійно, без пригод. Поки що.", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "vision.look.04", "text": "Я уважно подивилася, але нічого надзвичайного не помітила.", "tone": "warm", "state": "curious", "portrait": "calm"},
+      {"id": "vision.look.05", "text": "Ну, екран як екран. Чекаю на щось цікаве!", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "vision.look.06", "text": "Роздивилася все. Затишшя перед бурею?", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "vision.look.07", "text": "Усе спокійно. Можна видихнути й насолоджуватися грою.", "tone": "caring", "state": "happy", "portrait": "smile"},
+      {"id": "vision.look.08", "text": "Бачу! Принаймні нічого не горить.", "tone": "playful", "state": "laugh", "portrait": "laugh"}
+    ],
+    "vision.look.menu": [
+      {"id": "vision.look.menu.01", "text": "Бачу меню. Налаштовуємо щось чи вагаємося?", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "vision.look.menu.02", "text": "Меню! Перепочинок — теж частина гри.", "tone": "caring", "state": "happy", "portrait": "smile"},
+      {"id": "vision.look.menu.03", "text": "Це меню гри «{game}». Обирай з розумом!", "tone": "playful", "state": "point", "portrait": "point", "requires": ["game"]},
+      {"id": "vision.look.menu.04", "text": "Поки що тільки меню. Я терпляча, почекаю.", "tone": "warm", "state": "talk", "portrait": "calm"}
+    ],
+    "vision.look.loading": [
+      {"id": "vision.look.loading.01", "text": "Завантаження… Саме час розім'яти плечі.", "tone": "caring", "state": "happy", "portrait": "smile"},
+      {"id": "vision.look.loading.02", "text": "Екран завантаження. Найчесніший момент у будь-якій грі.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "vision.look.loading.03", "text": "Вантажиться! Я поки потягнуся.", "tone": "playful", "state": "yawn", "portrait": "tired"},
+      {"id": "vision.look.loading.04", "text": "Ще трішки завантаження — і в бій.", "tone": "warm", "state": "point", "portrait": "point"}
+    ],
+    "vision.look.inventory": [
+      {"id": "vision.look.inventory.01", "text": "Бачу інвентар. Ого, скільки всього назбиралося!", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "vision.look.inventory.02", "text": "Інвентар! Я б тут усе розклала за кольорами.", "tone": "playful", "state": "happy", "portrait": "idea"},
+      {"id": "vision.look.inventory.03", "text": "Ревізія рюкзака? Поважаю.", "tone": "warm", "state": "curious", "portrait": "smile"},
+      {"id": "vision.look.inventory.04", "text": "Цей інвентар як моя шафа: усе потрібне є, але нічого не знайти.", "tone": "sarcastic", "state": "laugh", "portrait": "laugh"}
+    ],
+    "vision.look.map": [
+      {"id": "vision.look.map.01", "text": "Бачу мапу. Куди далі?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "vision.look.map.02", "text": "Мапа! Обожнюю ці маленькі позначки.", "tone": "playful", "state": "happy", "portrait": "joy"},
+      {"id": "vision.look.map.03", "text": "Прокладати маршрут — справа серйозна. Не заважаю.", "tone": "caring", "state": "thinking", "portrait": "thinking"},
+      {"id": "vision.look.map.04", "text": "Ого, яка величезна мапа в грі «{game}»!", "tone": "warm", "state": "surprised", "portrait": "wow", "requires": ["game"]}
+    ],
+    "vision.look.cutscene": [
+      {"id": "vision.look.cutscene.01", "text": "Бачу заставку. Тихо, дивимося!", "tone": "warm", "state": "talk", "portrait": "smile"},
+      {"id": "vision.look.cutscene.02", "text": "О, кіно почалося! Попкорну б.", "tone": "playful", "state": "happy", "portrait": "eat"},
+      {"id": "vision.look.cutscene.03", "text": "Заставка! Нічого не коментую — жодних спойлерів.", "tone": "caring", "state": "shy", "portrait": "shy"},
+      {"id": "vision.look.cutscene.04", "text": "Красиво знято. Я мовчу й дивлюся.", "tone": "warm", "state": "talk", "portrait": "calm"}
+    ],
+    "vision.look.dialogue": [
+      {"id": "vision.look.dialogue.01", "text": "Бачу розмову. Не перебиватиму!", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "vision.look.dialogue.02", "text": "Діалог! Читаємо уважно, щоб нічого не пропустити.", "tone": "caring", "state": "curious", "portrait": "question"},
+      {"id": "vision.look.dialogue.03", "text": "О, хтось щось розповідає. Я теж люблю поговорити.", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "vision.look.dialogue.04", "text": "Ціла розмова на екрані. Цікаво, хто тут хитрує?", "tone": "playful", "state": "thinking", "portrait": "thinking"}
+    ],
+    "vision.look.combat": [
+      {"id": "vision.look.combat.01", "text": "Тут бій! Не відволікаю, тримайся!", "tone": "caring", "state": "surprised", "portrait": "wow"},
+      {"id": "vision.look.combat.02", "text": "Бачу бійку. Я подумки на твоєму боці!", "tone": "warm", "state": "point", "portrait": "excited"},
+      {"id": "vision.look.combat.03", "text": "Гаряче там! Удачі!", "tone": "warm", "state": "surprised", "portrait": "surprised"},
+      {"id": "vision.look.combat.04", "text": "Бій у розпалі. Сиджу тихенько, як мишка.", "tone": "playful", "state": "shy", "portrait": "shy"}
+    ],
+    "vision.look.puzzle": [
+      {"id": "vision.look.puzzle.01", "text": "Головоломка! Підказувати не буду — у тебе й так вийде.", "tone": "warm", "state": "thinking", "portrait": "thinking"},
+      {"id": "vision.look.puzzle.02", "text": "Бачу загадку. Мій мозок уже скрипить.", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "vision.look.puzzle.03", "text": "О, задачка! Обожнюю дивитися, як ти міркуєш.", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "vision.look.puzzle.04", "text": "Хм-м, хитра штука. Думаємо разом!", "tone": "playful", "state": "thinking", "portrait": "idea"}
+    ]
+  }
+}

@@ -435,3 +435,101 @@ def test_stream_never_logs_the_text(make_window, facade, caplog):
         facade.resolve("delta")
         facade.resolve("done")
     assert all(secret not in record.getMessage() for record in caplog.records)
+
+
+# --- microphone button (Phase 4) -----------------------------------------------------------------
+
+
+@pytest.fixture
+def make_voice_window(facade, track):
+    def make(on_mic=None) -> ChatWindow:
+        window = track(ChatWindow(facade, on_mic=on_mic))
+        window.show()
+        return window
+
+    return make
+
+
+def test_mic_button_is_disabled_until_voice_is_set_up(make_window):
+    window = make_window()
+    button = window.mic_button
+    assert button.isVisible() and not button.isEnabled()
+    assert button.toolTip() == "Голосове введення недоступне: спершу налаштуй голос (Налаштування → Голос)."
+    assert button.accessibleName() == "Мікрофон"
+
+
+def test_mic_button_tooltip_names_the_hotkey_and_click_toggles(make_voice_window):
+    clicks = []
+    window = make_voice_window(on_mic=lambda: clicks.append(1))
+    window.set_voice_input(True, hotkey="Ctrl + Alt + Пробіл")
+    button = window.mic_button
+    assert button.isEnabled()
+    assert button.toolTip() == "Сказати голосом (Ctrl + Alt + Пробіл)"
+    QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+    assert clicks == [1]
+    assert not button.isChecked()  # pressed only once the voice really listens
+
+
+def test_mic_button_shows_listening_state(make_voice_window):
+    window = make_voice_window(on_mic=lambda: None)
+    window.set_voice_input(True)
+    window.set_voice_state("listening")
+    button = window.mic_button
+    assert button.isChecked() and window.is_listening()
+    assert button.text() == chat_window.MIC_LISTENING_TEXT
+    assert button.toolTip() == chat_window.MIC_LISTENING_TOOLTIP
+    QTest.mouseClick(button, Qt.MouseButton.LeftButton)  # stop: still pressed until the state changes
+    assert button.isChecked()
+    window.set_voice_state("transcribing")
+    assert not button.isChecked() and not button.isEnabled()
+    assert button.text() == chat_window.MIC_BUSY_TEXT
+    window.set_voice_state("idle")
+    assert button.isEnabled() and button.text() == chat_window.MIC_IDLE_TEXT
+    assert button.toolTip() == chat_window.MIC_TOOLTIP
+
+
+def test_unavailable_voice_input_says_why(make_voice_window):
+    clicks = []
+    window = make_voice_window(on_mic=lambda: clicks.append(1))
+    window.set_voice_input(False, reason="Мікрофон вимкнено в «Приватності».")
+    button = window.mic_button
+    assert not button.isEnabled()
+    assert button.toolTip() == "Голосове введення недоступне: мікрофон вимкнено в «Приватності»."
+    button.click()
+    assert clicks == []
+
+
+def test_mic_button_without_a_callback_stays_disabled(make_window):
+    window = make_window()
+    window.set_voice_input(True)
+    assert not window.mic_button.isEnabled()
+
+
+def test_mic_button_is_keyboard_reachable_between_input_and_send(make_voice_window):
+    clicks = []
+    window = make_voice_window(on_mic=lambda: clicks.append(1))
+    window.set_voice_input(True)
+    assert window.mic_button.focusPolicy() & Qt.FocusPolicy.TabFocus
+    assert window.input.nextInFocusChain() is window.mic_button
+    assert window.mic_button.nextInFocusChain() is window.send_button
+    window.mic_button.setFocus()
+    QTest.keyClick(window.mic_button, Qt.Key.Key_Space)
+    assert clicks == [1]
+
+
+def test_failing_mic_callback_is_contained(make_voice_window, caplog):
+    def broken():
+        raise RuntimeError("секретний текст")
+
+    window = make_voice_window(on_mic=broken)
+    window.set_voice_input(True)
+    window.mic_button.click()
+    assert "voice input toggle failed: RuntimeError" in caplog.text
+    assert "секретний" not in caplog.text
+
+
+def test_chat_still_sends_with_the_mic_button(make_voice_window, facade):
+    window = make_voice_window(on_mic=lambda: None)
+    window.input.setText("привіт")
+    window.send_button.click()
+    assert facade.chat_sent == ["привіт"]

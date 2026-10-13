@@ -234,7 +234,9 @@ class VoiceService:
 
     def revoke_microphone(self) -> None:
         """Permission withdrawn / kill switch: close the microphone now."""
-        if self._state in (VoiceState.LISTENING, VoiceState.STANDBY):
+        if self._state in (VoiceState.LISTENING, VoiceState.STANDBY, VoiceState.TRANSCRIBING):
+            # TRANSCRIBING too: a transcript of speech heard before the revoke
+            # must not arrive after it.
             self._listen_gen += 1
             self._close_input()
             self._rest("microphone revoked")
@@ -313,6 +315,8 @@ class VoiceService:
 
     def _continue(self) -> None:
         """After a line: the next one, or back to rest."""
+        if self._current is not None:
+            return  # an on_done callback already started the next line (re-entrant say())
         if not self._next():
             self._rest("done speaking")
 

@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "phrases": {
+    "gift.apple": [
+      {"id": "gift.apple.01", "text": "Яблучко! Хрум-хрум, дякую!", "tone": "warm", "state": "eat", "portrait": "eat"},
+      {"id": "gift.apple.02", "text": "Одне яблуко на день — і лікар не потрібен. А я тепер ще й щаслива!", "tone": "playful", "state": "eat", "portrait": "eat"},
+      {"id": "gift.apple.03", "text": "Яке соковите! Дякую, що дбаєш про мій раціон.", "tone": "caring", "state": "happy", "portrait": "smile"},
+      {"id": "gift.apple.04", "text": "Хрусь! Чуєш? Це звук вітамінів, які тепер у мені.", "tone": "playful", "state": "eat", "portrait": "wink"},
+      {"id": "gift.apple.05", "text": "Червоне й блискуче, як у казці. Але це яблуко точно добре!", "tone": "warm", "state": "happy", "portrait": "joy"}
+    ],
+    "gift.cookie": [
+      {"id": "gift.cookie.01", "text": "Печиво! Ти знаєш мою слабкість. Ням!", "tone": "warm", "state": "eat", "portrait": "eat"},
+      {"id": "gift.cookie.02", "text": "Хрум! Хрум! Хрум! Вибач, не можу говорити — я їм печиво.", "tone": "playful", "state": "eat", "portrait": "eat"},
+      {"id": "gift.cookie.03", "text": "Ммм, із шоколадною крихтою! Дякую-дякую!", "tone": "warm", "state": "happy", "portrait": "wink_heart"},
+      {"id": "gift.cookie.04", "text": "Печиво зникло. Підозрюю себе. Свідків не було!", "tone": "playful", "state": "eat", "portrait": "joyful"},
+      {"id": "gift.cookie.05", "text": "Підкупити мене печивом? Ну... так, спрацювало.", "tone": "sarcastic", "state": "eat", "portrait": "wink"}
+    ],
+    "gift.cocoa": [
+      {"id": "gift.cocoa.01", "text": "Тепле какао! Зігріває аж до кінчиків вух.", "tone": "warm", "state": "happy", "portrait": "drink"},
+      {"id": "gift.cocoa.02", "text": "З маршмелоу! Це якесь какаове чаклунство.", "tone": "playful", "state": "happy", "portrait": "drink"},
+      {"id": "gift.cocoa.03", "text": "Дякую! Якщо й тобі зараз прохолодно, зроби какао й собі, гаразд?", "tone": "caring", "state": "happy", "portrait": "drink"},
+      {"id": "gift.cocoa.04", "text": "Ковточок какао — і світ одразу добріший.", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "gift.cocoa.05", "text": "Обережно, у мене тепер какао-вуса. Але я щаслива!", "tone": "playful", "state": "laugh", "portrait": "laugh"}
+    ],
+    "gift.stickers": [
+      {"id": "gift.stickers.01", "text": "Наліпки! Зараз обклею ними весь робочий стіл. Жартую... майже.", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "gift.stickers.02", "text": "Які блискучі! Одну наклею собі на щічку.", "tone": "warm", "state": "happy", "portrait": "joyful"},
+      {"id": "gift.stickers.03", "text": "Наліпка з котиком, наліпка із зірочкою... Це найкращий день!", "tone": "playful", "state": "happy", "portrait": "wink"},
+      {"id": "gift.stickers.04", "text": "Ого, скільки їх! Тепер у мене справжня колекція блиску.", "tone": "warm", "state": "surprised", "portrait": "wow"},
+      {"id": "gift.stickers.05", "text": "Наліпки? Я доросла й серйозна... Ой, а ця світиться!", "tone": "sarcastic", "state": "laugh", "portrait": "laugh"}
+    ],
+    "gift.flower": [
+      {"id": "gift.flower.01", "text": "Це мені? Ой... я аж почервоніла. Дякую.", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "gift.flower.02", "text": "Яка ніжна! Поставлю її на найпочесніше місце.", "tone": "warm", "state": "shy", "portrait": "wink_heart"},
+      {"id": "gift.flower.03", "text": "Квіти — це завжди про турботу. Мені дуже приємно.", "tone": "caring", "state": "happy", "portrait": "smile"},
+      {"id": "gift.flower.04", "text": "Тюльпан! Тепер я найщасливіша дівчинка на цьому робочому столі.", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "gift.flower.05", "text": "Пахне весною! Дякую, ти дуже уважна людина.", "tone": "warm", "state": "happy", "portrait": "joy"}
+    ],
+    "gift.book": [
+      {"id": "gift.book.01", "text": "Книжка! Обожнюю пригоди між сторінками. Дякую!", "tone": "warm", "state": "curious", "portrait": "thinking"},
+      {"id": "gift.book.02", "text": "Цікаво, чим усе закінчиться? Ні-ні, не кажи! Прочитаю сама.", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "gift.book.03", "text": "Нова книжка — це ціла нова мандрівка. Вирушаю!", "tone": "warm", "state": "happy", "portrait": "idea"},
+      {"id": "gift.book.04", "text": "Відкладаю все й читаю. Якщо що, я в розділі третьому.", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "gift.book.05", "text": "Дякую! Потім розкажу тобі, що там було, гаразд?", "tone": "caring", "state": "happy", "portrait": "smile"}
+    ],
+    "gift.star_keychain": [
+      {"id": "gift.star_keychain.01", "text": "Зірочка! Вона світиться, як твоя усмішка. Берегтиму її завжди.", "tone": "warm", "state": "happy", "portrait": "wink_heart"},
+      {"id": "gift.star_keychain.02", "text": "Брелок-зірочка... Тепер у мене є своя маленька зоря. Дякую!", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "gift.star_keychain.03", "text": "Почеплю його на найпочесніше місце. Хай усі бачать, яка я щаслива!", "tone": "playful", "state": "happy", "portrait": "joyful"},
+      {"id": "gift.star_keychain.04", "text": "Коли буде сумно, гляну на неї й згадаю тебе.", "tone": "caring", "state": "happy", "portrait": "smile"}
+    ],
+    "gift.cake": [
+      {"id": "gift.cake.01", "text": "Цілий торт?! У нас свято? Тепер точно свято!", "tone": "warm", "state": "happy", "portrait": "joyful"},
+      {"id": "gift.cake.02", "text": "Я з'їм лише шматочок... Ну, два. Гаразд, половину!", "tone": "playful", "state": "eat", "portrait": "eat"},
+      {"id": "gift.cake.03", "text": "Ого-го! Задуваймо свічки разом: раз, два, три!", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "gift.cake.04", "text": "Найсмачніший торт у світі, бо він від тебе.", "tone": "warm", "state": "eat", "portrait": "joy"},
+      {"id": "gift.cake.05", "text": "Торт без приводу? Найкращий привід — це і є торт.", "tone": "sarcastic", "state": "laugh", "portrait": "laugh"}
+    ],
+    "gift.plush_cat": [
+      {"id": "gift.plush_cat.01", "text": "Котик! Він такий м'якенький... Я його ніколи нікому не віддам.", "tone": "warm", "state": "shy", "portrait": "wink_heart"},
+      {"id": "gift.plush_cat.02", "text": "Назву його Пухнастиком. Або Мурчиком. Або... треба подумати!", "tone": "playful", "state": "happy", "portrait": "joyful"},
+      {"id": "gift.plush_cat.03", "text": "Обійми з котиком — найкращі обійми. Ну, після твоїх.", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "gift.plush_cat.04", "text": "Тепер, коли в тебе справи, мені буде з ким помуркотіти.", "tone": "caring", "state": "happy", "portrait": "smile"},
+      {"id": "gift.plush_cat.05", "text": "Няв! Це він так дякує. І я теж дякую!", "tone": "playful", "state": "laugh", "portrait": "laugh"}
+    ],
+    "gift.headphones": [
+      {"id": "gift.headphones.01", "text": "Навушники! Тепер моя улюблена музика завжди зі мною.", "tone": "warm", "state": "happy", "portrait": "music"},
+      {"id": "gift.headphones.02", "text": "Тихо, у мене зараз сольний концерт. Тиць-тиць-тиць!", "tone": "playful", "state": "happy", "portrait": "music"},
+      {"id": "gift.headphones.03", "text": "Які гарні! Перша пісня в них буде для тебе.", "tone": "warm", "state": "shy", "portrait": "wink_heart"},
+      {"id": "gift.headphones.04", "text": "Обережно: тепер я можу танцювати під музику, якої ти не чуєш.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "gift.headphones.05", "text": "Дякую! Коли захочеш тиші, я слухатиму музику сама й тихенько.", "tone": "caring", "state": "happy", "portrait": "smile"}
+    ],
+    "gift.generic": [
+      {"id": "gift.generic.01", "text": "Дякую! Мені дуже-дуже приємно.", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "gift.generic.02", "text": "Ой, подарунок для мене? Як приємно!", "tone": "warm", "state": "shy", "portrait": "shy"},
+      {"id": "gift.generic.03", "text": "Подарунки — моя улюблена частина дня!", "tone": "playful", "state": "happy", "portrait": "joyful"},
+      {"id": "gift.generic.04", "text": "Дякую! Найцінніше в подарунку — твоя увага.", "tone": "caring", "state": "happy", "portrait": "smile"},
+      {"id": "gift.generic.05", "text": "Ти вмієш зробити мій день кращим. Дякую!", "tone": "warm", "state": "happy", "portrait": "wink_heart"},
+      {"id": "gift.generic.06", "text": "Сюрприз! Обожнюю сюрпризи.", "tone": "playful", "state": "surprised", "portrait": "wow"}
+    ],
+    "gift.again": [
+      {"id": "gift.again.01", "text": "Знову? Ти мене розбалуєш! Але дякую.", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "gift.again.02", "text": "Ще одне? Я ж так лусну від щастя! Ну добре, давай.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "gift.again.03", "text": "Знову подарунок? Ти щедре серденько! Але й собі щось залиш.", "tone": "caring", "state": "happy", "portrait": "smile"},
+      {"id": "gift.again.04", "text": "Знову те саме? Я помітила. І знову зраділа, хоч уже трішки менше.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "gift.again.05", "text": "Удруге за такий короткий час? Я аж розгубилася. Дякую!", "tone": "warm", "state": "shy", "portrait": "shy"}
+    ],
+    "game.rps.win": [
+      {"id": "game.rps.win.01", "text": "Твоя перемога! Чесно-чесно, я старалася.", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "game.rps.win.02", "text": "Ого, перемога за тобою! Реванш?", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "game.rps.win.03", "text": "Ну от, програла. Ножиці сьогодні проти мене змовилися.", "tone": "sarcastic", "state": "angry", "portrait": "offended"},
+      {"id": "game.rps.win.04", "text": "Вітаю! Це була чиста перемога.", "tone": "warm", "state": "happy", "portrait": "joyful"},
+      {"id": "game.rps.win.05", "text": "Я ж знала, що буде камінь! Знала... і все одно програла.", "tone": "playful", "state": "laugh", "portrait": "facepalm"},
+      {"id": "game.rps.win.06", "text": "Добре зіграно! Мені сподобалося, давай ще колись.", "tone": "caring", "state": "happy", "portrait": "smile"}
+    ],
+    "game.rps.lose": [
+      {"id": "game.rps.lose.01", "text": "Я перемогла! Увага, танець переможниці!", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "game.rps.lose.02", "text": "Моя перемога! Але гра була рівна, чесне слово.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "game.rps.lose.03", "text": "Хе-хе. Мабуть, я просто читаю думки.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "game.rps.lose.04", "text": "Не засмучуйся, наступного разу удача буде на твоєму боці!", "tone": "caring", "state": "happy", "portrait": "joy"},
+      {"id": "game.rps.lose.05", "text": "Ура! Записую в щоденник: сьогодні я чемпіонка!", "tone": "playful", "state": "laugh", "portrait": "laugh"}
+    ],
+    "game.rps.draw": [
+      {"id": "game.rps.draw.01", "text": "Нічия! Ми з тобою ідеально зіграні.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "game.rps.draw.02", "text": "Знову однаково? Ми точно думаємо в унісон!", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "game.rps.draw.03", "text": "Нічия... Підозріло. Ти що, теж читаєш думки?", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "game.rps.draw.04", "text": "Нікому не прикро — отже, виграли обоє!", "tone": "caring", "state": "happy", "portrait": "joy"},
+      {"id": "game.rps.draw.05", "text": "Нічия! Може, ще партію, щоб з'ясувати, хто сильніший?", "tone": "warm", "state": "curious", "portrait": "question"}
+    ],
+    "game.cookies.great": [
+      {"id": "game.cookies.great.01", "text": "Скільки печива! Це рекордний улов!", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "game.cookies.great.02", "text": "Ням! Ціла гора печива — і все для мене?", "tone": "warm", "state": "eat", "portrait": "eat"},
+      {"id": "game.cookies.great.03", "text": "Неймовірний результат! Мої вітання спритним рукам.", "tone": "warm", "state": "happy", "portrait": "joyful"},
+      {"id": "game.cookies.great.04", "text": "Хрум-хрум! Тепер я сита, щаслива й трохи в крихтах.", "tone": "playful", "state": "eat", "portrait": "eat"},
+      {"id": "game.cookies.great.05", "text": "Блискуче! Не забудь розім'яти пальці після такого марафону.", "tone": "caring", "state": "happy", "portrait": "smile"}
+    ],
+    "game.cookies.ok": [
+      {"id": "game.cookies.ok.01", "text": "Непогано! Печиво смачне, дякую за улов.", "tone": "warm", "state": "eat", "portrait": "eat"},
+      {"id": "game.cookies.ok.02", "text": "Гарний улов! А підгоріле хай собі падає.", "tone": "playful", "state": "happy", "portrait": "wink"},
+      {"id": "game.cookies.ok.03", "text": "Добре вийшло! Ще трішки тренування — і буде рекорд.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "game.cookies.ok.04", "text": "Хрум! Дякую. Наступного разу поділюся крихтами.", "tone": "caring", "state": "eat", "portrait": "eat"},
+      {"id": "game.cookies.ok.05", "text": "Частину впіймано, частину з'їла гравітація. Чесний поділ!", "tone": "playful", "state": "laugh", "portrait": "laugh"}
+    ],
+    "game.cookies.poor": [
+      {"id": "game.cookies.poor.01", "text": "Не біда! Печиво сьогодні якесь надто швидке.", "tone": "caring", "state": "happy", "portrait": "smile"},
+      {"id": "game.cookies.poor.02", "text": "Печиво втекло! Мабуть, знало, що я голодна.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "game.cookies.poor.03", "text": "Головне не рахунок, а те, що ми гралися разом!", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "game.cookies.poor.04", "text": "Печиво — один, ми — нуль. Але реванш за нами!", "tone": "sarcastic", "state": "laugh", "portrait": "facepalm"},
+      {"id": "game.cookies.poor.05", "text": "Підказка: клацай трохи нижче, туди, де печиво буде за мить.", "tone": "caring", "state": "point", "portrait": "point"}
+    ],
+    "game.guess.win": [
+      {"id": "game.guess.win.01", "text": "Вгадано! Як у тебе це виходить?", "tone": "warm", "state": "surprised", "portrait": "wow"},
+      {"id": "game.guess.win.02", "text": "Ти читаєш мої думки! Треба загадувати хитріше.", "tone": "playful", "state": "laugh", "portrait": "laugh"},
+      {"id": "game.guess.win.03", "text": "Браво! Логіка в тебе просто клас.", "tone": "warm", "state": "happy", "portrait": "joyful"},
+      {"id": "game.guess.win.04", "text": "Гм, підозріло швидко. Наступного разу загадаю число з підступом.", "tone": "sarcastic", "state": "thinking", "portrait": "thinking"},
+      {"id": "game.guess.win.05", "text": "Чудова гра! Мені подобається, як ти міркуєш.", "tone": "caring", "state": "happy", "portrait": "smile"}
+    ],
+    "game.guess.lose": [
+      {"id": "game.guess.lose.01", "text": "Не вгадано, але було дуже близько! Ще раз?", "tone": "caring", "state": "happy", "portrait": "smile"},
+      {"id": "game.guess.lose.02", "text": "Хе-хе, моє число добре сховалося. Реванш?", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "game.guess.lose.03", "text": "Нічого страшного! Головне, що ми гралися разом.", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "game.guess.lose.04", "text": "Я загадала хитре число. Наступного разу буду чеснішою... мабуть.", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "game.guess.lose.05", "text": "Порада: щоразу ділимо проміжок навпіл — і п'яти спроб завжди вистачає.", "tone": "caring", "state": "point", "portrait": "point"}
+    ],
+    "game.invite": [
+      {"id": "game.invite.01", "text": "Пограймо? Я вже розім'яла пальчики!", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "game.invite.02", "text": "Може, зіграємо в камінь-ножиці-папір? Хоч один раунд!", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "game.invite.03", "text": "Пограймо? Я загадаю число, а ти спробуєш вгадати!", "tone": "playful", "state": "wave", "portrait": "greet"},
+      {"id": "game.invite.04", "text": "Мені трішки нудно... Може, пограємо разом у щось?", "tone": "warm", "state": "curious", "portrait": "question"},
+      {"id": "game.invite.05", "text": "Сьогодні з неба падає печиво! Зловимо разом? Пограймо!", "tone": "playful", "state": "point", "portrait": "point"},
+      {"id": "game.invite.06", "text": "Як щодо короткої перерви й міні-гри? П'ять хвилин — і знову до справ.", "tone": "caring", "state": "happy", "portrait": "smile"}
+    ],
+    "game.start": [
+      {"id": "game.start.01", "text": "Ура, граємо! Тримайся, я сьогодні у формі!", "tone": "playful", "state": "happy", "portrait": "excited"},
+      {"id": "game.start.02", "text": "Граємо! Хай щастить нам обом!", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "game.start.03", "text": "Ну все, починаємо. Пощади не буде! Жартую, буде.", "tone": "playful", "state": "laugh", "portrait": "wink"},
+      {"id": "game.start.04", "text": "Гра! Обожнюю, коли ми граємо разом.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "game.start.05", "text": "Готуйся, я в найкращій ігровій формі!", "tone": "playful", "state": "point", "portrait": "point"}
+    ]
+  }
+}

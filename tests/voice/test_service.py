@@ -472,3 +472,31 @@ def test_preload_loads_engines_in_the_background_and_reports_failures():
     h.worker.run_all()
     assert Loadable.loaded
     assert h.errors == ["Модель не завантажено."]
+
+
+def test_revoke_during_transcription_drops_the_transcript():
+    h = Harness()
+    h.service.listen()
+    h.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    assert h.service.state == VoiceState.TRANSCRIBING
+    h.mic = False
+    h.service.revoke_microphone()
+    h.worker.run_all()
+    assert h.results == []
+    assert h.service.state == VoiceState.IDLE
+
+
+def test_reentrant_say_from_on_done_is_not_lost():
+    h = Harness()
+    said = []
+
+    def chain(outcome):
+        if outcome == Outcome.PLAYED and not said:
+            said.append(h.service.say("друга", solicited=True))
+
+    h.service.say("перша", on_done=chain)
+    h.worker.run_all()
+    h.output.finish()
+    h.worker.run_all()
+    assert said == [True]
+    assert h.tts.said == ["перша", "друга"]
