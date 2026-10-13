@@ -34,6 +34,8 @@ class ForegroundInfo:
     process_name: str
     exe_path: str | None = field(default=None, repr=False)
     title: str | None = field(default=None, repr=False)
+    #: The foreground window handle (0 if unknown); screen vision captures it.
+    hwnd: int = field(default=0, repr=False, compare=False)
 
 
 @runtime_checkable

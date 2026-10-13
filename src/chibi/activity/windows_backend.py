@@ -214,7 +214,7 @@ class WindowsActivityBackend:
         title: str | None = None
         if read_title:
             title = self._api.window_title(hwnd) or None
-        return ForegroundInfo(pid=pid, process_name=name, exe_path=exe, title=title)
+        return ForegroundInfo(pid=pid, process_name=name, exe_path=exe, title=title, hwnd=hwnd)
 
     def _resolve_uwp(self, frame_hwnd: int, host_pid: int) -> tuple[int, str, str | None] | None:
         """The Store app hosted by an ApplicationFrameHost frame: the owner of

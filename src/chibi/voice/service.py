@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import itertools
 import logging
-import queue
 import threading
 import time
 from collections import deque
@@ -38,6 +37,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from chibi.core.worker import SerialWorker
 from chibi.personality.text_uk import normalize as normalize_uk
 from chibi.voice.audio_io import AudioInput, AudioOutput, AudioUnavailable
 from chibi.voice.stt import STTEngine, STTError
@@ -84,44 +84,15 @@ class _Utterance:
                 log.exception("utterance callback failed")
 
 
-class VoiceWorker:
-    """One background thread; lower priority numbers run first
-    (recognition before synthesis), FIFO within a priority."""
+class VoiceWorker(SerialWorker):
+    """Recognition before synthesis before background loading."""
 
     TRANSCRIBE = 0
     SYNTHESIZE = 1
     BACKGROUND = 2
 
     def __init__(self) -> None:
-        self._queue: queue.PriorityQueue[tuple[int, int, Callable[[], None] | None]] = queue.PriorityQueue()
-        self._counter = itertools.count()
-        self._thread: threading.Thread | None = None
-        self._lock = threading.Lock()
-
-    def submit(self, job: Callable[[], None], priority: int) -> None:
-        with self._lock:
-            if self._thread is None or not self._thread.is_alive():
-                self._thread = threading.Thread(target=self._run, name="chibi-voice", daemon=True)
-                self._thread.start()
-        self._queue.put((priority, next(self._counter), job))
-
-    def shutdown(self, timeout: float = 3.0) -> None:
-        thread = self._thread
-        if thread is None:
-            return
-        self._queue.put((-1, next(self._counter), None))
-        thread.join(timeout)
-        self._thread = None
-
-    def _run(self) -> None:
-        while True:
-            _priority, _n, job = self._queue.get()
-            if job is None:
-                return
-            try:
-                job()
-            except Exception:  # jobs report their own errors; this is a last resort
-                log.exception("voice job failed")
+        super().__init__("chibi-voice")
 
 
 #: How she can be called by name in the wake phrase (normalised forms).
