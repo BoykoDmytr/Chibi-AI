@@ -1,15 +1,27 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 import pytest
 from PySide6.QtCore import QCoreApplication, Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel
 
 from chibi.settings import chat_window
-from chibi.settings.chat_window import MAX_INPUT_CHARS, OFFLINE_BANNER, ChatWindow
+from chibi.settings.chat_window import (
+    MAX_INPUT_CHARS,
+    OFFLINE_BANNER,
+    PLACEHOLDER_OFFLINE,
+    PLACEHOLDER_ONLINE,
+    TIMEOUT_LINE,
+    TYPING_FRAMES,
+    ChatWindow,
+    visible_stream_text,
+)
 from chibi.settings.facade import ChatReply
+from tests.settings.fakes import StreamScript
 
 
 @pytest.fixture
@@ -27,11 +39,43 @@ def bubbles(window: ChatWindow, kind: str) -> list[str]:
             if label.property("bubble") == kind]
 
 
-def test_shows_honest_offline_banner(make_window):
+def test_shows_honest_offline_banner_with_the_reason(make_window, facade):
+    facade.ai_status_view = replace(facade.ai_status_view, provider="anthropic", reason="немає API-ключа")
     window = make_window()
     assert window.isVisible()
+    assert window.banner.text() == "Офлайн-режим: немає API-ключа — я розумію лише прості фрази"
+    assert window.input.placeholderText() == PLACEHOLDER_OFFLINE
+
+
+def test_banner_names_provider_and_model_when_online(make_window, facade):
+    facade.ai_status_view = replace(facade.ai_status_view, provider="anthropic", model="claude-opus-5-5",
+                                    online=True, reason="", cloud=True)
+    window = make_window()
+    assert window.banner.text() == "AI: Anthropic Claude · claude-opus-5-5"
+    assert window.input.placeholderText() == PLACEHOLDER_ONLINE
+
+
+def test_banner_falls_back_when_status_cannot_be_read(make_window, facade, caplog):
+    facade.ai_status_error = RuntimeError("boom")
+    with caplog.at_level(logging.ERROR):
+        window = make_window()
+        window.refresh_status()
     assert window.banner.text() == OFFLINE_BANNER
-    assert "AI ще не підключено" in OFFLINE_BANNER
+    assert len([r for r in caplog.records if "AI status" in r.getMessage()]) == 1  # logged once
+
+
+def test_banner_is_refreshed_on_show_and_after_each_reply(make_window, facade):
+    window = make_window()
+    assert window.banner.text().startswith("Офлайн-режим: AI вимкнено")
+    online = replace(facade.ai_status_view, provider="ollama", model="qwen3:8b", online=True, reason="")
+    facade.ai_status_view = online
+    window.hide()
+    window.show()
+    assert window.banner.text() == "AI: Ollama · qwen3:8b"
+    facade.ai_status_view = replace(online, online=False, reason="сервіс недоступний")
+    window.input.setText("привіт")
+    window.send()
+    assert window.banner.text() == "Офлайн-режим: сервіс недоступний — я розумію лише прості фрази"
 
 
 def test_send_button_sends_and_shows_reply(make_window, facade):
@@ -185,3 +229,209 @@ def test_her_messages_have_a_small_portrait_with_fallback(make_window, facade):
     avatars = window.messages.findChildren(PortraitLabel)
     assert [a.current for a in avatars] == ["", "joy"]
     assert all(a.width() == chat_window.AVATAR_SIZE for a in avatars)
+
+
+# --- streaming (Phase 2) -------------------------------------------------------------------------
+
+
+def her_bubbles(window: ChatWindow) -> list[QLabel]:
+    return [label for label in window.messages.findChildren(QLabel) if label.property("bubble") == "her"]
+
+
+def test_her_bubble_appears_at_once_with_a_typing_indicator(make_window, facade):
+    facade.deferred = True
+    window = make_window()
+    window.input.setText("розкажи щось")
+    window.send()
+    assert facade.chat_sent == ["розкажи щось"]
+    assert bubbles(window, "user") == ["розкажи щось"]
+    assert bubbles(window, "her") == [TYPING_FRAMES[-1]]
+    assert window.is_waiting()
+    assert not window.send_button.isEnabled()
+    assert window.typing_timer.isActive()
+    window.typing_timer.timeout.emit()
+    assert bubbles(window, "her")[0] in TYPING_FRAMES
+
+
+def test_deltas_are_appended_and_the_final_reply_replaces_them(make_window, facade):
+    facade.deferred = True
+    facade.streams = [StreamScript(deltas=["При", "віт", ", як ти?"],
+                                   reply=ChatReply(text="Привіт, як ти? 😊", state="happy"))]
+    facade.portraits = {"joy": QPixmap(16, 16)}
+    window = make_window()
+    window.input.setText("привіт")
+    window.send()
+    facade.resolve("delta")
+    assert bubbles(window, "her") == ["При"]
+    assert not window.typing_timer.isActive()  # real text replaced the indicator
+    facade.resolve("delta")
+    facade.resolve("delta")
+    assert bubbles(window, "her") == ["Привіт, як ти?"]
+    assert not window.send_button.isEnabled()
+    facade.resolve("done")
+    assert bubbles(window, "her") == ["Привіт, як ти? 😊"]  # replaced, not appended
+    assert window.send_button.isEnabled() and not window.is_waiting()
+    from chibi.settings.widgets import PortraitLabel
+
+    assert [a.current for a in window.messages.findChildren(PortraitLabel)] == ["joy"]
+    assert window.message_count() == 2
+
+
+def test_bubble_grows_with_the_stream(make_window, facade):
+    facade.deferred = True
+    facade.streams = [StreamScript(deltas=["Ну", " це дуже-дуже довга відповідь " * 6],
+                                   reply=ChatReply(text="ок"))]
+    window = make_window()
+    window.input.setText("ну?")
+    window.send()
+    facade.resolve("delta")
+    short = her_bubbles(window)[0].width()
+    facade.resolve("delta")
+    bubble = her_bubbles(window)[0]
+    assert bubble.width() > short
+    assert bubble.width() <= window.scroll.viewport().width()
+
+
+def test_send_is_ignored_while_a_reply_is_in_flight(make_window, facade):
+    facade.deferred = True
+    window = make_window()
+    window.input.setText("перше")
+    window.send()
+    window.input.setText("друге")
+    QTest.keyClick(window.input, Qt.Key.Key_Return)
+    window.send_button.click()  # disabled: nothing happens
+    assert facade.chat_sent == ["перше"]
+    assert window.input.text() == "друге"  # kept for later, not lost
+    facade.resolve("done")
+    window.send()
+    assert facade.chat_sent == ["перше", "друге"]
+
+
+def test_offline_reply_arrives_through_on_done_only(make_window, facade):
+    facade.replies = [ChatReply(text="Я поки розумію лише прості фрази.", state="thinking")]
+    window = make_window()
+    window.input.setText("що таке квантова механіка?")
+    window.send()
+    assert bubbles(window, "her") == ["Я поки розумію лише прості фрази."]
+    assert window.send_button.isEnabled() and not window.typing_timer.isActive()
+
+
+def test_streamed_reply_with_action_adds_the_system_line(make_window, facade):
+    facade.deferred = True
+    facade.streams = [StreamScript(deltas=["Добре"],
+                                   reply=ChatReply(text="Добре, мовчу.", action="quiet_on"))]
+    window = make_window()
+    window.input.setText("помовч")
+    window.send()
+    facade.resolve("delta")
+    facade.resolve("done")
+    assert bubbles(window, "her") == ["Добре, мовчу."]
+    assert bubbles(window, "system") == ["🔇 Мія помовчить"]
+
+
+def test_reply_without_text_removes_the_typing_bubble(make_window, facade):
+    facade.deferred = True
+    facade.streams = [StreamScript(reply=ChatReply(text="", action="fed"))]
+    window = make_window()
+    window.input.setText("погодуй себе")
+    window.send()
+    assert len(her_bubbles(window)) == 1
+    facade.resolve("done")
+    assert bubbles(window, "her") == []
+    assert bubbles(window, "system") == ["🍙 Мія поїла"]
+    assert window.message_count() == 2
+
+
+def test_control_line_is_never_shown_while_streaming(make_window, facade):
+    facade.deferred = True
+    facade.streams = [StreamScript(deltas=["<<state=", "happy;action=none>>\n", "Ура!"],
+                                   reply=ChatReply(text="Ура!"))]
+    window = make_window()
+    window.input.setText("я виграв")
+    window.send()
+    facade.resolve("delta")
+    facade.resolve("delta")
+    assert bubbles(window, "her") == [TYPING_FRAMES[-1]]  # still "typing"
+    facade.resolve("delta")
+    assert bubbles(window, "her") == ["Ура!"]
+
+
+@pytest.mark.parametrize(
+    ("raw", "shown"),
+    [
+        ("Привіт", "Привіт"),
+        ("<", ""),
+        ("<<state=ha", ""),
+        ("<<state=happy;action=none>>", ""),
+        ("<<state=happy;action=none>>\nПривіт", "Привіт"),
+        ("  <<state=happy>> Привіт", "Привіт"),
+        ("<<не контрольний рядок\nа текст", "<<не контрольний рядок\nа текст"),
+        ("2 < 3", "2 < 3"),
+    ],
+)
+def test_visible_stream_text(raw, shown):
+    assert visible_stream_text(raw) == shown
+
+
+def test_failing_stream_shows_error_line_and_removes_typing_bubble(make_window, facade):
+    facade.chat_error = RuntimeError("network down")
+    window = make_window()
+    window.input.setText("привіт")
+    window.send()
+    assert bubbles(window, "her") == []
+    assert bubbles(window, "system") == ["Щось пішло не так — спробуй ще раз."]
+    assert window.send_button.isEnabled() and not window.is_waiting()
+
+
+def test_watchdog_ends_a_reply_that_never_comes_and_drops_the_late_answer(make_window, facade):
+    facade.deferred = True
+    window = make_window()
+    window.input.setText("агов")
+    window.send()
+    assert window.watchdog.isActive()
+    window.watchdog.timeout.emit()
+    assert window.send_button.isEnabled() and not window.is_waiting()
+    assert bubbles(window, "her") == []
+    assert bubbles(window, "system") == [TIMEOUT_LINE]
+    facade.resolve("done")  # far too late: ignored
+    assert bubbles(window, "her") == []
+
+
+def test_watchdog_keeps_partial_text(make_window, facade):
+    facade.deferred = True
+    facade.streams = [StreamScript(deltas=["Зараз розкажу"], reply=ChatReply(text="x"))]
+    window = make_window()
+    window.input.setText("розкажи")
+    window.send()
+    facade.resolve("delta")
+    window.watchdog.timeout.emit()
+    assert bubbles(window, "her") == ["Зараз розкажу"]
+
+
+def test_late_callbacks_after_the_window_is_deleted_do_not_crash(facade, qapp):
+    from PySide6.QtCore import QEvent
+
+    facade.deferred = True
+    facade.streams = [StreamScript(deltas=["а"], reply=ChatReply(text="а"))]
+    window = ChatWindow(facade)
+    window.show()
+    window.input.setText("привіт")
+    window.send()
+    window.close()
+    window.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    facade.resolve("delta")
+    facade.resolve("done")  # no RuntimeError from a deleted widget
+
+
+def test_stream_never_logs_the_text(make_window, facade, caplog):
+    secret = "мій пароль qwerty123"
+    facade.deferred = True
+    facade.streams = [StreamScript(deltas=[secret], reply=ChatReply(text=secret))]
+    window = make_window()
+    with caplog.at_level(logging.DEBUG):
+        window.input.setText(secret)
+        window.send()
+        facade.resolve("delta")
+        facade.resolve("done")
+    assert all(secret not in record.getMessage() for record in caplog.records)

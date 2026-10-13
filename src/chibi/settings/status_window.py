@@ -1,27 +1,30 @@
-"""Status window: how she is doing right now (needs, mood, friendship, what is active).
+"""Status window: how she is doing right now (needs, feelings, mood, friendship,
+what is active, whether she talks through AI).
 
 It polls the facade every 2 s, but only while it is visible - a hidden or
 minimised status window costs nothing.  Everything shown is computed by the
-app; this window only formats it.
+app; this window only formats it.  Each part is read separately, so a failing
+part (e.g. the AI status) never blanks the rest.
 """
 
 from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QHideEvent, QShowEvent
 from PySide6.QtWidgets import QHBoxLayout, QProgressBar, QVBoxLayout, QWidget
 
-from chibi.settings.facade import AppFacade, NeedsView, StatusView
+from chibi.settings.facade import AIStatusView, AppFacade, NeedsView, StatusView
 from chibi.settings.widgets import (
     STATE_PORTRAITS,
     Card,
     NeedsBar,
     PortraitLabel,
     SectionHeader,
+    ai_title,
     format_local_time,
     make_button,
     make_label,
@@ -39,6 +42,25 @@ _MAX_QUIET_AHEAD_SECONDS = 2 * 24 * 3600
 
 #: Postures in which the portrait follows her needs rather than the state itself.
 _CALM_STATES = frozenset({"idle", "walk", "sit"})
+
+#: facade.emotion() key -> (bar title, tone, tooltip).  The other emotions
+#: (happiness, energy, boredom, affection, hunger) are the needs bars above.
+EMOTION_BARS: tuple[tuple[str, str, str, str], ...] = (
+    ("curiosity", "Цікавість", "lilac", "Наскільки їй цікаво, що відбувається довкола."),
+    ("excitement", "Азарт", "pink", "Росте, коли ти граєш чи з нею бавишся, і поволі вщухає."),
+    ("trust", "Довіра", "success", "Росте від спілкування й турботи — повільно, як і справжня."),
+)
+
+
+def ai_line(view: AIStatusView) -> tuple[str, str]:
+    """(pill text, pill state) for the AI indicator."""
+    if view.online:
+        where = "хмара" if view.cloud else "локально"
+        return f"🤖 AI: {ai_title(view.provider, view.model)} ({where})", "on"
+    if view.provider == "none":
+        return "🤖 AI вимкнено: говорить готовими репліками", ""
+    reason = view.reason.strip()
+    return (f"🤖 AI офлайн: {reason}" if reason else "🤖 AI: офлайн-режим"), "alert"
 
 
 def portrait_for(state: str, needs: NeedsView) -> list[str]:
@@ -71,6 +93,8 @@ class StatusWindow(QWidget):
         self._facade = facade
         self._now = now
         self._failed = False
+        self._emotion_failed = False
+        self._ai_failed = False
         self.setWindowTitle("Як вона?")
         self.setMinimumWidth(380)
 
@@ -104,6 +128,18 @@ class StatusWindow(QWidget):
         for bar in (self.satiety_bar, self.energy_bar, self.happiness_bar, self.boredom_bar,
                     self.affection_bar):
             needs_card.body.addWidget(bar)
+
+        # --- feelings (the emotion engine); no "low = bad" colours here
+        self.emotion_card = Card(spacing=10)
+        self.emotion_card.body.addWidget(SectionHeader("Почуття"))
+        self.emotion_bars: dict[str, NeedsBar] = {}
+        for key, title, tone, tooltip in EMOTION_BARS:
+            bar = NeedsBar(title, tone, alerts=False, tooltip=tooltip)
+            self.emotion_bars[key] = bar
+            self.emotion_card.body.addWidget(bar)
+        self.curiosity_bar = self.emotion_bars["curiosity"]
+        self.excitement_bar = self.emotion_bars["excitement"]
+        self.trust_bar = self.emotion_bars["trust"]
 
         # --- friendship
         friend_card = Card(spacing=6)
@@ -144,7 +180,7 @@ class StatusWindow(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(12)
-        for widget in (header, needs_card, friend_card, flags):
+        for widget in (header, needs_card, self.emotion_card, friend_card, flags):
             root.addWidget(widget)
         root.addLayout(actions)
         root.addStretch(1)
@@ -170,6 +206,36 @@ class StatusWindow(QWidget):
         self._show_identity(status, needs)
         self._show_needs(needs)
         self._show_flags(status)
+        self._show_emotions()
+        self._show_ai(status)
+
+    def _show_emotions(self) -> None:
+        try:
+            values = self._facade.emotion()
+        except Exception:
+            if not self._emotion_failed:
+                log.exception("reading her emotions failed")
+            self._emotion_failed = True
+            return  # keep the last values rather than flash zeros
+        self._emotion_failed = False
+        for key, bar in self.emotion_bars.items():
+            value = values.get(key) if isinstance(values, Mapping) else None
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                bar.set_value(float(value))
+
+    def _show_ai(self, status: StatusView) -> None:
+        try:
+            view = self._facade.ai_status()
+        except Exception:
+            if not self._ai_failed:
+                log.exception("reading the AI status failed")
+            self._ai_failed = True
+            text, state = ("🤖 AI: підключено", "on") if status.ai_connected else ("🤖 AI: офлайн-режим", "")
+        else:
+            self._ai_failed = False
+            text, state = ai_line(view)
+        self.ai_label.setText(text)
+        set_style_property(self.ai_label, "state", state)
 
     def _show_identity(self, status: StatusView, needs: NeedsView) -> None:
         name = status.character_name
@@ -219,7 +285,6 @@ class StatusWindow(QWidget):
 
         self.dnd_label.setVisible(status.do_not_disturb)
         set_style_property(self.dnd_label, "state", "alert")
-        self.ai_label.setText("🤖 AI: підключено" if status.ai_connected else "🤖 AI: офлайн-режим")
 
     def _act(self, action: Callable[[], None]) -> None:
         try:

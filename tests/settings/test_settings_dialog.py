@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QDialog, QLabel, QLineEdit
+from PySide6.QtWidgets import QDialog, QLabel
 
 from chibi.core.events import Permission
 from chibi.memory.repositories import GameTotals
@@ -15,7 +15,7 @@ from chibi.settings.settings_dialog import (
     normalize_process_name,
 )
 
-UNAVAILABLE = (Permission.SCREEN_CAPTURE, Permission.CLOUD_VISION, Permission.CLOUD_AI, Permission.MICROPHONE)
+UNAVAILABLE = (Permission.SCREEN_CAPTURE, Permission.CLOUD_VISION, Permission.MICROPHONE)
 
 
 class Confirm:
@@ -262,22 +262,132 @@ def test_failing_apply_reports_error_and_keeps_dialog_open(make_dialog, facade):
     assert "Не вдалося" in dialog.status_label.text()
 
 
-def test_personality_page_is_honest_about_phase_1(make_dialog):
+def test_personality_page_explains_what_the_sliders_steer(make_dialog):
     dialog = make_dialog()
     text = labels_text(dialog.stack.widget(1))
-    assert "фаза 1" in text and "фазі 2" in text
+    assert "готових реплік" in text and "сторінка «AI»" in text
     titles = [row.title_label.text() for row in dialog.personality_rows.values()]
     assert titles == ["Гумор", "Сарказм", "Балакучість", "Цікавість", "Прив'язаність", "Незалежність",
                       "Частота коментарів"]
 
 
-def test_ai_page_has_no_fake_inputs(make_dialog):
+def page_widget(dialog, key: str):
+    return dialog.stack.widget([k for k, _ in PAGES].index(key))
+
+
+def test_ai_page_is_the_real_one_with_later_features_labelled(make_dialog):
     dialog = make_dialog()
-    page = dialog.stack.widget([k for k, _ in PAGES].index("ai"))
-    assert page.findChildren(QLineEdit) == []
+    assert [t for k, t in PAGES if k in ("ai", "memory")] == ["AI", "Пам'ять"]
+    page = page_widget(dialog, "ai")
+    assert page.isAncestorOf(dialog.ai_page)
     text = labels_text(page)
-    for word in ("OpenAI", "Anthropic", "Ollama", "Фаза 2", "Фаза 3", "Фаза 4", "офлайн"):
-        assert word in text
+    assert "з'явиться у фазі 3" in text and "з'явиться у фазі 4" in text
+    dialog.show_page("ai")
+    assert dialog.current_page() == "ai"
+
+
+def test_ai_settings_are_applied_with_the_dialog(make_dialog, facade):
+    dialog = make_dialog()
+    dialog.show_page("ai")
+    ai = dialog.ai_page
+    ai.provider_combo.setCurrentIndex(ai.provider_combo.findData("ollama"))
+    ai.model_combo.setEditText("qwen3:8b")
+    ai.per_day_spin.setValue(250)
+    ai.stream_check.setChecked(False)
+    dialog.name_edit.setText("Ліна")
+    dialog.apply_button.click()
+    s = facade.applied[-1]
+    assert (s.ai.provider, s.ai.model, s.ai.max_requests_per_day, s.ai.stream) == (
+        "ollama", "qwen3:8b", 250, False)
+    assert s.character.name == "Ліна"
+    assert not ai.has_edits()  # synced to what the app holds
+
+
+def test_ai_fields_changed_elsewhere_are_not_reverted(make_dialog, facade):
+    dialog = make_dialog()
+    change_elsewhere(facade, ai__effort="high", ai__max_requests_per_hour=9)
+    dialog.dnd_check.setChecked(True)
+    dialog.apply_button.click()
+    s = facade.applied[-1]
+    assert (s.ai.effort, s.ai.max_requests_per_hour, s.behavior.do_not_disturb) == ("high", 9, True)
+
+
+def test_refresh_shows_ai_changes_made_elsewhere(make_dialog, facade):
+    dialog = make_dialog()
+    dialog.ai_page.per_day_spin.setValue(77)  # unsaved edit
+    change_elsewhere(facade, ai__max_requests_per_hour=11, ai__max_requests_per_day=5)
+    dialog.hide()
+    dialog.show()
+    assert dialog.ai_page.per_hour_spin.value() == 11
+    assert dialog.ai_page.per_day_spin.value() == 77
+
+
+def test_invalid_ai_address_blocks_apply_and_shows_the_page(make_dialog, facade):
+    dialog = make_dialog()
+    ai = dialog.ai_page
+    ai.provider_combo.setCurrentIndex(ai.provider_combo.findData("openai"))
+    ai.openai_url_edit.setText("api.example.com")
+    dialog.ok_button.click()
+    assert facade.applied == []
+    assert dialog.isVisible() and dialog.current_page() == "ai"
+    assert "адресу" in dialog.status_label.text()
+
+
+def test_cancel_discards_ai_edits(make_dialog, facade):
+    dialog = make_dialog()
+    dialog.ai_page.provider_combo.setCurrentIndex(dialog.ai_page.provider_combo.findData("anthropic"))
+    dialog.cancel_button.click()
+    assert facade.applied == []
+    assert facade.settings().ai.provider == "none"
+
+
+def test_ai_check_applies_only_the_ai_page(make_dialog, facade):
+    dialog = make_dialog()
+    dialog.name_edit.setText("Ліна")  # pending on another page
+    ai = dialog.ai_page
+    ai.provider_combo.setCurrentIndex(ai.provider_combo.findData("ollama"))
+    ai.test_button.click()
+    assert facade.settings().ai.provider == "ollama"
+    assert facade.settings().character.name == "Мія"  # other pages still wait for Apply
+    assert "AI збережено" in dialog.status_label.text()
+    dialog.cancel_button.click()
+    assert facade.settings().character.name == "Мія"
+
+
+def test_granting_cloud_ai_on_the_ai_page_updates_the_privacy_page(make_dialog, permissions):
+    dialog = make_dialog(Confirm(True))
+    ai = dialog.ai_page
+    ai.provider_combo.setCurrentIndex(ai.provider_combo.findData("anthropic"))
+    ai.allow_cloud_button.click()
+    assert permissions.is_granted(Permission.CLOUD_AI)
+    assert dialog.permission_checks[Permission.CLOUD_AI].isChecked()
+    texts = [dialog.history_list.item(i).text() for i in range(dialog.history_list.count())]
+    assert "Хмарний AI: дозвіл надано" in texts[0]
+
+
+def test_revoking_cloud_ai_on_the_privacy_page_updates_the_ai_page(make_dialog, permissions):
+    permissions.grant(Permission.CLOUD_AI)
+    dialog = make_dialog()
+    ai = dialog.ai_page
+    ai.provider_combo.setCurrentIndex(ai.provider_combo.findData("anthropic"))
+    assert ai.cloud_banner.isHidden()
+    dialog.permission_checks[Permission.CLOUD_AI].click()  # revoke: immediate, no question
+    assert not permissions.is_granted(Permission.CLOUD_AI)
+    assert not ai.cloud_banner.isHidden()
+
+
+def test_memory_page_embeds_the_viewer(make_dialog, facade):
+    facade.seed_memory("fact", "Кота звати Мурчик")
+    dialog = make_dialog()
+    dialog.show_page("memory")
+    viewer = dialog.memory_viewer
+    assert page_widget(dialog, "memory").isAncestorOf(viewer)
+    assert not viewer.isWindow()
+    assert viewer.table.rowCount() == 1
+    facade.seed_memory("joke", "Жарт")
+    dialog.show_page("ai")
+    dialog.show_page("memory")  # refreshed every time the page is shown
+    assert viewer.table.rowCount() == 2
 
 
 # --- permissions -----------------------------------------------------------------------------
@@ -336,11 +446,38 @@ def test_unavailable_permissions_are_shown_disabled_with_their_phase(make_dialog
         box = dialog.permission_checks[permission]
         assert not box.isEnabled() and not box.isChecked()
     assert {p: PERMISSION_TEXTS[p].phase for p in UNAVAILABLE} == {
-        Permission.SCREEN_CAPTURE: 3, Permission.CLOUD_VISION: 3, Permission.CLOUD_AI: 2,
-        Permission.MICROPHONE: 4}
-    text = labels_text(dialog)
-    for phase in (2, 3, 4):
+        Permission.SCREEN_CAPTURE: 3, Permission.CLOUD_VISION: 3, Permission.MICROPHONE: 4}
+    text = labels_text(page_widget(dialog, "privacy"))
+    for phase in (3, 4):
         assert f"з'явиться у фазі {phase}" in text
+    assert "з'явиться у фазі 2" not in text
+    # cloud AI exists now: a real, enabled toggle
+    assert PERMISSION_TEXTS[Permission.CLOUD_AI].phase is None
+    assert dialog.permission_checks[Permission.CLOUD_AI].isEnabled()
+
+
+def test_granting_cloud_ai_requires_explicit_consent(make_dialog, permissions):
+    declined = Confirm(False)
+    dialog = make_dialog(declined)
+    box = dialog.permission_checks[Permission.CLOUD_AI]
+    box.click()
+    assert not permissions.is_granted(Permission.CLOUD_AI) and not box.isChecked()
+    title, text = declined.asked[0]
+    assert title == "Дозволити хмарний AI?"
+    for part in ("пишеш у чаті", "настрій і потреби", "назву активної програми", "спогади",
+                 "Знімки екрана", "політикою конфіденційності"):
+        assert part in text
+    dialog = make_dialog(Confirm(True))
+    dialog.permission_checks[Permission.CLOUD_AI].click()
+    assert permissions.is_granted(Permission.CLOUD_AI)
+
+
+def test_kill_switch_leaves_cloud_ai_alone_and_says_so(make_dialog, permissions):
+    permissions.grant(Permission.CLOUD_AI)
+    dialog = make_dialog()
+    dialog.kill_switch_button.click()
+    assert permissions.is_granted(Permission.CLOUD_AI)
+    assert "Хмарний AI — не спостереження" in labels_text(page_widget(dialog, "privacy"))
 
 
 def test_kill_switch_revokes_everything(make_dialog, facade, permissions):
@@ -568,3 +705,24 @@ def test_granting_from_privacy_page_updates_games_page(make_dialog):
     assert not dialog.monitoring_note.isHidden()
     dialog.permission_checks[Permission.APP_METADATA].click()
     assert dialog.monitoring_note.isHidden()
+
+
+def test_ok_saves_a_typed_but_unsaved_key(make_dialog, facade):
+    dialog = make_dialog()
+    ai = dialog.ai_page
+    ai.provider_combo.setCurrentIndex(ai.provider_combo.findData("anthropic"))
+    ai.key_edit.setText("sk-ant-12345678")
+    dialog.ok_button.click()
+    assert facade.keys == {"anthropic": "sk-ant-12345678"}
+    assert facade.applied[-1].ai.provider == "anthropic"
+    assert not dialog.isVisible()
+
+
+def test_bad_typed_key_blocks_ok(make_dialog, facade):
+    dialog = make_dialog()
+    ai = dialog.ai_page
+    ai.provider_combo.setCurrentIndex(ai.provider_combo.findData("anthropic"))
+    ai.key_edit.setText("two words")
+    dialog.ok_button.click()
+    assert facade.applied == [] and facade.keys == {}
+    assert dialog.isVisible() and dialog.current_page() == "ai"

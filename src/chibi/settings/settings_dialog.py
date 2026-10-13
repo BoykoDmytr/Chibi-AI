@@ -1,4 +1,4 @@
-"""The settings dialog: character, personality, behaviour, privacy, games, AI.
+"""The settings dialog: character, personality, behaviour, privacy, games, AI, memory.
 
 Design notes:
 
@@ -17,7 +17,11 @@ Design notes:
   Ctrl+wheel keep changing settings (DND, lock, scale...).  Applying therefore
   writes only the fields the user edited *in the dialog* (widget value differs
   from what the widget was last loaded with) onto the app's current settings,
-  so a stale widget never undoes a change made elsewhere.
+  so a stale widget never undoes a change made elsewhere.  The AI page
+  (:class:`~chibi.settings.ai_page.AIPage`) keeps the same baseline for its
+  own fields and is merged in by ``collect`` / ``sync``.
+* API keys (AI page) and memories (memory page) are not settings either: like
+  permissions they take effect immediately and never pass through Apply.
 """
 
 from __future__ import annotations
@@ -41,7 +45,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
@@ -54,7 +57,9 @@ from chibi.core.config import BehaviorSettings, CharacterSettings, Settings
 from chibi.core.events import Permission
 from chibi.memory.repositories import GameTotals, PermissionRecord
 from chibi.privacy.permissions import AVAILABLE, REQUIRES
+from chibi.settings.ai_page import CLOUD_AI_CONSENT_TEXT, CLOUD_AI_CONSENT_TITLE, AIPage
 from chibi.settings.facade import AppFacade
+from chibi.settings.memory_viewer import MemoryViewer
 from chibi.settings.widgets import (
     Card,
     CheckRow,
@@ -62,6 +67,7 @@ from chibi.settings.widgets import (
     SectionHeader,
     SliderRow,
     SubmitLineEdit,
+    ask_yes_no,
     count_uk,
     format_duration,
     format_local_date,
@@ -71,6 +77,7 @@ from chibi.settings.widgets import (
     percent,
     scroll_page,
     set_style_property,
+    setting_row,
 )
 
 log = logging.getLogger(__name__)
@@ -84,7 +91,8 @@ PAGES: tuple[tuple[str, str], ...] = (
     ("behavior", "Поведінка"),
     ("privacy", "Приватність"),
     ("games", "Ігри"),
-    ("ai", "AI та голос"),
+    ("ai", "AI"),
+    ("memory", "Пам'ять"),
 )
 
 #: Short permission names for the history list.
@@ -155,8 +163,14 @@ PERMISSION_TEXTS: dict[Permission, PermissionText] = {
     ),
     Permission.CLOUD_AI: PermissionText(
         title="Надсилати текст розмов хмарному AI",
-        hint="Для розмов через OpenAI чи Anthropic. Локальна модель (Ollama) цього не потребуватиме.",
-        phase=2,
+        hint=(
+            "Для розмов через Anthropic Claude чи OpenAI-сумісний сервер в інтернеті. Надсилається те, "
+            "що ти пишеш у чаті, її настрій і потреби, назва активної програми (якщо дозволено бачити "
+            "програми) і доречні спогади — але ніколи не знімки екрана. Локальна модель (Ollama на "
+            "цьому ПК) цього дозволу не потребує."
+        ),
+        consent_title=CLOUD_AI_CONSENT_TITLE,
+        consent_text=CLOUD_AI_CONSENT_TEXT,
     ),
     Permission.MICROPHONE: PermissionText(
         title="Слухати мікрофон",
@@ -201,12 +215,13 @@ CLICK_THROUGH_NO_TRAY_HINT = (
 )
 
 WIPE_HISTORY_TEXT = (
-    "Буде видалено збережену історію: ігрові сесії та сказані репліки. Налаштування, дозволи та "
-    "історія їхніх змін, а також стан персонажа залишаться.\n\nЦю дію не можна скасувати."
+    "Буде видалено збережену історію: ігрові сесії та сказані репліки, а також лічильник запитів до AI. "
+    "Налаштування, дозволи та історія їхніх змін, її пам'ять (вона в розділі «Пам'ять») і стан "
+    "персонажа залишаться.\n\nЦю дію не можна скасувати."
 )
 WIPE_ALL_TEXT = (
-    "Буде видалено все: налаштування, дозволи та історію їхніх змін, історію ігор і реплік, стан "
-    "персонажа, журнали роботи програми й поточну розмову в чаті. Програма повернеться до стану "
+    "Буде видалено все: налаштування, дозволи та історію їхніх змін, історію ігор і реплік, її пам'ять, "
+    "стан персонажа, журнали роботи програми й поточну розмову в чаті. Програма повернеться до стану "
     "першого запуску.\n\nЦю дію не можна скасувати."
 )
 
@@ -276,6 +291,7 @@ class SettingsDialog(QDialog):
             "privacy": self._build_privacy_page,
             "games": self._build_games_page,
             "ai": self._build_ai_page,
+            "memory": self._build_memory_page,
         }
         self._page_keys: list[str] = []
         for key, title in PAGES:
@@ -333,6 +349,7 @@ class SettingsDialog(QDialog):
         self._refresh_permissions()
         self._refresh_history()
         self._refresh_games()
+        self.ai_page.refresh()
 
     def apply(self) -> bool:
         """Validate and hand the edited settings to the app.  Returns False if rejected."""
@@ -345,6 +362,14 @@ class SettingsDialog(QDialog):
             self._set_status("Ім'я не може бути порожнім.", error=True)
             return False
         self.name_error.hide()
+        if not self.ai_page.validate():
+            self.show_page("ai")
+            self._set_status("Перевір адресу сервера на сторінці «AI».", error=True)
+            return False
+        if not self.ai_page.save_pending_key():
+            self.show_page("ai")
+            self._set_status("API-ключ не збережено — перевір його на сторінці «AI».", error=True)
+            return False
         settings = self._collect()
         try:
             self._facade.apply_settings(settings)
@@ -357,6 +382,7 @@ class SettingsDialog(QDialog):
         if not self._sync_from_app(edited_too=True):
             self._settings = settings
             self._loaded = self._read_fields()
+            self.ai_page.reset_baseline()
             self.setWindowTitle(f"Налаштування — {settings.character.name}")
         self._set_status("Збережено ✓")
         return True
@@ -452,8 +478,8 @@ class SettingsDialog(QDialog):
     def _build_personality_page(self) -> QWidget:
         page, layout = self._page("Характер")
         note = make_label(
-            "Поки AI не підключено (фаза 1), ці повзунки впливають на те, які з готових реплік вона "
-            "обирає і як часто говорить. У фазі 2 вони визначатимуть характер відповідей AI.",
+            "Повзунки задають її вдачу: які з готових реплік вона обирає і як часто говорить сама. "
+            "Якщо підключено AI (сторінка «AI»), вони ж визначають і тон її відповідей.",
             "banner",
         )
         layout.addWidget(note)
@@ -517,7 +543,8 @@ class SettingsDialog(QDialog):
         )
         layout.addWidget(make_label(
             "Ніколи не зберігаються: знімки екрана, натискання клавіш, заголовки вікон. На диск "
-            "записуються лише ігрові сесії: яка гра, коли почалася і скільки тривала.",
+            "записуються лише ігрові сесії (яка гра, коли почалася і скільки тривала), лічильник "
+            "запитів до AI та її пам'ять про те, що ти розповідаєш у чаті (розділ «Пам'ять»).",
             "banner",
         ))
 
@@ -529,12 +556,11 @@ class SettingsDialog(QDialog):
         self.activity_unsupported_label.hide()
         perms.body.addWidget(self.activity_unsupported_label)
         self.permission_checks: dict[Permission, QCheckBox] = {}
-        for permission in (Permission.APP_METADATA, Permission.WINDOW_TITLES):
+        for permission in (Permission.APP_METADATA, Permission.WINDOW_TITLES, Permission.CLOUD_AI):
             perms.body.addWidget(self._permission_row(permission))
         perms.body.addSpacing(4)
         perms.body.addWidget(SectionHeader("Згодом"))
-        for permission in (Permission.CLOUD_AI, Permission.SCREEN_CAPTURE, Permission.CLOUD_VISION,
-                           Permission.MICROPHONE):
+        for permission in (Permission.SCREEN_CAPTURE, Permission.CLOUD_VISION, Permission.MICROPHONE):
             perms.body.addWidget(self._permission_row(permission))
         layout.addWidget(perms)
 
@@ -543,7 +569,8 @@ class SettingsDialog(QDialog):
         self.kill_switch_button.clicked.connect(self._stop_all)
         stop.body.addWidget(self.kill_switch_button)
         stop.body.addWidget(InfoLabel(
-            "Миттєво відкликає всі дозволи на спостереження. Увімкнути їх знову можна лише вручну."))
+            "Миттєво відкликає всі дозволи на спостереження. Увімкнути їх знову можна лише вручну. "
+            "Хмарний AI — не спостереження: його дозвіл вимикається окремо, прапорцем вище."))
         layout.addWidget(stop)
 
         excl = Card()
@@ -670,33 +697,14 @@ class SettingsDialog(QDialog):
         return page
 
     def _build_ai_page(self) -> QWidget:
-        name = self._settings.character.name
-        page, layout = self._page("AI та голос")
-        now = Card()
-        now.body.addWidget(SectionHeader("Зараз: офлайн-режим"))
-        now.body.addWidget(make_label("AI-провайдера не підключено.", "warning"))
-        now.body.addWidget(InfoLabel(
-            f"{name} говорить готовими репліками, а в чаті розуміє лише прості фрази — наприклад, "
-            "«привіт» чи «помовч». Жодні дані нікуди не надсилаються."))
-        layout.addWidget(now)
+        self.ai_page = AIPage(self._facade, self._confirm, parent=self)
+        self.ai_page.permissions_changed.connect(self._on_ai_permission_granted)
+        self.ai_page.settings_applied.connect(lambda: self._set_status("Налаштування AI збережено."))
+        return self.ai_page
 
-        plan = Card()
-        plan.body.addWidget(SectionHeader("Що буде далі"))
-        for title, text in (
-            ("Фаза 2 — розмови з AI",
-             "Підтримка OpenAI, Anthropic і локальних моделей через Ollama. Хмарному провайдерові текст "
-             "надсилатиметься лише з окремим дозволом. Налаштування провайдера з'являться тут разом "
-             "із самою функцією."),
-            ("Фаза 3 — зір",
-             "За твоїм дозволом вона зможе бачити, що відбувається на екрані."),
-            ("Фаза 4 — голос",
-             "Розпізнавання мовлення (STT) та озвучення відповідей (TTS)."),
-        ):
-            plan.body.addWidget(make_label(title, "value"))
-            plan.body.addWidget(InfoLabel(text))
-        layout.addWidget(plan)
-        layout.addStretch(1)
-        return page
+    def _build_memory_page(self) -> QWidget:
+        self.memory_viewer = MemoryViewer(self._facade, parent=self, confirm=self._confirm)
+        return self.memory_viewer
 
     # --- small builders -----------------------------------------------------------------------
 
@@ -719,23 +727,7 @@ class SettingsDialog(QDialog):
 
     @staticmethod
     def _setting_row(text: str, field: QWidget, hint: str = "") -> QWidget:
-        """Label (+ optional hint) on the left, the input on the right.
-
-        A box layout rather than QFormLayout: the latter ignores height-for-width,
-        so wrapped labels would overlap the next row.
-        """
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 2, 0, 2)
-        layout.setSpacing(14)
-        labels = QVBoxLayout()
-        labels.setSpacing(1)
-        labels.addWidget(make_label(text))
-        if hint:
-            labels.addWidget(InfoLabel(hint))
-        layout.addLayout(labels, 1)
-        layout.addWidget(field, 0, Qt.AlignmentFlag.AlignVCenter)
-        return row
+        return setting_row(text, field, hint)
 
     @staticmethod
     def _table(headers: tuple[str, ...], stretch: tuple[int, ...] = (0,)) -> QTableWidget:
@@ -796,12 +788,19 @@ class SettingsDialog(QDialog):
         self._refresh_permissions()
         self._refresh_history()
         self._refresh_games()
+        self.ai_page.refresh()
+
+    def _on_ai_permission_granted(self) -> None:
+        self._refresh_permissions()
+        self._refresh_history()
+        self._set_status("Дозвіл надано.")
 
     def _stop_all(self) -> None:
         self._facade.stop_all_observation()
         self._refresh_permissions()
         self._refresh_history()
         self._refresh_games()
+        self.ai_page.refresh()
         self._set_status("Усе спостереження зупинено.")
 
     def _refresh_permissions(self) -> None:
@@ -971,7 +970,7 @@ class SettingsDialog(QDialog):
             value = field.read()
             if value != self._loaded[(field.section, field.name)]:
                 setattr(getattr(s, field.section), field.name, value)
-        return s
+        return self.ai_page.collect(s)
 
     def _bind_fields(self) -> tuple[_Field, ...]:
         """Every settings field this dialog edits, with how to read and show it."""
@@ -1030,6 +1029,7 @@ class SettingsDialog(QDialog):
             if edited_too or field.read() == self._loaded[key]:
                 field.write(getattr(getattr(current, field.section), field.name))
                 self._loaded[key] = field.read()
+        self.ai_page.sync(current, edited_too=edited_too)
         self._settings = current
         self.setWindowTitle(f"Налаштування — {current.character.name}")
         return True
@@ -1067,13 +1067,7 @@ class SettingsDialog(QDialog):
         set_style_property(self.status_label, "role", "error" if error else "success")
 
     def _ask(self, title: str, text: str) -> bool:
-        box = QMessageBox(QMessageBox.Icon.Question, title, text, QMessageBox.StandardButton.NoButton, self)
-        yes = box.addButton("Так", QMessageBox.ButtonRole.AcceptRole)
-        no = box.addButton("Скасувати", QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(no)
-        box.setEscapeButton(no)
-        box.exec()
-        return box.clickedButton() is yes
+        return ask_yes_no(self, title, text)
 
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)

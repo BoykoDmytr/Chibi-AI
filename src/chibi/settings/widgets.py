@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid
 
 from chibi.settings import theme
 
@@ -145,6 +147,67 @@ def format_local_time(ts: float) -> str:
 def percent(value: float) -> str:
     """``"72 %"`` with a no-break space, as Ukrainian typography wants."""
     return f"{round(value)} %"
+
+
+def format_usd(value: float) -> str:
+    """``"$0.03"``.  Dollars keep the provider's own notation (prefix sign, decimal
+    point) so the numbers can be compared with their price pages one to one."""
+    if not math.isfinite(value) or value < 0:
+        value = 0.0
+    return f"${value:.2f}"
+
+
+# --- AI provider names -------------------------------------------------------------------
+
+#: ``AISettings.provider`` -> short name shown in the chat banner and status windows.
+AI_PROVIDER_NAMES: dict[str, str] = {
+    "none": "вимкнено",
+    "ollama": "Ollama",
+    "anthropic": "Anthropic Claude",
+    "openai": "OpenAI-сумісний сервер",
+}
+
+
+def ai_provider_name(provider: str) -> str:
+    return AI_PROVIDER_NAMES.get(provider, provider or "невідомий")
+
+
+def ai_title(provider: str, model: str) -> str:
+    """``"Anthropic Claude · claude-opus-5-5"`` (just the provider when the model is unknown)."""
+    name = ai_provider_name(provider)
+    model = model.strip()
+    return f"{name} · {model}" if model else name
+
+
+# --- object lifetime -----------------------------------------------------------------------
+
+
+def is_alive(obj: object) -> bool:
+    """False once the C++ side of a Qt object is gone.
+
+    Asynchronous callbacks (AI replies, model lists, connection tests) can
+    arrive after their window was closed and deleted; touching a deleted
+    widget raises RuntimeError, so every such callback checks this first.
+    """
+    return obj is not None and isValid(obj)
+
+
+def ask_yes_no(parent: QWidget | None, title: str, text: str, *, yes: str = "Так") -> bool:
+    """Modal "are you sure / do you consent" box with Ukrainian buttons.
+
+    "Скасувати" is both the default and the Escape button: a stray Enter must
+    never grant a permission or delete data.
+    """
+    box = QMessageBox(QMessageBox.Icon.Question, title, "", QMessageBox.StandardButton.NoButton, parent)
+    # Plain text: the question may quote user content (a memory), which must never become HTML.
+    box.setTextFormat(Qt.TextFormat.PlainText)
+    box.setText(text)
+    yes_button = box.addButton(yes, QMessageBox.ButtonRole.AcceptRole)
+    no_button = box.addButton("Скасувати", QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(no_button)
+    box.setEscapeButton(no_button)
+    box.exec()
+    return box.clickedButton() is yes_button
 
 
 # --- styling helpers -----------------------------------------------------------------------
@@ -290,19 +353,22 @@ class NeedsBar(QWidget):
     """One tamagotchi need: title, percentage and a rounded bar whose colour warns when low.
 
     ``inverted`` is for needs where *high* is bad (boredom): the bar shows the
-    raw value but turns warning/danger as it fills up.
+    raw value but turns warning/danger as it fills up.  ``alerts=False`` keeps
+    the base colour at any value - for feelings such as curiosity, where a low
+    value is just a calmer mood, not something to fix.
     """
 
     WARN_BELOW = 40
     DANGER_BELOW = 20
 
-    def __init__(self, title: str, tone: str = "pink", *, inverted: bool = False, tooltip: str = "",
-                 parent: QWidget | None = None) -> None:
+    def __init__(self, title: str, tone: str = "pink", *, inverted: bool = False, alerts: bool = True,
+                 tooltip: str = "", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         if tone not in theme.TONES:
             raise ValueError(f"unknown tone {tone!r}")
         self._base_tone = tone
         self._inverted = inverted
+        self._alerts = alerts
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
@@ -329,7 +395,9 @@ class NeedsBar(QWidget):
         self.bar.setValue(v)
         self.value_label.setText(percent(v))
         goodness = 100 - v if self._inverted else v
-        if goodness < self.DANGER_BELOW:
+        if not self._alerts:
+            tone = self._base_tone
+        elif goodness < self.DANGER_BELOW:
             tone = "danger"
         elif goodness < self.WARN_BELOW:
             tone = "warning"
@@ -359,6 +427,26 @@ class SubmitLineEdit(QLineEdit):
             self.submitted.emit()
             return
         super().keyPressEvent(event)
+
+
+def setting_row(text: str, field: QWidget, hint: str = "") -> QWidget:
+    """Label (+ optional hint) on the left, the input on the right.
+
+    A box layout rather than QFormLayout: the latter ignores height-for-width,
+    so wrapped labels would overlap the next row.
+    """
+    row = QWidget()
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 2, 0, 2)
+    layout.setSpacing(14)
+    labels = QVBoxLayout()
+    labels.setSpacing(1)
+    labels.addWidget(make_label(text))
+    if hint:
+        labels.addWidget(InfoLabel(hint))
+    layout.addLayout(labels, 1)
+    layout.addWidget(field, 0, Qt.AlignmentFlag.AlignVCenter)
+    return row
 
 
 def scroll_page(content: QWidget) -> QScrollArea:

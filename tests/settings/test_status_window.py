@@ -8,7 +8,8 @@ from PySide6.QtGui import QColor, QPixmap
 
 from chibi.character.states import CharacterState
 from chibi.core.events import Permission
-from chibi.settings.status_window import REFRESH_MS, StatusWindow, portrait_for
+from chibi.settings.facade import AIStatusView
+from chibi.settings.status_window import EMOTION_BARS, REFRESH_MS, StatusWindow, ai_line, portrait_for
 from chibi.settings.widgets import STATE_NAMES_UK, STATE_PORTRAITS
 
 NOW = 1_700_000_000.0
@@ -98,7 +99,7 @@ def test_quiet_dnd_and_ai_indicators(make_window, facade):
     window = make_window()
     assert window.quiet_label.isHidden()
     assert window.dnd_label.isHidden()
-    assert window.ai_label.text() == "🤖 AI: офлайн-режим"
+    assert window.ai_label.text() == "🤖 AI вимкнено: говорить готовими репліками"
     facade.status_view = replace(facade.status_view, quiet_until=NOW + 1800, do_not_disturb=True)
     window.refresh()
     assert not window.quiet_label.isHidden()
@@ -187,3 +188,70 @@ def test_every_character_state_has_a_ukrainian_name_and_portrait():
     states = {s.value for s in CharacterState}
     assert states <= set(STATE_NAMES_UK)
     assert states <= set(STATE_PORTRAITS)
+
+
+# --- Phase 2: feelings and AI ----------------------------------------------------------------------
+
+
+def test_emotion_bars_show_curiosity_excitement_and_trust(make_window, facade):
+    window = make_window()
+    assert [key for key, *_ in EMOTION_BARS] == ["curiosity", "excitement", "trust"]
+    assert window.curiosity_bar.title_label.text() == "Цікавість"
+    assert window.excitement_bar.title_label.text() == "Азарт"
+    assert window.trust_bar.title_label.text() == "Довіра"
+    assert (window.curiosity_bar.value(), window.excitement_bar.value(), window.trust_bar.value()) == (
+        62, 35, 48)
+    facade.emotion_values.update(curiosity=5.4, excitement=99.6, trust=0.0)
+    window.refresh()
+    assert (window.curiosity_bar.value(), window.excitement_bar.value(), window.trust_bar.value()) == (
+        5, 100, 0)
+    # feelings are not needs: a low value is a calmer mood, not a warning
+    assert window.curiosity_bar.tone() == "lilac"
+    assert window.trust_bar.tone() == "success"
+
+
+def test_emotion_failure_keeps_the_rest_and_the_last_values(make_window, facade, caplog):
+    window = make_window()
+    facade.emotion_error = RuntimeError("engine not ready")
+    facade.needs_view = replace(facade.needs_view, energy=12)
+    with caplog.at_level(logging.ERROR, logger="chibi.settings.status_window"):
+        window.refresh()
+        window.refresh()
+    assert window.energy_bar.value() == 12  # needs still refreshed
+    assert window.curiosity_bar.value() == 62  # last known value kept
+    assert len([r for r in caplog.records if "emotions" in r.getMessage()]) == 1
+
+
+def test_missing_or_bad_emotion_values_are_skipped(make_window, facade):
+    window = make_window()
+    facade.emotion_values = {"curiosity": "a lot", "trust": float("nan")}
+    window.refresh()
+    assert window.curiosity_bar.value() == 62
+    assert window.trust_bar.value() == 0  # NaN shows as 0, never crashes
+    assert window.excitement_bar.value() == 35
+
+
+AI_ONLINE = AIStatusView(provider="anthropic", model="claude-opus-5-5", online=True, reason="", cloud=True,
+                         requests_today=3, requests_limit_day=400, cost_today_usd=0.01, cost_limit_usd=1.0,
+                         cost_known=True)
+
+
+def test_ai_line_online_offline_and_off(make_window, facade):
+    facade.ai_status_view = AI_ONLINE
+    window = make_window()
+    assert window.ai_label.text() == "🤖 AI: Anthropic Claude · claude-opus-5-5 (хмара)"
+    assert window.ai_label.property("state") == "on"
+    facade.ai_status_view = replace(AI_ONLINE, online=False, reason="немає API-ключа")
+    window.refresh()
+    assert window.ai_label.text() == "🤖 AI офлайн: немає API-ключа"
+    assert window.ai_label.property("state") == "alert"
+    local = replace(AI_ONLINE, provider="ollama", model="qwen3:8b", cloud=False)
+    assert ai_line(local) == ("🤖 AI: Ollama · qwen3:8b (локально)", "on")
+
+
+def test_ai_line_falls_back_to_status_when_ai_status_fails(make_window, facade):
+    facade.ai_status_error = RuntimeError("boom")
+    facade.status_view = replace(facade.status_view, ai_connected=True)
+    window = make_window()
+    assert window.ai_label.text() == "🤖 AI: підключено"
+    assert window.name_label.text() == "Мія"  # the rest still refreshed

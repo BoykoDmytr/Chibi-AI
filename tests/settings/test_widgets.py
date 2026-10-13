@@ -11,10 +11,15 @@ from chibi.settings.widgets import (
     PortraitLabel,
     SliderRow,
     SubmitLineEdit,
+    ai_provider_name,
+    ai_title,
+    ask_yes_no,
     count_uk,
     format_duration,
     format_local_date,
     format_local_datetime,
+    format_usd,
+    is_alive,
     percent,
     plural_uk,
     state_name_uk,
@@ -156,3 +161,58 @@ def test_text_avatar_draws_first_letter_in_a_circle(qapp):
     image = avatar.toImage()
     assert image.pixelColor(0, 0).alpha() == 0  # transparent corner
     assert image.pixelColor(10, 48).alpha() == 255  # inside the circle
+
+
+# --- Phase 2 helpers ------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("value", "text"), [(0.034, "$0.03"), (1, "$1.00"), (12.5, "$12.50"),
+                                             (-1, "$0.00"), (float("nan"), "$0.00")])
+def test_format_usd(value, text):
+    assert format_usd(value) == text
+
+
+def test_ai_titles():
+    assert ai_title("anthropic", "claude-opus-5-5") == "Anthropic Claude · claude-opus-5-5"
+    assert ai_title("ollama", "  ") == "Ollama"
+    assert ai_provider_name("openai") == "OpenAI-сумісний сервер"
+    assert ai_provider_name("something-new") == "something-new"
+
+
+@pytest.mark.parametrize("value", [0, 10, 50, 100])
+def test_needs_bar_without_alerts_keeps_its_colour(qapp, track, value):
+    bar = track(NeedsBar("Цікавість", "lilac", alerts=False))
+    bar.set_value(value)
+    assert bar.tone() == "lilac"
+
+
+def test_is_alive_tracks_deleted_widgets(qapp):
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QWidget
+
+    widget = QWidget()
+    assert is_alive(widget)
+    widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not is_alive(widget)
+    assert not is_alive(None)
+
+
+def test_ask_yes_no_is_plain_text_and_defaults_to_cancel(qapp):
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    seen = {}
+
+    def inspect_and_press_enter():
+        box = QApplication.activeModalWidget()
+        assert isinstance(box, QMessageBox)
+        seen["format"] = box.textFormat()
+        seen["text"] = box.text()
+        seen["default"] = box.defaultButton().text()
+        QTest.keyClick(box, Qt.Key.Key_Return)  # a stray Enter must not mean "yes"
+
+    QTimer.singleShot(0, inspect_and_press_enter)
+    answer = ask_yes_no(None, "Забути?", "<b>спогад</b>")
+    assert answer is False
+    assert seen == {"format": Qt.TextFormat.PlainText, "text": "<b>спогад</b>", "default": "Скасувати"}
