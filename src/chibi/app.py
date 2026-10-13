@@ -677,6 +677,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--debug", action="store_true", help="verbose logging to the console")
     parser.add_argument("--quit-after", type=float, metavar="SECONDS",
                         help="quit automatically (smoke tests)")
+    parser.add_argument("--self-test", action="store_true",
+                        help="check the installation (assets, data, libraries) and exit")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser.parse_args(argv)
 
@@ -712,6 +714,11 @@ def main(argv: list[str] | None = None) -> int:
     qt_app.setOrganizationName("ChibiCompanion")
     qt_app.setApplicationVersion(__version__)
     qt_app.setQuitOnLastWindowClosed(False)  # lives in the tray
+
+    if args.self_test:
+        from chibi import selftest
+
+        return selftest.run()
 
     lock = QLockFile(str(paths.data_dir() / "chibi.lock"))
     lock.setStaleLockTime(0)

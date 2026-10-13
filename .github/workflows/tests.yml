@@ -37,3 +37,46 @@ jobs:
         env:
           QT_QPA_PLATFORM: windows
         run: python -m pytest -q tests/desktop/test_platform_win.py tests/vision/test_capture_win.py
+
+  build-windows:
+    # The real deliverable: a Windows build that starts.  Proves the frozen
+    # app finds its assets, data files and optional voice libraries.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install ".[voice]" pyinstaller
+      - name: Build executable
+        run: pyinstaller packaging/ChibiCompanion.spec --noconfirm
+      - name: Smoke test the executable
+        shell: pwsh
+        env:
+          CHIBI_DATA_DIR: ${{ runner.temp }}\chibi-smoke
+        run: |
+          $exe = "dist\ChibiCompanion\ChibiCompanion.exe"
+          $log = "$env:CHIBI_DATA_DIR\logs\chibi.log"
+          $p = Start-Process $exe -ArgumentList "--self-test" -PassThru -Wait
+          Get-Content $log
+          if ($p.ExitCode -ne 0) { Write-Error "self-test failed ($($p.ExitCode))"; exit 1 }
+          $p = Start-Process $exe -ArgumentList "--quit-after","10" -PassThru -Wait
+          Get-Content $log -Tail 30
+          if ($p.ExitCode -ne 0) { Write-Error "app exited with $($p.ExitCode)"; exit 1 }
+          if (-not (Select-String -Path $log -Pattern "exited after")) { Write-Error "no clean exit in the log"; exit 1 }
+          $size = (Get-ChildItem dist\ChibiCompanion -Recurse | Measure-Object Length -Sum).Sum / 1MB
+          Write-Output ("bundle size: {0:N0} MB" -f $size)
+      - name: Installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          $version = python -c "import re, pathlib; print(re.search(r'__version__ = \"(.+?)\"', pathlib.Path('src/chibi/__init__.py').read_text()).group(1))"
+          & $iscc "/DAppVersion=$version" packaging\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChibiCompanion-windows
+          path: dist/ChibiCompanion-Setup-*.exe
+          retention-days: 14
