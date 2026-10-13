@@ -68,3 +68,41 @@ def test_process_lists_are_normalised():
 
 def test_not_a_dict_gives_defaults():
     assert Settings.from_dict(None) == Settings()
+
+
+def test_voice_vision_gaming_defaults_are_private_and_off():
+    s = Settings()
+    assert not s.voice.tts_enabled and not s.voice.stt_enabled and not s.voice.wake_phrase_enabled
+    assert s.vision.mode == "off" and s.vision.allowed_games == []
+    assert s.gaming.companion_mode and not s.gaming.hints_and_spoilers
+
+
+def test_voice_settings_are_validated():
+    s = Settings.from_dict({"voice": {"ptt_hotkey": "m", "speed": 9, "piper_speaker": "x",
+                                      "azure_region": "evil.example/x", "stt_model": "huge",
+                                      "speak": "always", "input_device": " Mic " + "x" * 300}})
+    v = s.voice
+    assert v.ptt_hotkey == "ctrl+alt+space"  # a bare letter would block typing
+    assert v.speed == 1.6 and v.piper_speaker == "tetiana"
+    assert v.azure_region == "westeurope" and v.stt_model == "whisper-small" and v.speak == "all"
+    assert len(v.input_device) == 200 and v.input_device.startswith("Mic")
+    assert Settings.from_dict({"voice": {"ptt_hotkey": "Alt+Ctrl+M"}}).voice.ptt_hotkey == "ctrl+alt+m"
+
+
+def test_vision_settings_are_validated():
+    s = Settings.from_dict({"vision": {"mode": "spy", "interval_seconds": 1,
+                                       "allowed_games": ["stalker2", "../../etc", "stalker2", "exe:foo.exe"],
+                                       "allowed_processes": ["notepad.exe", "rm -rf", "a.EXE"]}})
+    assert s.vision.mode == "off"
+    assert s.vision.interval_seconds == 10
+    assert s.vision.allowed_games == ["stalker2", "exe:foo.exe"]
+    assert s.vision.allowed_processes == ["notepad.exe", "a.exe"]
+
+
+def test_new_sections_round_trip():
+    s = Settings()
+    s.voice.tts_enabled = True
+    s.vision.mode = "game"
+    s.vision.allowed_games = ["cs2"]
+    s.gaming.reaction_frequency = 20
+    assert Settings.from_dict(s.to_dict()) == s

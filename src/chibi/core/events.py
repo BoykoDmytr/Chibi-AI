@@ -360,3 +360,66 @@ class InitiativeAction(Event):
     desktop controller: "wave", "approach_cursor", "sit", "sleep", "jump", "dance"."""
 
     action: str
+
+
+# --- Phase 4: voice ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceStateChanged(Event):
+    """The voice service changed state (UI: microphone indicator, listening pose)."""
+
+    state: str  # chibi.voice.service.VoiceState value: "off" | "idle" | "standby" | "listening" ...
+    reason: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceTranscript(Event):
+    """What the user said to her, recognised locally.  Never logged."""
+
+    text: str
+
+    @property
+    def priority(self) -> Priority:
+        return Priority.HIGH
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechPlayback(Event):
+    """Her voice started / stopped (the controller holds TALK while playing)."""
+
+    playing: bool
+    duration: float = 0.0
+
+
+# --- Phase 3: screen vision --------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class VisionStateChanged(Event):
+    """Capture indicator: ``state`` is a chibi.vision.service.VisionState value."""
+
+    state: str
+    app_title: str = ""
+    reason: str = ""
+
+    @property
+    def priority(self) -> Priority:
+        return Priority.HIGH
+
+
+@dataclass(frozen=True, slots=True)
+class VisionObserved(Event):
+    """Something she saw in an allowed window (validated vocabulary only;
+    ``description`` is sanitised untrusted text for the AI prompt, never
+    stored or logged)."""
+
+    app_title: str
+    scene: str
+    event: str
+    confidence: float
+    description: str = ""
+    emotion: str = "idle"
+    confirmed: bool = False
+    #: The reaction policy decided she should comment.
+    react: bool = False

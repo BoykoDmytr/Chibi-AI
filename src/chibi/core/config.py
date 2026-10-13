@@ -154,6 +154,110 @@ class AISettings:
             setattr(self, attr, value[:300])
 
 
+TTS_ENGINES = ("piper", "azure")
+PIPER_SPEAKERS = ("tetiana", "lada", "mykyta")
+AZURE_VOICES = ("uk-UA-PolinaNeural", "uk-UA-OstapNeural")
+STT_MODELS = ("whisper-base", "whisper-small", "whisper-medium")
+#: Which of her lines are spoken aloud: everything, only answers to the user, none.
+SPEAK_MODES = ("all", "replies", "off")
+PTT_MODES = ("toggle", "hold")
+
+
+@dataclass
+class VoiceSettings:
+    """Phase 4.  Recognition is local (Whisper); the voice is local (Piper)
+    unless the user picks Azure (cloud: needs Permission.CLOUD_AI).  The
+    microphone additionally needs Permission.MICROPHONE."""
+
+    tts_enabled: bool = False
+    tts_engine: str = "piper"
+    piper_speaker: str = "tetiana"
+    azure_region: str = "westeurope"
+    azure_voice: str = "uk-UA-PolinaNeural"
+    speak: str = "all"
+    #: Keep talking while a fullscreen game hides her ("voice reactions in games").
+    speak_when_hidden: bool = True
+    speed: float = _range(1.0, 0.6, 1.6)
+    volume: int = _range(80, 0, 100)
+    stt_enabled: bool = False
+    stt_model: str = "whisper-small"
+    ptt_hotkey: str = "ctrl+alt+space"
+    #: "toggle": press, talk, she stops listening after a pause; "hold": walkie-talkie.
+    ptt_mode: str = "toggle"
+    end_silence_ms: int = _range(800, 400, 2500)
+    max_utterance_seconds: int = _range(15, 5, 60)
+    #: Experimental: microphone stays open waiting for "Мія, ...".
+    wake_phrase_enabled: bool = False
+    wake_in_fullscreen: bool = False
+    #: Empty -> system default device.
+    input_device: str = ""
+    output_device: str = ""
+    #: CPU threads for recognition/synthesis (keep games smooth).
+    cpu_threads: int = _range(2, 1, 8)
+
+    def __post_init__(self) -> None:
+        for attr, allowed in (("tts_engine", TTS_ENGINES), ("piper_speaker", PIPER_SPEAKERS),
+                              ("azure_voice", AZURE_VOICES), ("speak", SPEAK_MODES),
+                              ("stt_model", STT_MODELS), ("ptt_mode", PTT_MODES)):
+            if getattr(self, attr) not in allowed:
+                setattr(self, attr, allowed[1] if attr == "stt_model" else allowed[0])
+        region = self.azure_region.strip().lower()
+        self.azure_region = region if re.fullmatch(r"[a-z0-9]{3,40}", region) else "westeurope"
+        from chibi.voice.hotkey_win import parse_hotkey  # pure module, no dependencies
+
+        try:
+            self.ptt_hotkey = parse_hotkey(self.ptt_hotkey).text
+        except ValueError:
+            self.ptt_hotkey = "ctrl+alt+space"
+        self.input_device = self.input_device.strip()[:200]
+        self.output_device = self.output_device.strip()[:200]
+
+
+VISION_MODES = ("off", "manual", "auto", "game")
+
+
+@dataclass
+class VisionSettings:
+    """Phase 3.  Capture needs Permission.SCREEN_CAPTURE; frames go to a cloud
+    model only with Permission.CLOUD_VISION.  Only listed apps are ever
+    captured, and never one the privacy filter marks private."""
+
+    mode: str = "off"
+    interval_seconds: int = _range(30, 10, 600)
+    #: Game ids from the games database ("stalker2") or "exe:<process>".
+    allowed_games: list[str] = field(default_factory=list)
+    #: Non-game apps the user allowed (lower-case process names).
+    allowed_processes: list[str] = field(default_factory=list)
+    min_confidence: float = _range(0.6, 0.3, 0.95)
+    #: "Режим локального аналізу": never send frames to a cloud model.
+    local_only: bool = False
+    #: Vision model override; empty = the AI provider's model.
+    model: str = ""
+    #: Look less often while the PC is busy (GAME mode).
+    adapt_to_load: bool = True
+
+    def __post_init__(self) -> None:
+        if self.mode not in VISION_MODES:
+            self.mode = "off"
+        self.model = self.model.strip()[:120]
+        self.allowed_games = [g for g in dict.fromkeys(self.allowed_games)
+                              if re.fullmatch(r"[a-z0-9_:.\-]{1,80}", g)]
+        self.allowed_processes = [p for p in dict.fromkeys(self.allowed_processes)
+                                  if re.fullmatch(r"[a-z0-9_.\- ]{1,80}\.exe", p)]
+
+
+@dataclass
+class GamingSettings:
+    """Gaming companion mode (spec 8): how she behaves while the user plays."""
+
+    #: Few or no bubbles over games, short comments, voice first.
+    companion_mode: bool = True
+    #: 0 = silent during games, 100 = chatty.
+    reaction_frequency: int = _range(50, 0, 100)
+    #: Allow gameplay hints and plot comments (spoilers).
+    hints_and_spoilers: bool = False
+
+
 @dataclass
 class Settings:
     schema_version: int = SCHEMA_VERSION
@@ -163,6 +267,9 @@ class Settings:
     personality: PersonalitySettings = field(default_factory=PersonalitySettings)
     activity: ActivitySettings = field(default_factory=ActivitySettings)
     ai: AISettings = field(default_factory=AISettings)
+    voice: VoiceSettings = field(default_factory=VoiceSettings)
+    vision: VisionSettings = field(default_factory=VisionSettings)
+    gaming: GamingSettings = field(default_factory=GamingSettings)
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
