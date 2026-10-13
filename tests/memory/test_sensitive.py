@@ -173,3 +173,24 @@ def test_detection_is_linear_on_pathological_input(text):
     started = time.perf_counter()
     looks_sensitive(text)
     assert time.perf_counter() - started < 1.5
+
+
+@pytest.mark.parametrize("text", [
+    "Пароль користувача: qwerty123",
+    "Пароль користувача qwerty123",
+    "пароль від мого акаунта в стімі: Kitten!",
+    "пін картки дружини = 4821",
+    "Password for the old router: hunter22",
+])
+def test_credentials_with_words_before_the_value_are_sensitive(text):
+    # Model-extracted memories are phrased in the third person ("Пароль користувача: ..."),
+    # which the filler-word rule alone missed.
+    assert looks_sensitive(text)
+
+
+@pytest.mark.parametrize("text", [
+    "код помилки: 404", "error code: 500", "HTTP status code 503", "Пароль: ",
+    "Пароль від wi-fi змінився 2 дні тому", "Любить код: Python", "Час: 14:30",
+])
+def test_talk_about_codes_and_passwords_is_not_sensitive(text):
+    assert not looks_sensitive(text)

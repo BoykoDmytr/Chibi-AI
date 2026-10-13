@@ -299,11 +299,42 @@ _SECRET = re.compile(
     rf"(?P<value>\S+)",
     re.IGNORECASE,
 )
+# "Пароль користувача: qwerty123", "пін картки дружини = 4821": any few words
+# between the keyword and an explicit ":" / "=" still introduce a value.
+_SECRET_EXPLICIT = re.compile(
+    rf"(?<!\w)(?P<kw>{_PASSWORD_WORDS}|{_CODE_WORDS})(?!\w)(?P<between>(?:\s+[^\s:=]{{1,40}}){{0,6}})"
+    rf"\s*[:=]\s*(?P<value>\S+)",
+    re.IGNORECASE,
+)
+# "Пароль користувача qwerty123": a password-looking value (letters and digits
+# or symbols) a couple of words after the keyword, without any separator.
+_SECRET_NEARBY = re.compile(
+    rf"(?<!\w)(?:{_PASSWORD_WORDS})(?!\w)(?:\s+[^\s:=]{{1,40}}){{1,3}}\s+(?P<value>\S{{6,64}})",
+    re.IGNORECASE,
+)
+#: "код помилки 404", "error code: 500" talk about codes, not secrets.
+_NOT_SECRET_CODE = re.compile(r"помил|error|статус|status|http|країн|міст|товар|продукт|поштов|zip",
+                              re.IGNORECASE)
 _CODE_VALUE = re.compile(r"[^\W_][\w\-]{2,15}")
 _VALUE_PUNCTUATION = ".,!?;:()[]{}«»\"'…"
 
 
 def _has_secret(text: str) -> bool:
+    for match in _SECRET_EXPLICIT.finditer(text):
+        value = match.group("value").strip(_VALUE_PUNCTUATION)
+        if _PASSWORD_KEYWORD.fullmatch(match.group("kw")):
+            if len(value) >= 3:
+                return True
+        elif (sum(ch.isdigit() for ch in value) >= 3 and _CODE_VALUE.fullmatch(value)
+              and not _NOT_SECRET_CODE.search(text[max(0, match.start() - 24):match.start()]
+                                              + match.group("between"))):
+            return True
+    for match in _SECRET_NEARBY.finditer(text):
+        value = match.group("value").strip(_VALUE_PUNCTUATION)
+        has_letter = any(ch.isalpha() for ch in value)
+        has_other = any(ch.isdigit() or not ch.isalnum() for ch in value)
+        if len(value) >= 6 and has_letter and has_other:
+            return True
     for match in _SECRET.finditer(text):
         value = match.group("value").strip(_VALUE_PUNCTUATION)
         if not value:
@@ -311,8 +342,10 @@ def _has_secret(text: str) -> bool:
         digits = sum(ch.isdigit() for ch in value)
         if not _PASSWORD_KEYWORD.fullmatch(match.group("kw")):
             # PIN / CVV / code: a short digit (or digit-and-letter) code.  "3.12"
-            # after "код на Python" is a version, not a code.
-            if digits >= 3 and _CODE_VALUE.fullmatch(value):
+            # after "код на Python" is a version, not a code; "error code 500" is
+            # a status, not a secret.
+            context = text[max(0, match.start() - 24):match.end()]
+            if digits >= 3 and _CODE_VALUE.fullmatch(value) and not _NOT_SECRET_CODE.search(context):
                 return True
             continue
         if match.group("sep").strip():
