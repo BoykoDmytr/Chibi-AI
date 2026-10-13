@@ -32,7 +32,8 @@ jobs:
         run: python -m pytest -q
       - name: Native-window tests (Windows)
         # Real HWNDs need Qt's "windows" platform instead of "offscreen".
-        if: runner.os == 'Windows'
+        # Runs even if the main test step failed: it proves different things.
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         env:
           QT_QPA_PLATFORM: windows
         run: python -m pytest -q tests/desktop/test_platform_win.py tests/vision/test_capture_win.py
