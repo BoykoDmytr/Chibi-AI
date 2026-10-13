@@ -149,7 +149,9 @@ class AppFacade(Protocol):
     def send_chat_stream(self, text: str, on_delta: Callable[[str], None],
                          on_done: Callable[[ChatReply], None]) -> None:
         """AI reply streamed through on_delta when AI is usable; otherwise the
-        offline reply arrives through on_done only.  on_done always fires once."""
+        offline reply arrives through on_done only.  on_done always fires once.
+        The app also says the reply on the desktop (her bubble, and her voice
+        sentence by sentence while it streams); the window only shows it."""
         ...
 
     def list_memories(self, kind: str | None = None, query: str = "") -> list[MemoryView]: ...

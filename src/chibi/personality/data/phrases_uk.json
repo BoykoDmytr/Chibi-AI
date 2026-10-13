@@ -864,6 +864,14 @@
       {"id": "voice.error.01", "text": "Ой, мій слух дав збій. Спробуй ще раз або напиши мені в чаті.", "tone": "caring", "state": "sad", "portrait": "facepalm"},
       {"id": "voice.error.02", "text": "Не вийшло розібрати — щось зламалося. Можеш написати мені в чаті?", "tone": "warm", "state": "sad", "portrait": "calm"},
       {"id": "voice.error.03", "text": "Вуха підвели... Давай ще раз, а якщо не вийде — пиши в чаті.", "tone": "playful", "state": "sad", "portrait": "facepalm"}
+    ],
+    "voice.mic_paused": [
+      {"id": "voice.mic_paused.01", "text": "Добре, не підслуховую. Захочеш поговорити — натисни клавішу розмови.", "tone": "warm", "state": "shy", "portrait": "smile"},
+      {"id": "voice.mic_paused.02", "text": "Мої вушка на паузі. Клавіша розмови працює, якщо що.", "tone": "playful", "state": "talk", "portrait": "wink"}
+    ],
+    "voice.mic_resumed": [
+      {"id": "voice.mic_resumed.01", "text": "Я знову тебе чую!", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "voice.mic_resumed.02", "text": "Вушка знову на варті. Кажи, якщо що!", "tone": "playful", "state": "curious", "portrait": "wink"}
     ]
   }
 }

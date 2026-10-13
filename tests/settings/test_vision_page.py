@@ -16,16 +16,23 @@ import chibi.privacy.permissions as permissions_module
 import chibi.settings.settings_dialog as settings_dialog
 from chibi.core.events import Permission
 from chibi.settings.vision_page import (
+    COMMENTARY_CHOICES,
+    EVENT_NAMES,
     FALLBACK_CONSENT,
+    FOREGROUND_CONSENT,
     MODE_CHOICES,
+    SCENE_NAMES,
+    SCOPE_CHOICES,
     VisionPage,
     consent_for,
+    describe_scope,
     describe_seen,
     describe_status,
     game_title_for,
     interval_text,
     normalize_app_name,
 )
+from chibi.vision.analysis import EVENTS, SCENES
 from chibi.vision.integration import SeenObservation, VisionStatusView
 from tests.personality.test_phrase_bank import GENDERED_USER
 from tests.settings.fakes import FakeFacade
@@ -109,7 +116,7 @@ def texts(page: VisionPage) -> str:
 
 def test_four_modes_with_explanations_in_ukrainian(make_page):
     page = make_page()
-    radios = page.findChildren(QRadioButton)
+    radios = [b for b in page.findChildren(QRadioButton) if b.group() is page.mode_group]
     assert [r.text() for r in radios] == ["Вимкнено", "Лише за запитом", "Автоматично", "Ігровий режим"]
     assert [value for value, _t, _h in MODE_CHOICES] == ["off", "manual", "auto", "game"]
     assert page.mode() == "off" and page.mode_buttons["off"].isChecked()
@@ -422,3 +429,115 @@ def test_helpers():
     assert interval_text(150) == "2\u00a0хв 30\u00a0с"
     assert game_title_for("custom:my_game.exe") == "My game"
     assert game_title_for("weird") == "weird"
+
+
+# --- what she may see, how she comments ------------------------------------------------------------------
+
+
+def test_scope_and_commentary_choices_in_ukrainian(make_page):
+    page = make_page()
+    assert [b.text() for b in page.scope_group.buttons()] == [
+        "Лише дозволені ігри й програми", "Будь-яке вікно на передньому плані, крім приватних"]
+    assert [b.text() for b in page.commentary_group.buttons()] == [
+        "Лише помітні події в іграх", "Як спостерігач: сама вирішує, коли є що сказати (потрібен AI)"]
+    assert [v for v, _t, _h in SCOPE_CHOICES] == ["allowed", "foreground"]
+    assert [v for v, _t, _h in COMMENTARY_CHOICES] == ["events", "observer"]
+    assert (page.scope(), page.commentary()) == ("allowed", "events")
+    shown = texts(page)
+    assert "Що вона може бачити" in shown and "Як коментувати" in shown
+    for _value, _text, hint in (*SCOPE_CHOICES, *COMMENTARY_CHOICES):
+        assert hint in shown and "\n" not in hint
+
+
+def test_switching_to_any_window_asks_first(make_page, vfacade):
+    confirm = Confirm(False)
+    page = make_page(confirm)
+    page.scope_buttons["foreground"].click()
+    assert confirm.asked == [FOREGROUND_CONSENT]
+    assert page.scope() == "allowed" and not page.has_edits()  # "no" changes nothing
+    assert collected(page, vfacade).scope == "allowed"
+    confirm.answer = True
+    page.scope_buttons["foreground"].click()
+    assert len(confirm.asked) == 2 and page.scope() == "foreground"
+    assert collected(page, vfacade).scope == "foreground"
+    page.scope_buttons["foreground"].click()  # already chosen: no second question
+    page.scope_buttons["allowed"].click()  # going back never asks
+    assert len(confirm.asked) == 2 and collected(page, vfacade).scope == "allowed"
+
+
+def test_switching_with_the_keyboard_asks_too(make_page):
+    confirm = Confirm(False)
+    page = make_page(confirm)
+    page.activateWindow()
+    QTest.qWaitForWindowExposed(page)
+    page.scope_buttons["allowed"].setFocus()
+    QTest.keyClick(page.scope_buttons["allowed"], Qt.Key.Key_Down)
+    assert confirm.asked == [FOREGROUND_CONSENT] and page.scope() == "allowed"
+
+
+def test_the_apps_own_scope_is_shown_without_asking(make_page, vfacade):
+    confirm = Confirm(False)
+    page = make_page(confirm, scope="foreground", commentary="observer")
+    assert (page.scope(), page.commentary()) == ("foreground", "observer") and confirm.asked == []
+    s = vfacade.settings()
+    s.vision.scope = "allowed"
+    page.sync(s, edited_too=True)
+    s.vision.scope = "foreground"
+    page.sync(s, edited_too=True)
+    assert page.scope() == "foreground" and confirm.asked == [] and not page.has_edits()
+
+
+def test_commentary_is_collected(make_page, vfacade):
+    page = make_page()
+    page.commentary_buttons["observer"].click()
+    assert collected(page, vfacade).commentary == "observer"
+
+
+def test_any_window_consent_tells_the_whole_truth():
+    title, text = FOREGROUND_CONSENT
+    assert title.endswith("?")
+    promises = ("Лише одне вікно на передньому плані", "інші монітори",
+                "Приватні програми не знімаються ніколи", "Системні вікна", "«Читати заголовки вікон»",
+                "Без цього дозволу браузер вона не знімає", "лише в пам'яті", "ніколи не зберігаються",
+                "«Хмарний аналіз екрана»", "коштує грошей", "ліміти")
+    for promise in promises:
+        assert promise in text, promise
+    assert not GENDERED_USER.search(text) and not re.search(r"\bти\s+сам\b", text)
+
+
+@pytest.mark.parametrize(("view", "fragment"), [
+    (VisionStatusView("auto", "idle", "", "", True, scope="foreground",
+                      skipped="на передньому плані браузер"), "Чекає: на передньому плані браузер"),
+    (VisionStatusView("auto", "idle", "", "", True, scope="foreground"), "яке їй можна бачити"),
+    (VisionStatusView("auto", "watching", "VS Code", "", True, scope="foreground"), "Дивиться на «VS Code»"),
+    (VisionStatusView("auto", "idle", "", "", True), "немає дозволеної"),
+])
+def test_describe_status_explains_the_window_in_front(view, fragment):
+    text, role = describe_status(view)
+    assert fragment in text and role in ("hint", "success")
+
+
+def test_describe_scope():
+    assert describe_scope(VisionStatusView("off", "off", "", "", None, scope="foreground")) == ""
+    text = describe_scope(VisionStatusView("auto", "idle", "", "", True))
+    assert "лише дозволені" in text and "помітні події в іграх" in text
+    text = describe_scope(VisionStatusView("game", "idle", "", "", True, scope="foreground",
+                                           commentary="observer"))
+    assert "будь-яке вікно" in text and "спостерігач" in text
+
+
+def test_status_card_shows_what_she_may_see(make_page, vfacade):
+    vfacade.vision_view = VisionStatusView("auto", "idle", "", "", True, scope="foreground",
+                                           skipped="вікно на передньому плані приватне")
+    page = make_page()
+    assert "приватне" in page.status_label.text()
+    assert "будь-яке вікно" in page.scope_label.text() and not page.scope_label.isHidden()
+    vfacade.vision_view = VisionStatusView("off", "off", "", "", None)
+    page.refresh_live()
+    assert page.scope_label.isHidden()
+
+
+def test_every_scene_and_event_has_a_ukrainian_name():
+    assert set(SCENES) <= set(SCENE_NAMES) and set(EVENTS) <= set(EVENT_NAMES)
+    item = SeenObservation("VS Code", "code", "build_failed", 0.9, 1_700_000_000.0, False)
+    assert describe_seen(item).endswith("VS Code: код, збірка не вдалася")

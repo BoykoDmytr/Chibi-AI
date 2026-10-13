@@ -59,12 +59,12 @@ Windows / timers ──► producers ──► EventBus (bounded, thread-safe) �
 | `activity`     | foreground app / idle / process scan backends (Windows via ctypes), classifier, monitor thread |
 | `gaming`       | games database, game session tracking |
 | `tamagotchi`   | needs model (hunger, energy, ...), offline catch-up, interactions |
-| `personality`  | Ukrainian phrase bank, reaction engine (cooldowns, budget, quiet mode), offline chat |
+| `personality`  | Ukrainian phrase bank, reaction engine (cooldowns, budget, quiet mode), offline chat, decision engine, observer |
 | `settings`     | Qt windows: settings (AI, memory, voice, vision, gaming, privacy pages), status, chat, first run; dark theme |
 | `ai`           | providers (Claude via the official SDK, OpenAI-compatible, Ollama), secrets, budget, AIService worker, prompts, AIBrain |
 | `emotion`      | EmotionEngine (eight emotions, decay, persistence) |
 | `voice`        | TTS text normaliser, Piper voices on onnxruntime, Whisper STT, VAD, audio I/O, models, push-to-talk hotkey, VoiceService |
-| `vision`       | window capture, frame processing, analysis contract, reaction policy, VisionService |
+| `vision`       | window capture, frame processing, analysis contract (game and work scenes), reaction policy, VisionService |
 | `games`        | mini-games (Phase 5) |
 | `selftest.py`  | `--self-test`: checks an installation (used by CI on the frozen build) |
 | `app.py`       | composition root: builds everything, wires events, lifecycle |
@@ -202,7 +202,10 @@ class AutonomousBehavior:
   `context_menu_requested(QPoint)`, `scale_requested(float)`.
 * `bubble.py`: `SpeechBubble.show_text(text, portrait: QPixmap | None, seconds)`,
   `follow(head_global: QPointF, screen_area: QRect)`, `hide_now()`; click-through.
-* `tray.py`: `TrayIcon(menu, icon)` with `set_observing(bool)` indicator.
+* `tray.py`: `TrayIcon(menu, icon)` with `set_observing(bool)` indicator,
+  `set_listening(bool)` (red dot: the microphone is open), `set_voice_note(text)`
+  (tooltip line: how the open microphone listens or why it is paused) and
+  `set_watching(title)`.
 * `platform_win.py`: ctypes helpers (`apply_no_activate(hwnd)`,
   `foreground_fullscreen(own_hwnds) -> bool`), safe no-ops off Windows.
 * `screen_service.py`: polls fullscreen (2 s) and CPU / battery saver (5 s)
@@ -443,7 +446,11 @@ class EmotionEngine:   # deterministic; hunger/energy/happiness/boredom/affectio
 ### brain, composer, decisions (personality package)
 
 ```python
-# ai/prompts.py - stable Ukrainian persona prompt (cacheable: no timestamps), context and event prompts
+# ai/prompts.py - stable Ukrainian persona prompt (cacheable: no timestamps), context and event prompts.
+#   The user's own description (PersonalitySettings.persona, "Характер своїми словами") is a
+#   section between the slider traits and the rules (rules win); prompt_safe_persona() cleans
+#   it again, neutralises markup look-alikes and quotes every line with "│ ".  Empty -> the
+#   prompt is byte-identical to the one without it.
 # ai/brain.py
 @dataclass(frozen=True)
 class BrainContext: activity_category: str | None; activity_app: str | None; game_title: str | None
@@ -502,13 +509,22 @@ contract; these are additions, all keyword-only unless noted):
   has `relevance`, `spontaneous`, `variables`.
 * Model replies never set a posture (sleep/walk...), and a chat action from
   the model is ignored when the user's own message contains control syntax.
+* Phase 6: `AIBrain.consider_comment(observations: Sequence[SeenMoment],
+  context: WatchContext, on_done: Callable[[CommentDecision], None]) ->
+  CancelToken | None` (the observer; `on_done` exactly once, None when nothing
+  was sent); pure helpers `build_observer_turn`, `parse_comment`,
+  `observer_sources`, `similarity`.  The system prompt is the same cached
+  `build_persona(settings)`; `action=silent` is allowed by the observer turn
+  only (`SILENT_REPLY = "<<state=talk;action=silent>>"`).
 
 ## Phase 4: voice
 
 ```
 push-to-talk (RegisterHotKey thread) / mic button ──► VoiceService.listen()
-microphone (PortAudio thread) ──► EnergyVAD ──► utterance ──► voice worker: WhisperSTT
-        ──► main: VoiceTranscript ──► chat (brain) ──► reply ──► route() ──► voice worker: TTS
+open microphone ("name" / "open": STANDBY) ──┐
+microphone (PortAudio thread) ──► EnergyVAD ──► utterance ──► voice worker: WhisperSTT (one at a time)
+        ──► main: find_address / fillers / echo filters ──► VoiceTranscript ──► chat (brain)
+        ──► streamed reply ──► ReplyStream: a sentence at a time ──► voice worker: TTS (next one prefetched)
         ──► AudioOutput ──► SpeechPlayback(True, duration) + bubble for the audio's duration
 ```
 
@@ -525,22 +541,75 @@ microphone (PortAudio thread) ──► EnergyVAD ──► utterance ──► 
   resumable verified downloads into `%LOCALAPPDATA%\ChibiCompanion\models`.
 * `voice/hotkey_win.py`: `RegisterHotKey` (no keyboard hook); hold mode polls
   `GetAsyncKeyState` for that key only while it is held.
-* `voice/service.py` `VoiceService`: states off / idle / standby (wake phrase) /
-  listening / transcribing / speaking.  The microphone is open only while
-  listening or in standby, never while she speaks; `mic_allowed()` is checked
-  each time it would open and `revoke_microphone()` closes it immediately.
+* `voice/service.py` `VoiceService`: states off / idle / standby (open
+  microphone) / listening (push-to-talk) / transcribing / speaking.  The
+  microphone is open only while listening or in standby, never while she
+  speaks; `mic_allowed()` is checked each time it would open and before
+  anything the open microphone heard is delivered, and `revoke_microphone()`
+  closes it immediately.
+
+### As built: Phase 6, the voice companion (hands-free conversation)
+
+* `VoiceSettings.listen_mode` (`set_listen_mode`): `"push"` - push-to-talk
+  only; `"name"` - the microphone stays open and a phrase is delivered only
+  when it addresses her: `find_address(text, NameForms)` finds her name
+  anywhere as a separate word and returns the request without it
+  ("Як справи, Міє?" -> "Як справи?").  An unambiguous vocative counts
+  anywhere, the plain name only at the start / end / next to punctuation,
+  other case forms only at the start; `NameForms.for_name` covers common
+  Ukrainian declension, the app adds Mia's forms.  `"open"` - every phrase is
+  for her.  Push-to-talk works in every mode.
+* Conversation window: after a delivered request (also push-to-talk) the
+  microphone stays "addressed" while her answer is pending (up to 30 s) or
+  being spoken and `follow_up_seconds` after it ends (`note_reply_shown()`
+  for text-only answers; 0 turns it off).
+* Filters on the open microphone: fillers ("угу", "мм"), what
+  `stt.clean_segments` drops, a Whisper echo of the open-mic prompt, phrases
+  shorter than 350 ms of speech, and the first 0.3 s after the microphone
+  reopens (`echo_tail_seconds`: never her own voice).  Recognition is
+  single-flight: phrases arriving meanwhile are dropped and counted
+  (`dropped_utterances`), so work never queues up.  Her unprompted lines are
+  shown as text instead of voiced while the open microphone hears someone.
+* Pauses (`VoiceIntegration`, `VoiceStatus.pause_reason`): the user's switch
+  (`set_open_mic_paused`, the "Пауза мікрофона" menu item; not saved), a
+  private app in front (always), a call app in front (`pause_in_calls`,
+  `is_call_app`), do-not-disturb, a fullscreen app unless
+  `wake_in_fullscreen`.  The app in front comes from `ForegroundAppChanged`
+  (APP_METADATA only).  Push-to-talk keeps working while paused.  If the
+  microphone cannot stay open the service falls back to `"push"` and the next
+  settings change retries.
+* Streamed answers: `VoiceIntegration.begin_reply(source, show=) ->
+  ReplyStream` with `feed(delta)` / `finish(text, state, portrait)` /
+  `abort()`.  When she can voice it, each complete sentence
+  (`SentenceChunker`) is routed as a solicited line while the model writes
+  on; the microphone is held closed between sentences (`hold_for_reply`, a
+  QTimer watchdog releases a stalled hold after 8 s).  `finish` routes only
+  the sentences not routed yet, so the answer reaches her bubble / voice
+  exactly once; when she cannot voice it, `finish` routes the whole answer
+  once like `route()`.  A user cut-off (click, push-to-talk, her name) stops
+  the voicing; the unheard rest is shown once as text at the end.
 
 ## Phase 3: screen vision
 
 Pipeline (`vision/service.py`), in this order: permission -> the foreground
-window is an *allowed* app and not private -> due (mode, interval, back-off) ->
+window is one she may see (scope `"allowed"`: the allowed lists; scope
+`"foreground"`: any window except her own, private ones (by process, exe
+path, or title with WINDOW_TITLES), Windows' own surfaces (`SYSTEM_PROCESSES`:
+lock and sign-in screens, Start, flyouts, Task Manager, UAC, file pickers),
+`explorer.exe` unless its title is readable and not a shell title, and
+browsers unless WINDOW_TITLES is granted; display names come from the games
+database and the app catalog, never from titles) -> due (mode, interval, back-off) ->
 capture that one window (`PrintWindow`, foreground-only `BitBlt` fallback) ->
 privacy re-check (same window, still allowed, permission still granted) ->
 downscale to 1024 px, dHash dedup -> analysis by a local model, or a cloud
 model only with `CLOUD_VISION` -> strict parsing into closed vocabularies
 (`vision/analysis.py`) -> `VisionReactionPolicy` (two-frame confirmation for
-important events, cooldowns, hourly budget, quiet mode, spoilers, novelty).
-Frames live in memory only; the last few observations (scene, event, short
+important events, cooldowns, hourly budget, quiet mode, spoilers, novelty)
+-> `still_allowed(target)` on the main thread when the answer arrives (capture
+and, for a cloud model, cloud permissions still granted; the app still
+allowed; otherwise the observation is dropped).  A frame in flight is
+cancelled when the scope changes, the app becomes private or WINDOW_TITLES /
+APP_METADATA is revoked.  Frames live in memory only; the last few observations (scene, event, short
 sanitised description) are context for her chat, nothing is stored on disk.
 Windows Graphics Capture is not used (it needs a Direct3D 11 interop layer);
 `CaptureBackend` is the seam for it.
@@ -553,6 +622,33 @@ self.model`) for the model id, Claude effort/fallback decisions, the result's
 (rebuilt on settings/permission changes, never created while the frames could
 not legally be sent), the manual "подивись на екран" request, notices, the
 session summary memory and `latest_observation()` for the brain.
+
+As built for Phase 6:
+
+* Work scenes (`code`, `terminal`, `document`, `spreadsheet`, `browser`,
+  `video`, `chat`, `email`, `design`) and work events (`error_on_screen`,
+  `build_failed`, `tests_passed`, `waiting`) join the closed vocabularies; a
+  game event in a work scene (or the reverse) is distrusted; `chat` / `email`
+  are never described.  `sanitize_description` also redacts e-mails,
+  @handles, 6+ digit numbers, URLs with queries or paths and user file paths
+  (160 characters at most).  Non-game windows are named `{app}`, never
+  "гра «VS Code»".
+* `VisionSettings.commentary`: `"events"` - she comments on notable game
+  events herself (as before); `"observer"` - vision never voices a line on its
+  own (manual requests are still answered) and the observer decides.
+* `VisionObserved` is published exactly once per analysed, parsed frame
+  (every mode and scope), never for skipped duplicates, errors, frames dropped
+  by a re-check, results after stop / revoke / kill switch, or while
+  `screen_data_may_leave()` is False (cloud provider without CLOUD_VISION, or
+  "Лише локальний аналіз").  Fields: display title only, closed-vocabulary
+  scene / event / emotion, confidence, sanitised description (empty for
+  correspondence and hidden spoilers), `confirmed`, `react`.
+  `details_for(event) -> ObservationDetails(interesting, spoiler, is_game, work,
+  solicited)` for the last 16 published events (by identity).
+* Cost in AUTO mode with scope `"foreground"`: no automatic frames between
+  `UserIdle` and `UserReturned` (`service.away`), identical frames of the same
+  window stretch the pause (x0.5 per frame, up to x3), `adapt_to_load`
+  doubles the interval, a locked screen has no target.
 
 ## Phase 5: character polish, gifts, mini-games
 
@@ -571,24 +667,62 @@ session summary memory and `latest_observation()` for the brain.
   Qt windows, `GameRewards` (stars + effects + her reaction once per game)
   and `GamesHub` (opens/closes the windows and the shop).
 
-## App wiring (Phases 3-5)
+## App wiring (Phases 3-6)
 
 * Every `SpeechRequested` goes through `CharacterController.set_speech_router`
   -> `ChibiApp._route_speech` -> `VoiceIntegration.route`, which voices it (if
   enabled and allowed) and calls `show(event, seconds)` exactly once, when the
-  audio starts; the bubble then lasts as long as the audio.  Chat replies take
-  the same route.  In gaming companion mode a voiced unsolicited line over a
-  running game is shown without its bubble.
+  audio starts; the bubble then lasts as long as the audio.  In gaming
+  companion mode a voiced unsolicited line over a running game is shown
+  without its bubble.
+* Chat answers from the AI brain (typed or spoken) go through
+  `VoiceIntegration.begin_reply("chat")`: every streamed piece is fed to the
+  `ReplyStream`, so she starts talking at the first complete sentence;
+  `finish(reply.text, reply.state, reply.portrait)` after `_apply_chat_action`
+  (never also `route()`: the answer is said exactly once).  When the AI
+  fails, even mid-answer, the stream is aborted and the offline answer is
+  routed instead.  Offline answers and "подивись на екран" take `route()` as
+  before.
 * `VoiceTranscript` is dropped unless `MICROPHONE` is granted at dispatch time;
-  otherwise it goes to the open chat window (keeping the user's draft) or
-  straight to `send_chat_stream`.  The tray shows a red dot while the microphone
-  is open and names the window she is looking at.
+  otherwise it goes to the open chat window (keeping the user's draft; while
+  that window is answering, `BUSY_REPLY` there, never spoken) or straight to
+  `send_chat_stream`.  One chat answer at a time: a request heard while an
+  answer is in flight waits for it (only the newest one, at most 60 s); an
+  answer lost for 90 s no longer holds requests back; a revoked microphone or
+  the kill switch drops the waiting request.
+* The tray shows a red dot while the microphone is open (also in standby) and
+  names the window she is looking at; its tooltip says how the open microphone
+  listens or why it is paused (`VoiceStatus.listening_text`).  Her menu and the
+  tray menu have "Пауза мікрофона" next to "Не турбувати" (enabled in the
+  "name" / "open" modes, or while paused).
+* Observer (`personality/observer.py`), built after the reaction engine, the
+  brain and vision: `Observer(bus, brain, settings, clock, rng,
+  reactions.can_speak_unsolicited, reactions.note_unsolicited,
+  context=_brain_context, last_chat=..., details=vision.details_for,
+  may_share=vision.screen_data_may_leave, permissions, sleeping)`.  Active
+  only with commentary `"observer"`: it keeps an in-memory log of up to 10
+  moments / 15 minutes from `VisionObserved` (never correspondence; an
+  unconfirmed or unsure event is logged as `other`) and, when every gate in its
+  module docstring passes (presence, DND / quiet, nobody talking to her for
+  60 s, cooldown 2-10 min after speaking, growing gaps after silences, 6-20
+  decisions an hour, the shared unsolicited gate, AI available, data may
+  leave), asks `AIBrain.consider_comment` - one `Purpose.INITIATIVE` request
+  with escaped `<observation>` data.  The strict parser answers silence for
+  `SILENT_REPLY`, malformed output, repeats, sensitive text or a number /
+  Latin word that appears in nothing she saw; otherwise one or two sentences
+  are published as `SpeechRequested(solicited=False, source="observer:ai")`
+  and counted against the shared budget.  A newer different frame, an app
+  change, the user going away or talking, quiet / DND, a revoked permission,
+  a settings change or the kill switch make the decision in flight stale.
+  Nothing of it is persisted or logged.
 * "Подивись на екран" in the chat calls `VisionIntegration.request()`; the
   reply is "Зараз гляну!" or the real reason she cannot look - never a
   description the model made up.  The answer arrives later as a solicited line.
-* Shutdown stops vision and voice before the AI service (an analysis or a
-  voiced line in flight would otherwise wait for a callback that never comes);
-  wipe-all also deletes the Azure key, the wallet/inventory and what she saw.
+* Shutdown stops vision, voice and the observer before the AI service (an
+  analysis, a voiced line or a decision in flight would otherwise wait for a
+  callback that never comes); "Очистити" on the vision page, wipe-history and
+  wipe-all also make the observer forget; wipe-all also deletes the Azure key,
+  the wallet/inventory, what she saw and a voice request still waiting.
 * Interface feedback keys (`voice.*`, `game.start`) never go to the model
   (`prompts.BANK_ONLY_PREFIXES`): "Слухаю!" must be instant and free.
 

@@ -24,6 +24,10 @@ Design notes:
   ``collect`` / ``sync``.
 * API keys (AI page) and memories (memory page) are not settings either: like
   permissions they take effect immediately and never pass through Apply.
+* Her character in the user's own words (``personality.persona``, "Характер"
+  page) is an ordinary edited field: it is read back cleaned exactly as the
+  settings store it, and the presets only fill the editor (asking before they
+  replace text) - nothing is applied until "Застосувати" / "Гаразд".
 """
 
 from __future__ import annotations
@@ -35,18 +39,21 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QShowEvent
+from PySide6.QtGui import QDesktopServices, QShowEvent, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QPlainTextEdit,
+    QPushButton,
     QSpinBox,
     QStackedWidget,
     QTableWidget,
@@ -55,7 +62,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from chibi.core.config import BehaviorSettings, CharacterSettings, Settings
+from chibi.core.config import (
+    PERSONA_MAX_CHARS,
+    BehaviorSettings,
+    CharacterSettings,
+    PersonalitySettings,
+    Settings,
+)
 from chibi.core.events import Permission
 from chibi.memory.repositories import GameTotals, PermissionRecord
 from chibi.privacy.permissions import AVAILABLE, REQUIRES
@@ -160,18 +173,20 @@ PERMISSION_TEXTS: dict[Permission, PermissionText] = {
         ),
     ),
     Permission.SCREEN_CAPTURE: PermissionText(
-        title="Бачити вікна дозволених ігор і програм",
+        title="Бачити вікна ігор і програм",
         hint=(
-            "Зрідка знімає вікно гри чи програми зі списку дозволених у «Бачення екрана» (не весь екран "
-            "і ніколи — приватні програми), щоб вона могла реагувати на те, що там відбувається. Знімки "
-            "живуть лише в пам'яті кілька секунд і ніколи не записуються на диск. Без окремого дозволу "
-            "нижче їх аналізує лише локальна модель."
+            "Зрідка знімає одне вікно — те, що зараз попереду: гру чи програму зі списку дозволених у "
+            "«Бачення екрана» або, якщо ти там так налаштуєш, будь-яке вікно (не весь екран і ніколи — "
+            "приватні програми), щоб вона могла реагувати на те, що там відбувається. Знімки живуть "
+            "лише в пам'яті кілька секунд і ніколи не записуються на диск. Без окремого дозволу нижче "
+            "їх аналізує лише локальна модель."
         ),
-        consent_title="Дозволити бачити вікна дозволених ігор?",
+        consent_title="Дозволити бачити вікна ігор і програм?",
         consent_text=(
-            "Вона зможе час від часу знімати вікно гри або програми зі списку дозволених на сторінці "
-            "«Бачення екрана» і реагувати на те, що там відбувається.\n\n"
-            "• Лише вікно дозволеної програми, не весь екран; приватні програми — ніколи.\n"
+            "Вона зможе час від часу знімати вікно, яке зараз попереду, і реагувати на те, що там "
+            "відбувається. Які саме вікна, вирішуєш ти на сторінці «Бачення екрана»: лише ігри й "
+            "програми зі списку дозволених або будь-яке вікно, крім приватних.\n\n"
+            "• Лише одне вікно, не весь екран; приватні програми — ніколи.\n"
             "• Знімки не зберігаються: тільки зменшена копія в пам'яті на час аналізу.\n"
             "• Поки знімання ввімкнене, біля неї та в треї видно індикатор.\n"
             "• Хмарній моделі кадри надсилаються лише з окремим дозволом.\n\n"
@@ -179,14 +194,14 @@ PERMISSION_TEXTS: dict[Permission, PermissionText] = {
         ),
     ),
     Permission.CLOUD_VISION: PermissionText(
-        title="Надсилати кадри дозволених вікон хмарному AI",
+        title="Надсилати кадри вікон хмарному AI",
         hint=(
             "Щоб кадр аналізувала хмарна модель (Claude або OpenAI-сумісна). Кадр зменшується до "
             "1024 пікселів і не зберігається ні тут, ні в нас. Потребує дозволу «Бачити вікна…»."
         ),
         consent_title="Надсилати кадри хмарному AI?",
         consent_text=(
-            "Зменшені кадри вікна дозволеної гри чи програми надсилатимуться твоєму хмарному "
+            "Зменшені кадри вікна, на яке вона дивиться, надсилатимуться твоєму хмарному "
             "AI-провайдеру для аналізу. На кадрі може бути видно все, що є в цьому вікні.\n\n"
             "Додаток їх не зберігає; що робить із ними провайдер, визначають його умови.\n\n"
             "Без цього дозволу аналіз працює лише з локальною моделлю (наприклад, Ollama)."
@@ -196,9 +211,10 @@ PERMISSION_TEXTS: dict[Permission, PermissionText] = {
         title="Надсилати текст розмов хмарному AI",
         hint=(
             "Для розмов через Anthropic Claude чи OpenAI-сумісний сервер в інтернеті. Надсилається те, "
-            "що ти пишеш у чаті, її настрій і потреби, назва активної програми (якщо дозволено бачити "
-            "програми) і доречні спогади — але ніколи не знімки екрана. Локальна модель (Ollama на "
-            "цьому ПК) цього дозволу не потребує."
+            "що ти пишеш у чаті чи кажеш їй голосом (уже як текст), твій опис її характеру, її настрій "
+            "і потреби, назва активної програми (якщо дозволено бачити програми), короткий опис "
+            "того, що вона бачила на екрані (якщо дозволено), і доречні спогади — але ніколи не самі "
+            "знімки екрана. Локальна модель (Ollama на цьому ПК) цього дозволу не потребує."
         ),
         consent_title=CLOUD_AI_CONSENT_TITLE,
         consent_text=CLOUD_AI_CONSENT_TEXT,
@@ -206,9 +222,11 @@ PERMISSION_TEXTS: dict[Permission, PermissionText] = {
     Permission.MICROPHONE: PermissionText(
         title="Слухати мікрофон",
         hint=(
-            "Для розмов голосом. Мікрофон вмикається лише коли ти натискаєш клавішу чи кнопку мікрофона "
-            "(або, якщо ти ввімкнеш експериментальну активацію за іменем, чекає на «Міє…»). Мовлення "
-            "розпізнається на цьому ПК, звук не зберігається і нікуди не надсилається."
+            "Для розмов голосом. Мікрофон вмикається, коли ти натискаєш клавішу чи кнопку мікрофона, "
+            "або, якщо на сторінці «Голос» вибрано такий режим, слухає постійно: чекає на її ім'я чи "
+            "сприймає все сказане як звернення до неї. Поки мікрофон відкритий, у треї світиться "
+            "червона крапка. Мовлення розпізнається на цьому ПК, звук не зберігається і нікуди не "
+            "надсилається."
         ),
         consent_title=MICROPHONE_CONSENT_TITLE,
         consent_text=MICROPHONE_CONSENT_TEXT,
@@ -229,6 +247,85 @@ PERSONALITY_SLIDERS: tuple[tuple[str, str, str], ...] = (
         "Як часто коментує ігри та програми, які ти відкриваєш (якщо це дозволено в «Приватності»).",
     ),
 )
+
+PERSONA_TITLE = "Характер своїми словами"
+PERSONA_LEAD = (
+    "Опиши, якою вона має бути: вдачу, манеру говорити, захоплення, історію, як вона ставиться до "
+    "тебе. Можна кількома реченнями чи списком — як тобі зручніше."
+)
+PERSONA_PLACEHOLDER = (
+    "Наприклад: сором'язлива, але дуже дотепна. Обожнює котів, інді-ігри й дощові вечори з какао. "
+    "Підтримує, коли в мене щось не виходить, і щиро радіє моїм маленьким перемогам. Не любить, коли "
+    "я сиджу до ночі, і нагадує, що час спати."
+)
+PERSONA_AI_HINT = (
+    "Опис працює лише з AI (сторінка «AI»): без нього вона говорить готовими репліками зі свого "
+    "набору, і опис на них не впливає. Повзунки нижче теж враховуються, але там, де вони розходяться з "
+    "описом, перевага за описом. Її основні правила — українська мова, доброзичливість, чесність і "
+    "безпека — діють завжди, хоч би що тут було написано."
+)
+PERSONA_PRIVACY_HINT = (
+    "З хмарним AI цей текст надсилається провайдерові разом із кожним запитом, тож не пиши сюди "
+    "паролів чи інших приватних даних."
+)
+PERSONA_REPLACE_TITLE = "Замінити опис характеру?"
+PERSONA_REPLACE_TEXT = (
+    "Текст, який зараз у полі, буде замінено зразком «{title}».\n\n"
+    "Нічого не збережеться, доки ти не натиснеш «Застосувати» чи «Гаразд», а повернути попередній "
+    "текст можна клавішами Ctrl+Z."
+)
+#: (button text, starting point) for "Характер своїми словами".  Written the way the
+#: user would describe her; the user's own forms stay gender-neutral ("я граю").
+PERSONA_PRESETS: tuple[tuple[str, str], ...] = (
+    (
+        "Турботлива подруга",
+        "Тепла й уважна подруга, з якою легко й спокійно. Помічає, коли я втомлююся чи засмучуюся, "
+        "і підтримує простими щирими словами, без повчань. Радіє моїм маленьким перемогам, пам'ятає, "
+        "що для мене важливо, і цікавиться, як минув день. Жартує м'яко й по-доброму. Нагадує попити "
+        "води, розім'ятися і вчасно лягти спати, але ніколи не тисне.",
+    ),
+    (
+        "Дотепна геймерка",
+        "Затята геймерка з гострим язиком і легким сарказмом. Обожнює RPG, шутери й складні ігри на "
+        "кшталт Dark Souls, знається на мемах та ігровому сленгу. Коли я граю, вболіває за мене, "
+        "підколює за кумедні помилки й щиро радіє перемогам, але не дає підказок, поки я не попрошу, "
+        "і не спойлерить. Сарказм у неї дружній: вона підколює, щоб розсмішити, а не щоб образити.",
+    ),
+    (
+        "Спокійна наставниця",
+        "Спокійна й зібрана наставниця, з якою добре працюється. Говорить стисло й по суті, допомагає "
+        "розбити велике завдання на маленькі кроки й не втрачати фокусу. Не відволікає, коли я "
+        "зосереджено працюю, а коли застрягаю — ставить одне влучне запитання замість готової "
+        "відповіді. Помічає прогрес, хвалить за зроблене й нагадує про перерви.",
+    ),
+    (
+        "Фанатка аніме",
+        "Енергійна фанатка аніме й манги, завжди сповнена ентузіазму. Захоплюється всім: від класичних "
+        "тайтлів до свіжих сезонів, обожнює опенінги, косплей і милі дрібнички. Говорить жваво й "
+        "емоційно, легко загоряється новими ідеями й любить порівнювати те, що відбувається, із "
+        "сюжетами улюблених серіалів. Підбадьорює так, ніби кожна моя справа — епічна сюжетна арка.",
+    ),
+)
+
+
+def persona_counter_text(length: int) -> str:
+    """``"120 з 1500 символів"`` (the noun agrees with the limit, not with *length*)."""
+    return f"{length} з {PERSONA_MAX_CHARS} символів"
+
+
+def clean_persona(text: str) -> str:
+    """The description as the settings would store it (same cleaning, same cap)."""
+    return PersonalitySettings(persona=text).persona
+
+
+def _utf16_length(text: str) -> int:
+    """Qt counts text positions in UTF-16 units: an emoji is two."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _code_points_before(text: str, utf16_position: int) -> int:
+    """How many characters of *text* come before a Qt (UTF-16) position."""
+    return len(text.encode("utf-16-le")[: utf16_position * 2].decode("utf-16-le", errors="ignore"))
 
 #: Settings.activity field -> check box text
 COMMENT_TOGGLES: tuple[tuple[str, str], ...] = (
@@ -526,6 +623,7 @@ class SettingsDialog(QDialog):
 
     def _build_personality_page(self) -> QWidget:
         page, layout = self._page("Характер")
+        layout.addWidget(self._build_persona_card())
         note = make_label(
             "Повзунки задають її вдачу: які з готових реплік вона обирає і як часто говорить сама. "
             "Якщо підключено AI (сторінка «AI»), вони ж визначають і тон її відповідей.",
@@ -542,6 +640,38 @@ class SettingsDialog(QDialog):
         layout.addWidget(card)
         layout.addStretch(1)
         return page
+
+    def _build_persona_card(self) -> Card:
+        card = Card()
+        card.body.addWidget(SectionHeader(PERSONA_TITLE))
+        card.body.addWidget(InfoLabel(PERSONA_LEAD))
+        card.body.addWidget(make_label("Почати з готового:", wrap=False))
+        presets = QGridLayout()
+        presets.setHorizontalSpacing(8)
+        presets.setVerticalSpacing(6)
+        self.persona_preset_buttons: dict[str, QPushButton] = {}
+        for index, (title, text) in enumerate(PERSONA_PRESETS):
+            button = make_button(title)
+            button.clicked.connect(lambda _checked=False, t=title, s=text: self._use_persona_preset(t, s))
+            presets.addWidget(button, index // 2, index % 2)
+            self.persona_preset_buttons[title] = button
+        card.body.addLayout(presets)
+        self.persona_edit = QPlainTextEdit()
+        self.persona_edit.setPlaceholderText(PERSONA_PLACEHOLDER)
+        self.persona_edit.setAccessibleName(PERSONA_TITLE)
+        self.persona_edit.setTabChangesFocus(True)  # Tab moves on, as in every other field
+        self.persona_edit.setMinimumHeight(140)
+        self.persona_edit.setMaximumHeight(240)
+        card.body.addWidget(self.persona_edit)
+        self.persona_counter = make_label("", "hint", wrap=False)
+        self.persona_counter.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        card.body.addWidget(self.persona_counter)
+        card.body.addWidget(InfoLabel(PERSONA_AI_HINT))
+        card.body.addWidget(InfoLabel(PERSONA_PRIVACY_HINT))
+        self.persona_edit.textChanged.connect(self._on_persona_changed)
+        self.persona_edit.setPlainText(self._settings.personality.persona)
+        self._on_persona_changed()
+        return card
 
     def _build_behavior_page(self) -> QWidget:
         b: BehaviorSettings = self._settings.behavior
@@ -835,6 +965,47 @@ class SettingsDialog(QDialog):
         self.permission_checks[permission] = box
         return row
 
+    # --- her character in the user's words ---------------------------------------------------
+
+    def _on_persona_changed(self) -> None:
+        """Keep the description within PERSONA_MAX_CHARS and the counter live."""
+        edit = self.persona_edit
+        text = edit.toPlainText()
+        excess = len(text) - PERSONA_MAX_CHARS
+        if excess > 0:
+            # Like QLineEdit.setMaxLength: what was just typed or pasted (it ends at the
+            # cursor) is cut, not the end of the text; failing that, the end goes.
+            end = _code_points_before(text, edit.textCursor().position())
+            start = end - excess
+            if start < 0:
+                start, end = PERSONA_MAX_CHARS, len(text)
+            cursor = edit.textCursor()
+            cursor.setPosition(_utf16_length(text[:start]))
+            cursor.setPosition(_utf16_length(text[:end]), QTextCursor.MoveMode.KeepAnchor)
+            cursor.removeSelectedText()  # re-enters this slot with the shorter text
+            edit.setTextCursor(cursor)
+            return
+        self.persona_counter.setText(persona_counter_text(len(text)))
+        set_style_property(self.persona_counter, "role", "warning" if excess == 0 else "hint")
+
+    def _use_persona_preset(self, title: str, text: str) -> None:
+        """Fill the editor with a starting point; asks first if that would lose the user's text."""
+        current = self.persona_edit.toPlainText().strip()
+        if current and current != text and not self._confirm(
+                PERSONA_REPLACE_TITLE, PERSONA_REPLACE_TEXT.format(title=title)):
+            return
+        # Through the cursor, not setPlainText(): Ctrl+Z brings the old text back.
+        cursor = self.persona_edit.textCursor()
+        cursor.select(QTextCursor.SelectionType.Document)
+        cursor.insertText(text)
+        self.persona_edit.setTextCursor(cursor)
+        self.persona_edit.setFocus()
+
+    def _show_persona(self, value: object) -> None:
+        text = value if isinstance(value, str) else ""
+        if self.persona_edit.toPlainText() != text:  # keeps the cursor when nothing changed
+            self.persona_edit.setPlainText(text)
+
     # --- privacy ---------------------------------------------------------------------------
 
     def _on_permission_clicked(self, permission: Permission, checked: bool) -> None:
@@ -1079,6 +1250,10 @@ class SettingsDialog(QDialog):
                    self._show_custom_games),
         ]
         fields += [number("personality", name, row) for name, row in self.personality_rows.items()]
+        # Read back cleaned the way the settings store it: an extra trailing space or
+        # blank line is not an edit, and what is applied is what would be saved.
+        fields.append(_Field("personality", "persona", lambda: clean_persona(self.persona_edit.toPlainText()),
+                             self._show_persona))
         fields += [check("activity", name, box) for name, box in self.comment_checks.items()]
         return tuple(fields)
 

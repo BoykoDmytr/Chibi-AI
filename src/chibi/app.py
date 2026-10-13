@@ -96,6 +96,7 @@ from chibi.memory.repositories import (
 from chibi.personality.chat_offline import SUCCESS_OUTCOMES, OfflineChatResponder
 from chibi.personality.composer import SpeechComposer
 from chibi.personality.initiative import DecisionEngine, InitiativeContext
+from chibi.personality.observer import Observer
 from chibi.personality.phrases import PhraseBank, PhraseSelector
 from chibi.personality.reactions import ReactionEngine
 from chibi.personality.text_uk import time_of_day
@@ -126,6 +127,15 @@ ALREADY_RUNNING_TEXT = "Chibi Companion уже запущено — вона ч�
 LOOKING_REPLY = "Зараз гляну!"
 #: A voice command heard while the chat is still answering the previous message.
 BUSY_REPLY = "Почула, але ще відповідаю на попереднє — повтори за мить, добре?"
+#: A voice request heard (chat window hidden) while she is still answering waits for
+#: that answer - the newest one only - and is dropped when it has waited this long.
+PENDING_TRANSCRIPT_SECONDS = 60.0
+#: A chat answer that never arrived stops holding back voice requests after this long.
+CHAT_IN_FLIGHT_SECONDS = 90.0
+#: Menu item: the user's switch for the always-open microphone (push-to-talk keeps working).
+MIC_PAUSE_TEXT = "Пауза мікрофона"
+#: Its tooltip while she listens only on push-to-talk (there is nothing to pause).
+MIC_PAUSE_PUSH_HINT = "Діє, коли вона слухає постійно: «Налаштування → Голос → Як слухати»."
 
 
 class ChibiApp(QObject):
@@ -180,6 +190,12 @@ class ChibiApp(QObject):
         self._user_away = False
         self._fullscreen = False
         self._last_chat: float | None = None
+        #: Chat answers being written (id -> monotonic start): one at a time for the voice.
+        self._chats_in_flight: dict[int, float] = {}
+        self._chat_ids = 0
+        #: The newest voice request waiting for the answer in flight: (text, heard at).
+        #: Memory only, never logged.
+        self._pending_transcript: tuple[str, float] | None = None
         self._ai_model = ""
         self.bus.subscribe(AIStatusChanged, self._on_ai_status)
         self._secrets = default_secret_store(paths.data_dir())
@@ -248,6 +264,17 @@ class ChibiApp(QObject):
             own_windows=self._controller.own_window_ids, parent=self,
         )
 
+        # -- observer: with commentary "observer" she decides herself when what she sees is
+        #    worth a word (one INITIATIVE request now and then, mostly answered by silence).
+        #    Same shared gate and budget as every other unsolicited line. -------------------------
+        self._observer = Observer(
+            self.bus, self._brain, lambda: self._settings, self._clock, self._rng,
+            self._reactions.can_speak_unsolicited, self._reactions.note_unsolicited,
+            context=self._brain_context, last_chat=lambda: self._last_chat,
+            details=self._vision.details_for, may_share=self._vision.screen_data_may_leave,
+            permissions=self.permissions, sleeping=self._is_sleeping,
+        )
+
         # -- gifts and mini-games (Phase 5); before AppStarted, which grants the daily stars ---
         self._gifts = GiftService(self.bus, self._state, self._clock, self._tamagotchi, self._composer,
                                   self._memory, lambda: self._settings)
@@ -292,6 +319,10 @@ class ChibiApp(QObject):
         self._reactions_timer.setTimerType(Qt.TimerType.VeryCoarseTimer)
         self._reactions_timer.timeout.connect(self._reactions.tick)
         self._reactions_timer.timeout.connect(self._decisions.tick)
+        #: Sends the voice request that waited for the previous answer (see _on_transcript).
+        self._transcript_timer = QTimer(self)
+        self._transcript_timer.setSingleShot(True)
+        self._transcript_timer.timeout.connect(self._flush_transcript)
 
         qt_app.aboutToQuit.connect(self.shutdown)
 
@@ -339,10 +370,12 @@ class ChibiApp(QObject):
             self._screen.stop,
             self._tamagotchi_timer.stop,
             self._reactions_timer.stop,
+            self._transcript_timer.stop,
             self._games_hub.close_all,
             self._gifts.close,
             self._sessions.flush,
             self._decisions.close,
+            self._observer.close,  # drops its decision in flight: before the AI service
             self._composer.close,
             self._ai.shutdown,  # joins the worker (<= 2 s) before the database closes
             self._tamagotchi.save,
@@ -452,24 +485,78 @@ class ChibiApp(QObject):
     def send_chat_stream(self, text: str, on_delta: Callable[[str], None],
                          on_done: Callable[[ChatReply], None]) -> None:
         """Chat with the AI brain when it is available, the offline responder otherwise
-        (also when the AI fails mid-reply).  *on_done* runs exactly once."""
+        (also when the AI fails mid-reply).  *on_done* runs exactly once.  While the
+        answer is in flight, voice requests wait for it (:meth:`_on_transcript`)."""
         self._tamagotchi.interact(InteractionKind.TALK, announce=False)
         self._last_chat = self._clock.monotonic()
+        self._chat_ids += 1
+        chat_id = self._chat_ids
+        self._chats_in_flight[chat_id] = self._last_chat
 
-        def finish(reply: ChatReply | None) -> None:
-            reply = self._responder.respond(text) if reply is None else self._apply_chat_action(reply)
-            self._say_reply(reply)
-            on_done(reply)
+        def done(reply: ChatReply) -> None:
+            self._chats_in_flight.pop(chat_id, None)
+            try:
+                on_done(reply)
+            finally:
+                self._chat_finished()
 
+        try:
+            self._answer_chat(text, on_delta, done)
+        except BaseException:
+            if self._chats_in_flight.pop(chat_id, None) is not None:
+                self._chat_finished()
+            raise
+
+    def _answer_chat(self, text: str, on_delta: Callable[[str], None],
+                     on_done: Callable[[ChatReply], None]) -> None:
         look = self._look_reply(text)
         if look is not None:
             # The answer about the screen comes from vision once the frame is analysed.
             self._say_reply(look)
             on_done(look)
-        elif self._brain.available(Purpose.CHAT):
-            self._brain.chat(text, on_delta, finish)
-        else:
-            finish(None)
+            return
+        if not self._brain.available(Purpose.CHAT):
+            reply = self._responder.respond(text)
+            self._say_reply(reply)
+            on_done(reply)
+            return
+        # She starts talking at the first complete sentence while the model writes on;
+        # the stream hands the answer to her voice / bubble exactly once in total.
+        stream = self._voice.begin_reply("chat", show=self._show_routed)
+
+        def delta(piece: str) -> None:
+            try:
+                on_delta(piece)
+            finally:
+                stream.feed(piece)
+
+        def finish(reply: ChatReply | None) -> None:
+            if reply is None:
+                # The AI failed (perhaps mid-answer): nothing more of it is said, and
+                # the offline answer replaces it.
+                stream.abort()
+                reply = self._responder.respond(text)
+                self._say_reply(reply)
+            else:
+                reply = self._apply_chat_action(reply)
+                stream.finish(reply.text, reply.state, reply.portrait)  # never also _say_reply
+            on_done(reply)
+
+        self._brain.chat(text, delta, finish)
+
+    def _chat_busy(self) -> bool:
+        """A chat answer is still being written (one lost for too long does not count)."""
+        now = self._clock.monotonic()
+        for chat_id, started in list(self._chats_in_flight.items()):
+            if now - started > CHAT_IN_FLIGHT_SECONDS:
+                del self._chats_in_flight[chat_id]
+                log.warning("a chat answer never arrived; voice requests are no longer held back")
+        return bool(self._chats_in_flight)
+
+    def _chat_finished(self) -> None:
+        if self._pending_transcript is not None and not self._chat_busy() and not self._shut_down:
+            # Later, not from inside the finished answer's callback.
+            self._transcript_timer.start(0)
 
     def _look_reply(self, text: str) -> ChatReply | None:
         """"Подивись на екран" in the chat: ask vision to look.  Her reply says she is
@@ -623,6 +710,7 @@ class ChibiApp(QObject):
 
     def vision_clear_history(self) -> None:
         self._vision.clear_history()
+        self._observer.clear()
 
     def vision_games(self) -> list[tuple[str, str]]:
         return self._vision.game_choices()
@@ -659,6 +747,7 @@ class ChibiApp(QObject):
     def wipe_history(self) -> None:
         self._db.wipe_history()
         self._vision.clear_history()
+        self._observer.clear()
         # Games still running stay tracked, from now on: the monitor won't announce
         # them again, so dropping them would lose the rest of the session too.
         self._sessions.restart_open()
@@ -678,6 +767,8 @@ class ChibiApp(QObject):
         self._memory.clear()  # drops the in-process search cache of deleted texts
         self._short_term.clear()
         self._vision.clear_history()
+        self._observer.clear()
+        self._pending_transcript = None
         for name in (*KEY_NAMES.values(), AZURE_KEY_NAME):  # "everything" includes the API keys
             try:
                 self._secrets.set(name, "")
@@ -776,9 +867,11 @@ class ChibiApp(QObject):
         self._action(menu, "Налаштування", self.show_settings)
         menu.addSeparator()
         self._act_dnd = self._action(menu, "Не турбувати", self._toggle_dnd, checkable=True)
+        self._act_mic_pause = self._action(menu, MIC_PAUSE_TEXT, self._toggle_mic_pause, checkable=True)
         self._act_stop = self._action(menu, "Зупинити спостереження", self.stop_all_observation)
         menu.addSeparator()
         self._action(menu, "Вийти", self._qt.quit)
+        menu.setToolTipsVisible(True)  # why an item is disabled, what the microphone does
         menu.aboutToShow.connect(self._refresh_menus)
         return menu
 
@@ -797,12 +890,15 @@ class ChibiApp(QObject):
         self._action(menu, "Приватність і дозволи", lambda: self.show_settings("privacy"))
         menu.addSeparator()
         self._act_tray_dnd = self._action(menu, "Не турбувати", self._toggle_dnd, checkable=True)
+        self._act_tray_mic_pause = self._action(menu, MIC_PAUSE_TEXT, self._toggle_mic_pause,
+                                                checkable=True)
         self._act_click = self._action(menu, "Пропускати кліки крізь неї", self._toggle_click_through,
                                        checkable=True)
         self._act_lock = self._action(menu, "Заблокувати позицію", self._toggle_lock, checkable=True)
         self._act_tray_stop = self._action(menu, "Зупинити спостереження", self.stop_all_observation)
         menu.addSeparator()
         self._action(menu, "Вийти", self._qt.quit)
+        menu.setToolTipsVisible(True)
         menu.aboutToShow.connect(self._refresh_menus)
         self._tray_menu = menu
         portrait = self._controller.portrait_pixmap("calm")
@@ -835,6 +931,7 @@ class ChibiApp(QObject):
         # starts push-to-talk there, so it must not promise to stop the microphone.
         self._act_voice.setText("Перестати слухати" if voice.state == "listening" else "Сказати голосом")
         self._act_voice.setToolTip("" if voice.stt_ready else voice.stt_reason)
+        self._sync_mic_pause_actions(voice)
         if self._tray is not None:
             self._act_tray_dnd.setChecked(dnd)
             self._act_tray_stop.setEnabled(observing)
@@ -858,6 +955,31 @@ class ChibiApp(QObject):
         s = self.settings()
         s.behavior.do_not_disturb = not s.behavior.do_not_disturb
         self.apply_settings(s)
+
+    def _toggle_mic_pause(self) -> None:
+        """"Пауза мікрофона": the always-open microphone closes until resumed (not saved;
+        push-to-talk keeps working).  She says so in a short line."""
+        self._voice.set_open_mic_paused(not self._voice.open_mic_paused)
+        self._refresh_menus()
+
+    def _sync_mic_pause_actions(self, voice: VoiceStatus) -> None:
+        """The pause items: usable while she listens on an open microphone ("name" /
+        "open"), checked while the user paused it; the tooltip says how she listens
+        or why the microphone is paused."""
+        open_mic = voice.stt_ready and voice.listen_mode != "push"
+        paused = self._voice.open_mic_paused
+        if open_mic:
+            tip = voice.listening_text
+        else:
+            tip = MIC_PAUSE_PUSH_HINT if voice.stt_ready else voice.stt_reason
+        for name in ("_act_mic_pause", "_act_tray_mic_pause"):
+            action = getattr(self, name, None)  # the voice may report before the menus exist
+            if action is None:
+                continue
+            # Enabled while paused too, so a pause left over from another mode can be lifted.
+            action.setEnabled(open_mic or paused)
+            action.setChecked(paused)
+            action.setToolTip(tip)
 
     def _toggle_click_through(self) -> None:
         s = self.settings()
@@ -885,6 +1007,8 @@ class ChibiApp(QObject):
             self._monitor.stop(timeout=2.0)
         if not wanted:
             self._forget_activity()
+        if not self.permissions.is_granted(Permission.MICROPHONE):
+            self._pending_transcript = None  # microphone revoked / kill switch: what was heard goes
         # While the monitor runs she can tell an active user from an idle one.
         self._controller.set_input_monitoring(self._monitor.is_running())
         if self._tray is not None:
@@ -903,14 +1027,18 @@ class ChibiApp(QObject):
             self._notify_voice(reason)
 
     def _sync_voice_ui(self) -> None:
-        """The voice integration reconfigured or changed state: microphone button,
-        tray "listening" badge."""
+        """The voice integration reconfigured or changed state (or the open microphone
+        paused / resumed): microphone button, tray "listening" badge and tooltip, the
+        microphone pause items."""
         st = self._voice.status()
         if self._chat is not None:
             self._chat.set_voice_input(st.stt_ready, st.stt_reason, st.hotkey if st.hotkey_active else "")
             self._chat.set_voice_state(st.state)
         if self._tray is not None:
+            # The red dot whenever the microphone is open, also while she waits for her name.
             self._tray.set_listening(st.state in ("listening", "standby"))
+            self._tray.set_voice_note(st.listening_text)  # how she listens, or why it is paused
+        self._sync_mic_pause_actions(st)
 
     def _notify_voice(self, message: str) -> None:
         """A voice problem the user should know about (no model, no device...)."""
@@ -928,9 +1056,15 @@ class ChibiApp(QObject):
 
     def _on_transcript(self, event: VoiceTranscript) -> None:
         """What the user said (local recognition) goes to the chat.  Never logged."""
+        self._deliver_transcript(event.text.strip())
+
+    def _deliver_transcript(self, text: str) -> None:
+        """One chat answer at a time: with the chat window open a request heard while
+        it is answering gets :data:`BUSY_REPLY` there (never spoken); otherwise only
+        the newest request waits for the answer in flight and is sent after it."""
         if not self.permissions.is_granted(Permission.MICROPHONE):
-            return  # revoked while the transcript was queued
-        text = event.text.strip()
+            self._pending_transcript = None
+            return  # revoked while the transcript was queued (or while it waited)
         if not text:
             return
         chat = self._chat
@@ -938,12 +1072,30 @@ class ChibiApp(QObject):
             if chat.is_waiting():
                 chat.add_system_line(BUSY_REPLY)
                 return
+            if self._chat_busy():  # an answer to a request made while the chat was hidden
+                self._pending_transcript = (text, self._clock.monotonic())
+                return
             draft = chat.input.text()  # what the user was typing stays
             chat.input.setText(text)
             chat.send()
             chat.input.setText(draft)
+        elif self._chat_busy():
+            # In "name" / "open" mode she can hear the next request before the answer
+            # to the previous one is complete: no second answer in parallel.
+            self._pending_transcript = (text, self._clock.monotonic())
         else:
             self.send_chat_stream(text, lambda _delta: None, lambda _reply: None)
+
+    def _flush_transcript(self) -> None:
+        """The answer in flight is complete: send the request that waited for it."""
+        pending, self._pending_transcript = self._pending_transcript, None
+        if pending is None or self._shut_down:
+            return
+        text, heard_at = pending
+        if self._clock.monotonic() - heard_at > PENDING_TRANSCRIPT_SECONDS:
+            log.info("a voice request waited too long for the previous answer and was dropped")
+            return
+        self._deliver_transcript(text)
 
     def _on_vision_state(self, event: VisionStateChanged) -> None:
         if self._tray is not None:

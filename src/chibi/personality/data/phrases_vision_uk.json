@@ -137,6 +137,87 @@
       {"id": "vision.look.puzzle.02", "text": "Бачу загадку. Мій мозок уже скрипить.", "tone": "playful", "state": "thinking", "portrait": "thinking"},
       {"id": "vision.look.puzzle.03", "text": "О, задачка! Обожнюю дивитися, як ти міркуєш.", "tone": "warm", "state": "curious", "portrait": "question"},
       {"id": "vision.look.puzzle.04", "text": "Хм-м, хитра штука. Думаємо разом!", "tone": "playful", "state": "thinking", "portrait": "idea"}
+    ],
+    "vision.look.code": [
+      {"id": "vision.look.code.01", "text": "Бачу код! Рядок за рядком — і щось нове з'являється на світ.", "tone": "warm", "state": "curious", "portrait": "typing"},
+      {"id": "vision.look.code.02", "text": "О, програмування! Я тихенько посиджу поруч, не заважатиму.", "tone": "caring", "state": "shy", "portrait": "shy"},
+      {"id": "vision.look.code.03", "text": "Код у програмі «{app}». Виглядає серйозно — я вражена!", "tone": "playful", "state": "surprised", "portrait": "wow", "requires": ["app"]},
+      {"id": "vision.look.code.04", "text": "Бачу редактор коду. Сподіваюся, без жодної червоної хвилястої лінії.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "vision.look.code.05", "text": "Пишемо код! Якщо що, я поруч — подумаємо разом.", "tone": "warm", "state": "point", "portrait": "typing"}
+    ],
+    "vision.look.terminal": [
+      {"id": "vision.look.terminal.01", "text": "Бачу термінал. Чорне вікно, білі літери — справжня магія.", "tone": "playful", "state": "curious", "portrait": "typing"},
+      {"id": "vision.look.terminal.02", "text": "Термінал! Тут головне — не переплутати команди.", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "vision.look.terminal.03", "text": "Командний рядок. Виглядає так, ніби ти керуєш космічним кораблем.", "tone": "warm", "state": "surprised", "portrait": "wow"},
+      {"id": "vision.look.terminal.04", "text": "Бачу термінал у програмі «{app}». Чекаю, що він відповість.", "tone": "warm", "state": "curious", "portrait": "question", "requires": ["app"]}
+    ],
+    "vision.look.document": [
+      {"id": "vision.look.document.01", "text": "Бачу документ. Текст не читаю — просто тримаю за тебе кулачки.", "tone": "caring", "state": "shy", "portrait": "shy"},
+      {"id": "vision.look.document.02", "text": "Робота з текстом! Слово за словом — і буде готово.", "tone": "warm", "state": "happy", "portrait": "smile"},
+      {"id": "vision.look.document.03", "text": "Документ у програмі «{app}». Пишемо щось важливе?", "tone": "playful", "state": "curious", "portrait": "question", "requires": ["app"]},
+      {"id": "vision.look.document.04", "text": "Схоже на документ. Я поруч, якщо захочеш перепочити.", "tone": "caring", "state": "talk", "portrait": "calm"}
+    ],
+    "vision.look.spreadsheet": [
+      {"id": "vision.look.spreadsheet.01", "text": "Бачу таблицю. Стільки клітинок — аж голова паморочиться!", "tone": "playful", "state": "surprised", "portrait": "wow"},
+      {"id": "vision.look.spreadsheet.02", "text": "Таблиця! Числа люблять порядок, а ти, здається, саме його наводиш.", "tone": "warm", "state": "thinking", "portrait": "thinking"},
+      {"id": "vision.look.spreadsheet.03", "text": "Бачу таблицю в програмі «{app}». Хай формули складуться з першого разу!", "tone": "warm", "state": "happy", "portrait": "smile", "requires": ["app"]},
+      {"id": "vision.look.spreadsheet.04", "text": "Рядки, стовпці, формули… Серйозна робота!", "tone": "warm", "state": "curious", "portrait": "typing"}
+    ],
+    "vision.look.browser": [
+      {"id": "vision.look.browser.01", "text": "Бачу сторінку в браузері. Що цікавого читаємо?", "tone": "playful", "state": "curious", "portrait": "question"},
+      {"id": "vision.look.browser.02", "text": "Браузер! Головне — не загубитися серед вкладок.", "tone": "sarcastic", "state": "laugh", "portrait": "wink"},
+      {"id": "vision.look.browser.03", "text": "Бачу вебсторінку. Я тихенько, не заважаю.", "tone": "caring", "state": "shy", "portrait": "shy"},
+      {"id": "vision.look.browser.04", "text": "Сторінка в програмі «{app}». Шукаємо щось корисне?", "tone": "warm", "state": "curious", "portrait": "question", "requires": ["app"]}
+    ],
+    "vision.look.video": [
+      {"id": "vision.look.video.01", "text": "Бачу відео! Дивимося разом?", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "vision.look.video.02", "text": "О, відео. Я вмощуюся зручніше.", "tone": "playful", "state": "happy", "portrait": "smile"},
+      {"id": "vision.look.video.03", "text": "Відео в програмі «{app}». Цікаво, про що воно.", "tone": "warm", "state": "curious", "portrait": "question", "requires": ["app"]},
+      {"id": "vision.look.video.04", "text": "Бачу відео. Не коментую — дивлюся уважно!", "tone": "caring", "state": "curious", "portrait": "calm"}
+    ],
+    "vision.look.chat": [
+      {"id": "vision.look.chat.01", "text": "Бачу листування. Що там — мене не стосується, я не читаю.", "tone": "caring", "state": "shy", "portrait": "shy"},
+      {"id": "vision.look.chat.02", "text": "Схоже на чат. Відвертаюся, щоб не підглядати!", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "vision.look.chat.03", "text": "Це чиясь розмова — її я не розглядаю.", "tone": "warm", "state": "talk", "portrait": "calm"}
+    ],
+    "vision.look.email": [
+      {"id": "vision.look.email.01", "text": "Бачу пошту. Листи — справа особиста, я їх не читаю.", "tone": "caring", "state": "shy", "portrait": "shy"},
+      {"id": "vision.look.email.02", "text": "Схоже на пошту. Відвертаюся — це не для моїх очей.", "tone": "playful", "state": "shy", "portrait": "shy"},
+      {"id": "vision.look.email.03", "text": "Пошта! Хай там будуть лише приємні листи.", "tone": "warm", "state": "happy", "portrait": "smile"}
+    ],
+    "vision.look.design": [
+      {"id": "vision.look.design.01", "text": "Бачу дизайн! Кольори, форми… Мені подобається.", "tone": "warm", "state": "happy", "portrait": "joy"},
+      {"id": "vision.look.design.02", "text": "О, щось творче! Обожнюю дивитися, як народжується малюнок.", "tone": "warm", "state": "curious", "portrait": "excited"},
+      {"id": "vision.look.design.03", "text": "Бачу роботу в програмі «{app}». Виходить гарно!", "tone": "warm", "state": "happy", "portrait": "smile", "requires": ["app"]},
+      {"id": "vision.look.design.04", "text": "Творчий процес у розпалі. Не заважаю, лише милуюся.", "tone": "caring", "state": "shy", "portrait": "wink_heart"}
+    ],
+    "vision.look.work": [
+      {"id": "vision.look.work.01", "text": "Подивилася! Усе спокійно, я тихенько спостерігаю.", "tone": "warm", "state": "curious", "portrait": "calm"},
+      {"id": "vision.look.work.02", "text": "Бачу програму «{app}». Усе спокійно, працюємо далі.", "tone": "warm", "state": "point", "portrait": "point", "requires": ["app"]},
+      {"id": "vision.look.work.03", "text": "Нічого надзвичайного. Я поруч, якщо що!", "tone": "caring", "state": "happy", "portrait": "smile"},
+      {"id": "vision.look.work.04", "text": "Глянула: усе йде своїм ходом.", "tone": "playful", "state": "thinking", "portrait": "thinking"},
+      {"id": "vision.look.work.05", "text": "Роздивилася: нічого тривожного, можна продовжувати.", "tone": "warm", "state": "talk", "portrait": "calm"}
+    ],
+    "vision.look.error_on_screen": [
+      {"id": "vision.look.error_on_screen.01", "text": "Бачу якусь помилку на екрані. Розберемося разом?", "tone": "caring", "state": "surprised", "portrait": "surprised"},
+      {"id": "vision.look.error_on_screen.02", "text": "Ой, схоже на повідомлення про помилку. Головне — не панікувати!", "tone": "caring", "state": "thinking", "portrait": "thinking"},
+      {"id": "vision.look.error_on_screen.03", "text": "Там, здається, помилка. Нічого, помилки для того й існують, щоб їх виправляти.", "tone": "warm", "state": "talk", "portrait": "calm"}
+    ],
+    "vision.look.build_failed": [
+      {"id": "vision.look.build_failed.01", "text": "Схоже, збірка не вдалася. Червоне — ще не кінець світу!", "tone": "caring", "state": "thinking", "portrait": "thinking"},
+      {"id": "vision.look.build_failed.02", "text": "Збірка впала… Видихаємо й шукаємо, що не так.", "tone": "caring", "state": "sad", "portrait": "facepalm"},
+      {"id": "vision.look.build_failed.03", "text": "Ой, збірка не пройшла. Я вірю, що наступна вийде!", "tone": "warm", "state": "talk", "portrait": "calm"}
+    ],
+    "vision.look.tests_passed": [
+      {"id": "vision.look.tests_passed.01", "text": "Тести пройшли! Оце я розумію — чиста робота!", "tone": "warm", "state": "excited", "portrait": "joy"},
+      {"id": "vision.look.tests_passed.02", "text": "Бачу зелені тести! Можна й порадіти.", "tone": "playful", "state": "happy", "portrait": "joyful"},
+      {"id": "vision.look.tests_passed.03", "text": "Усі тести зелені? Так тримати!", "tone": "warm", "state": "proud", "portrait": "smile"}
+    ],
+    "vision.look.waiting": [
+      {"id": "vision.look.waiting.01", "text": "Бачу, щось вантажиться. Саме час розім'ятися!", "tone": "caring", "state": "stretch", "portrait": "smile"},
+      {"id": "vision.look.waiting.02", "text": "Чекаємо… Індикатор повзе, а ми не здаємося.", "tone": "playful", "state": "yawn", "portrait": "tired"},
+      {"id": "vision.look.waiting.03", "text": "Щось довго думає. Може, поки що чаю?", "tone": "caring", "state": "talk", "portrait": "drink"},
+      {"id": "vision.look.waiting.04", "text": "Процес іде. Я побуду поруч і почекаю.", "tone": "warm", "state": "idle", "portrait": "calm"}
     ]
   }
 }

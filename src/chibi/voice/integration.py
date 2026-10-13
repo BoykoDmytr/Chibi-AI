@@ -30,6 +30,21 @@ heard is shown as text.  Like the controller's own queue, voiced lines she chose
 by herself are dropped - even mid-sentence - when the user asks for quiet,
 turns on Do Not Disturb or stops observation; answers to the user stay.
 
+Listening (``VoiceSettings.listen_mode``): push-to-talk always works; in the
+"name" and "open" modes the microphone stays open (see
+:mod:`chibi.voice.service`).  The open microphone pauses - push-to-talk
+still works - while Do Not Disturb is on, while a fullscreen app is in front
+(unless ``wake_in_fullscreen``), while the app in front is marked private by
+the privacy filter (messengers, mail, banking, password managers: never),
+while it is a voice-call app (``pause_in_calls``), and while the user paused
+it (:meth:`VoiceIntegration.set_open_mic_paused`).  The app in front is
+known only while ``Permission.APP_METADATA`` is granted.
+:attr:`VoiceStatus.pause_reason` says why, in Ukrainian.
+
+Streamed answers: :meth:`VoiceIntegration.begin_reply` returns a
+:class:`ReplyStream` that voices a chat answer sentence by sentence while
+the model is still writing it (see its docstring for the contract).
+
 Threading: everything here runs on the Qt main thread.  Work happens on the
 service's worker, the hotkey thread and a download worker; they come back
 through :meth:`_post` (a queued ``Signal(object)``, the same pattern as
@@ -44,20 +59,23 @@ import logging
 import threading
 import time
 import traceback
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from PySide6.QtCore import QObject, Qt, Signal, Slot
+from PySide6.QtCore import QCoreApplication, QObject, Qt, QTimer, Signal, Slot
 
 from chibi.core.clock import Clock, SystemClock
 from chibi.core.config import Settings, VoiceSettings
 from chibi.core.event_bus import EventBus
 from chibi.core.events import (
+    ActivityCategory,
     AppShuttingDown,
     CharacterInteraction,
     DoNotDisturbChanged,
+    ForegroundAppChanged,
     FullscreenChanged,
     InteractionKind,
     ObservationStopped,
@@ -73,6 +91,7 @@ from chibi.core.events import (
 from chibi.core.worker import SerialWorker
 from chibi.voice import hotkey_win, models
 from chibi.voice.models import CATALOG, DEFAULT_TTS_MODEL, DownloadError, ModelSpec
+from chibi.voice.tts_text import SentenceChunker
 
 if TYPE_CHECKING:  # pragma: no cover - typing only; these modules need numpy at import time
     from chibi.voice.service import VoiceService
@@ -130,8 +149,47 @@ WATCHED_SECTIONS: frozenset[str] = frozenset({"", "voice", "character"})
 NOTIFY_REPEAT_SECONDS = 60.0
 #: Download progress is posted to the main thread at most this often.
 PROGRESS_INTERVAL = 0.1
-#: The wake phrase ("Міє, ...") is short: longer background chatter is cut here.
-WAKE_MAX_SECONDS = 8.0
+
+# -- the open microphone ("name" / "open" listen modes) ---------------------------------------------
+
+#: Why the open microphone is paused (``VoiceStatus.pause_reason``), most important first.
+PAUSED_BY_USER = "Мікрофон на паузі."
+PAUSED_PRIVATE = "Мікрофон на паузі: відкрито приватну програму."
+PAUSED_CALL = "Мікрофон на паузі: відкрито програму для дзвінків."
+PAUSED_DND = "Мікрофон на паузі: «Не турбувати»."
+PAUSED_FULLSCREEN = "Мікрофон на паузі: програма на весь екран."
+#: What the open microphone does (``VoiceStatus.listening_text``).
+LISTENING_NAME = "Слухає постійно й відгукується на своє ім'я."
+LISTENING_OPEN = "Слухає постійно — усе, що чує, для неї."
+#: Her short reply when the user pauses / resumes the open microphone.
+MIC_PAUSED_LINE = "voice.mic_paused"
+MIC_RESUMED_LINE = "voice.mic_resumed"
+
+#: Voice-call apps (lower-case exe names without ".exe"): with ``pause_in_calls`` the
+#: open microphone pauses while one is in front.  Most are private apps anyway.
+CALL_APPS: frozenset[str] = frozenset({
+    "discord", "discordptb", "discordcanary", "vesktop", "teams", "ms-teams", "msteams", "lync",
+    "zoom", "skype", "skypeapp", "slack", "webex", "webexmta", "ciscocollabhost", "ciscowebexstart",
+    "atmgr", "whatsapp", "whatsapp.root", "viber", "signal", "telegram", "ayugram", "element",
+    "mumble", "teamspeak", "ts3client_win64", "ts3client_win32", "guilded", "jitsi meet",
+    "ringcentral", "googlemeet", "facebook messenger", "messenger", "wechat", "weixin", "line",
+})
+CALL_APP_PREFIXES = ("discord", "telegram", "teamspeak", "ts3client", "webex", "whatsapp", "skype")
+
+# -- streamed answers -------------------------------------------------------------------------------
+
+#: Between two sentences of an answer still being written, the microphone stays
+#: closed (she is mid-answer) for at most this long after the last sentence arrived.
+REPLY_HOLD_SECONDS = 8.0
+#: Reading speed assumed for an answer shown without voice (conversation window).
+READ_CHARS_PER_SECOND = 15.0
+
+
+def is_call_app(process_name: str) -> bool:
+    """True for a voice-call app ("Discord.exe", "ms-teams.exe", "Zoom.exe")."""
+    name = (process_name or "").strip().lower()
+    name = name.removesuffix(".exe")
+    return bool(name) and (name in CALL_APPS or name.startswith(CALL_APP_PREFIXES))
 
 
 def module_available(name: str) -> bool:
@@ -268,10 +326,25 @@ class VoiceStatus:
     hotkey_active: bool
     #: Why the hotkey is not registered although recognition works ("" otherwise).
     hotkey_reason: str = ""
+    #: How she listens right now: "push", "name" or "open" ("push" while recognition
+    #: is not ready, or after the microphone failed to stay open).
+    listen_mode: str = "push"
+    #: Why the open microphone is paused, Ukrainian ("" when it is not, or in "push" mode).
+    pause_reason: str = ""
 
     @property
     def reasons(self) -> tuple[str, ...]:
         return tuple(r for r in (self.tts_reason, self.stt_reason, self.hotkey_reason) if r)
+
+    @property
+    def listening_text(self) -> str:
+        """One line for the chat, the tray and the menus about the open microphone
+        ("" in "push" mode): what it does, or why it is paused."""
+        if not self.stt_ready or self.listen_mode not in ("name", "open"):
+            return ""
+        if self.pause_reason:
+            return self.pause_reason
+        return LISTENING_NAME if self.listen_mode == "name" else LISTENING_OPEN
 
 
 @dataclass(frozen=True)
@@ -307,6 +380,160 @@ class _Routed:
     cancelled: bool = False
     #: Bumped when the line is queued again; callbacks of an older attempt are ignored.
     attempt: int = 0
+    #: The streamed answer this line is a sentence of.
+    stream: ReplyStream | None = None
+
+
+ShowFn = Callable[[SpeechRequested, "float | None"], None]
+
+
+def _same_words(text: str) -> str:
+    return " ".join(text.split())
+
+
+class ReplyStream:
+    """One answer of hers on its way to her voice and bubble while the model
+    is still writing it.  Made by :meth:`VoiceIntegration.begin_reply`.
+
+    Contract (main thread only):
+
+    * ``feed(delta)`` for every piece of the answer's body, in order; then
+      exactly one of ``finish(text, state, portrait)`` (the final answer) or
+      ``abort()`` (the answer was abandoned).  Calls after the first
+      ``finish``/``abort`` do nothing.
+    * When she can voice the answer (decided by :meth:`~VoiceIntegration.begin_reply`:
+      voice ready, ``speak`` allows answers...), every complete sentence
+      (:class:`~chibi.voice.tts_text.SentenceChunker`) is routed as a solicited
+      line as soon as it is written: she starts talking while the model
+      writes on, and the microphone stays closed between the sentences.
+      ``finish`` routes what is left with the answer's state and portrait -
+      or, when nothing is left, only her gesture (empty text, that state).
+    * When she cannot voice it, ``feed`` does nothing and ``finish`` routes
+      the whole answer once, like :meth:`~VoiceIntegration.route`.
+    * The answer reaches her bubble / voice **exactly once** in total:
+      ``finish`` compares the final text sentence by sentence with what was
+      already routed and routes only the rest.  If the user cuts her off (a
+      click on her, push-to-talk, her name), nothing more is voiced; the part
+      not heard yet is shown once, as text, when the answer is complete.
+    * ``abort()``: nothing more is routed - never route the aborted text
+      again (route the replacement, e.g. the offline answer, as usual).
+      Sentences queued but not started are dropped (the chat window still
+      has them); the sentence she is saying finishes.
+    """
+
+    def __init__(self, owner: VoiceIntegration, show: ShowFn, source: str, voiced: bool) -> None:
+        self._owner = owner
+        self._show = show
+        self._source = source
+        self._voiced = voiced
+        self._chunker = SentenceChunker()
+        #: Every sentence handed on (voiced, shown or kept for later), in order.
+        self._routed: list[str] = []
+        self._lines: list[_Routed] = []
+        #: Sentences not heard because the user cut her off (shown once at the end).
+        self._unsaid: list[str] = []
+        self._state = "talk"
+        self._portrait = ""
+        self._cut = False
+        self._finished = False
+        self._closed = False
+
+    @property
+    def voiced(self) -> bool:
+        """Sentences are spoken while the answer is being written."""
+        return self._voiced
+
+    @property
+    def spoken(self) -> bool:
+        """Some of the answer has been handed to her voice / bubble already."""
+        return bool(self._routed)
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def feed(self, delta: str) -> None:
+        if self._closed or not self._voiced or not delta:
+            return
+        for sentence in self._chunker.feed(delta):
+            self._route(sentence)
+
+    def finish(self, text: str, state: str = "talk", portrait: str = "") -> None:
+        if self._closed:
+            return
+        self._closed = self._finished = True
+        self._state, self._portrait = state or "talk", portrait or ""
+        text = text or ""
+        if not self._voiced:
+            self._owner._stream_closed(self)
+            if text.strip() or state:
+                self._owner.route(self._event(text), self._show)
+            return
+        rest = self._remainder(text)
+        if rest:
+            self._route(rest)
+        elif state and state != "talk" and not self._cut:
+            self._owner.route(self._event(""), self._show)  # her expression, nothing to repeat
+        self._owner._stream_closed(self)
+        self._maybe_flush()
+
+    def abort(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._unsaid.clear()
+        for line in self._lines:
+            if not line.done and not line.playing:
+                line.cancelled = True
+        self._owner._stream_closed(self)
+
+    # -- internals (VoiceIntegration calls these) --------------------------------------------
+
+    def _event(self, text: str) -> SpeechRequested:
+        return SpeechRequested(text=text, state=self._state, portrait=self._portrait,
+                               solicited=True, source=self._source)
+
+    def _route(self, sentence: str) -> None:
+        self._routed.append(sentence)
+        if self._cut:
+            self._unsaid.append(sentence)
+            return
+        self._lines.append(self._owner._route_stream_line(self, self._event(sentence), self._show))
+
+    def _remainder(self, text: str) -> str:
+        """The sentences of the final *text* not routed yet."""
+        chunker = SentenceChunker()
+        sentences = chunker.feed(text) + chunker.flush()
+        routed = Counter(_same_words(s) for s in self._routed)
+        rest = []
+        for sentence in sentences:
+            key = _same_words(sentence)
+            if routed[key] > 0:
+                routed[key] -= 1
+            else:
+                rest.append(sentence)
+        return " ".join(rest)
+
+    def _cut_off(self, line: _Routed | None = None) -> None:
+        """The user cut her off: *line* (not shown yet) was not heard."""
+        if line is not None and not line.shown:
+            self._unsaid.append(line.event.text)
+        if not self._cut:
+            self._cut = True
+            if not self._closed:
+                self._owner._release_hold()
+        self._maybe_flush()
+
+    def _maybe_flush(self) -> None:
+        """Once the answer is complete and nothing of it is still queued, show
+        what she did not get to say - once, as text."""
+        if not (self._cut and self._finished and self._unsaid):
+            return
+        if any(not line.done for line in self._lines):
+            return
+        text = " ".join(self._unsaid)
+        self._unsaid.clear()
+        self._owner._show_now(self._event(text), self._show)
 
 
 class VoiceIntegration(QObject):
@@ -386,9 +613,19 @@ class VoiceIntegration(QObject):
         self._stt_key: tuple[Any, ...] | None = None
         self._tts_reason = TTS_OFF
         self._stt_reason = STT_OFF
-        self._wake: bool | None = None
         self._suspended: bool | None = None
         self._fullscreen = False
+        # What pauses the open microphone (see the module docstring).
+        self._dnd = False
+        self._foreground_private = False
+        self._foreground_call = False
+        self._user_paused = False
+        self._pause_reason = ""
+        #: Streamed answers not finished / aborted yet.
+        self._streams: list[ReplyStream] = []
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setSingleShot(True)
+        self._hold_timer.timeout.connect(self._check_hold)
         #: >0 while the integration itself (not the user) interrupts her.
         self._system_interrupt = 0
         self._last_error = ""
@@ -411,7 +648,8 @@ class VoiceIntegration(QObject):
             bus.subscribe(SettingsChanged, self._on_settings_changed),
             bus.subscribe(CharacterInteraction, self._on_interaction),
             bus.subscribe(QuietModeChanged, self._on_quiet),
-            bus.subscribe(DoNotDisturbChanged, self._on_quiet),
+            bus.subscribe(DoNotDisturbChanged, self._on_dnd),
+            bus.subscribe(ForegroundAppChanged, self._on_foreground),
             bus.subscribe(AppShuttingDown, lambda _event: self.shutdown()),
         ]
 
@@ -437,6 +675,8 @@ class VoiceIntegration(QObject):
         for unsubscribe in self._unsubscribers:
             unsubscribe()
         self._unsubscribers.clear()
+        self._streams.clear()
+        self._hold_timer.stop()
         self._stop_hotkey()
         if self._download is not None:
             self._download.cancel.set()
@@ -494,25 +734,25 @@ class VoiceIntegration(QObject):
         changed = tts_key != self._tts_key or stt_key != self._stt_key
 
         self._apply_service_options(service, cfg)
-        wake = v.wake_phrase_enabled and stt is not None
-        suspended = self._fullscreen and not v.wake_in_fullscreen
+        self._dnd = bool(cfg.behavior.do_not_disturb)
+        mode = v.listen_mode if stt is not None else "push"
         if changed:
             self._tts_key, self._stt_key = tts_key, stt_key
             self._tts, self._stt = tts, stt
-            # Close a wake-phrase microphone first: it must never be (re)opened
-            # with the old engine or an outdated choice.
-            self._set_wake(service, False)
-            self._set_suspended(service, suspended)
+            # Close an open microphone first: it must never be (re)opened with
+            # the old engine or an outdated choice.
+            self._set_listen_mode(service, "push")
+            self._sync_pause(service, cfg)
             self._system_interrupt += 1
             try:
                 service.configure(tts=tts, stt=stt)
             finally:
                 self._system_interrupt -= 1
-            self._set_wake(service, wake)
+            self._set_listen_mode(service, mode)
             service.preload()
         else:
-            self._set_suspended(service, suspended)
-            self._set_wake(service, wake)
+            self._sync_pause(service, cfg)
+            self._set_listen_mode(service, mode)
         self._sync_hotkey(v)
         self._changed()
 
@@ -596,32 +836,92 @@ class VoiceIntegration(QObject):
             return None
 
     def _apply_service_options(self, service: VoiceService, cfg: Settings) -> None:
-        from chibi.voice.service import WAKE_WORDS
+        from chibi.voice.service import MIA_FORMS, OPEN_MIC_MIN_SPEECH_MS, NameForms
         from chibi.voice.vad import VADConfig
 
         v = cfg.voice
         name = cfg.character.name
         service.volume = max(0.0, min(v.volume / 100.0, 1.0))
         service.prompt = f"{name}, привіт."
-        lowered = name.strip().lower()
-        service.wake_names = WAKE_WORDS if not lowered or lowered in WAKE_WORDS else (lowered, *WAKE_WORDS)
+        service.standby_prompt = f"Розмова українською. {name.strip() or 'Мія'} слухає."
+        # Her own name, and Mia's forms too: the pack is Mia, and so is the habit.
+        service.names = NameForms.for_name(name) | MIA_FORMS
         service.listen_config = VADConfig(end_silence_ms=v.end_silence_ms,
                                           max_utterance_seconds=float(v.max_utterance_seconds))
+        # A request said in one breath on the open microphone can be as long as a
+        # push-to-talk one; only very short sounds are dropped.
         service.wake_config = VADConfig(end_silence_ms=v.end_silence_ms,
-                                        max_utterance_seconds=min(float(v.max_utterance_seconds),
-                                                                  WAKE_MAX_SECONDS))
+                                        max_utterance_seconds=float(v.max_utterance_seconds),
+                                        min_speech_ms=OPEN_MIC_MIN_SPEECH_MS)
+        service.follow_up_seconds = float(v.follow_up_seconds)
         if self._output is not None and hasattr(self._output, "device"):
             self._output.device = v.output_device
 
-    def _set_wake(self, service: VoiceService, enabled: bool) -> None:
-        if enabled != self._wake:
-            self._wake = enabled
-            service.set_wake(enabled)
+    @staticmethod
+    def _set_listen_mode(service: VoiceService, mode: str) -> None:
+        # Compared with the service, not a cache: after the microphone failed to
+        # stay open (the service fell back to "push") a settings change retries.
+        if service.listen_mode != mode:
+            service.set_listen_mode(mode)
 
     def _set_suspended(self, service: VoiceService, suspended: bool) -> None:
         if suspended != self._suspended:
             self._suspended = suspended
             service.set_suspended(suspended)
+
+    def _open_mic_pause(self, v: VoiceSettings) -> str:
+        """Why the open microphone should be paused now ("" if it should not)."""
+        if self._user_paused:
+            return PAUSED_BY_USER
+        if self._foreground_private:
+            return PAUSED_PRIVATE  # never listen there, whatever the settings say
+        if self._foreground_call and v.pause_in_calls:
+            return PAUSED_CALL
+        if self._dnd:
+            return PAUSED_DND
+        if self._fullscreen and not v.wake_in_fullscreen:
+            return PAUSED_FULLSCREEN
+        return ""
+
+    def _sync_pause(self, service: VoiceService | None, cfg: Settings) -> bool:
+        """Apply the pause; True if its reason changed."""
+        reason = self._open_mic_pause(cfg.voice)
+        changed = reason != self._pause_reason
+        self._pause_reason = reason
+        if service is not None:
+            self._set_suspended(service, bool(reason))
+        return changed
+
+    def _refresh_pause(self) -> None:
+        """Something that pauses the open microphone changed (not the settings)."""
+        if not self._started or self._closed:
+            return
+        try:
+            cfg = self._settings()
+        except Exception as exc:
+            _log_failure("reading the voice settings", exc)
+            return
+        if self._sync_pause(self._service, cfg):
+            self._changed()
+
+    @property
+    def open_mic_paused(self) -> bool:
+        """The user paused the open microphone (:meth:`set_open_mic_paused`)."""
+        return self._user_paused
+
+    def set_open_mic_paused(self, paused: bool, *, announce: bool = True) -> None:
+        """The user's "pause the microphone" switch (a menu item): the open
+        microphone closes at once and stays closed until resumed; push-to-talk
+        keeps working.  Not saved: the app starts unpaused.  With *announce*
+        she says so (a short line) when it changes something she does."""
+        paused = bool(paused)
+        if paused == self._user_paused or self._closed:
+            return
+        self._user_paused = paused
+        self._refresh_pause()
+        service = self._service
+        if announce and service is not None and service.listen_mode != "push" and self._stt is not None:
+            self._say_line(MIC_PAUSED_LINE if paused else MIC_RESUMED_LINE)
 
     # -- speech routing ----------------------------------------------------------------------------
 
@@ -632,7 +932,72 @@ class VoiceIntegration(QObject):
         line = _Routed(event, show)
         service = self._service
         if service is None or not self._should_voice(event) or not self._queue_line(service, line):
-            self._show(line, None)
+            self._show_unvoiced(line)
+
+    def begin_reply(self, source: str = "chat", *, show: ShowFn) -> ReplyStream:
+        """Start voicing an answer that is still being written (see
+        :class:`ReplyStream`).  *show* is the same callback :meth:`route` takes."""
+        voiced = self._should_voice(SpeechRequested(text="…", solicited=True, source=source))
+        stream = ReplyStream(self, show, source, voiced)
+        if voiced:
+            self._streams.append(stream)
+        return stream
+
+    def _route_stream_line(self, stream: ReplyStream, event: SpeechRequested, show: ShowFn) -> _Routed:
+        """One sentence of a streamed answer: voiced at once, or shown."""
+        line = _Routed(event, show, stream=stream)
+        service = self._service
+        if service is not None and self._should_voice(event) and self._queue_line(service, line):
+            if not stream.closed:
+                self._hold(service)
+        else:
+            self._show_unvoiced(line)
+        return line
+
+    def _show_now(self, event: SpeechRequested, show: ShowFn) -> None:
+        """Show *event* as text (never voiced)."""
+        self._show_unvoiced(_Routed(event, show))
+
+    def _show_unvoiced(self, line: _Routed) -> None:
+        self._show(line, None)
+        event, service = line.event, self._service
+        if event.solicited and event.text.strip() and service is not None and not self._closed:
+            # An answer shown without voice: the conversation goes on from now.
+            try:
+                service.note_reply_shown(len(event.text) / READ_CHARS_PER_SECOND)
+            except Exception as exc:
+                _log_failure("noting a shown answer", exc)
+
+    def _hold(self, service: VoiceService) -> None:
+        """Mid-answer: keep the microphone closed until the next sentence."""
+        service.hold_for_reply(REPLY_HOLD_SECONDS)
+        if QCoreApplication.instance() is not None:
+            self._hold_timer.start(round((REPLY_HOLD_SECONDS + 0.5) * 1000))
+
+    def _release_hold(self) -> None:
+        if any(not stream._cut for stream in self._streams):
+            return  # another answer is still being written and spoken
+        self._hold_timer.stop()
+        service = self._service
+        if service is not None and not self._closed:
+            service.release_reply_hold()
+
+    def _check_hold(self) -> None:
+        """The hold timer: a stalled answer must not keep the microphone closed."""
+        service = self._service
+        if service is not None and not self._closed:
+            service.check_hold()
+
+    def _stream_closed(self, stream: ReplyStream) -> None:
+        with contextlib.suppress(ValueError):
+            self._streams.remove(stream)
+        self._release_hold()
+
+    def _cut_streams(self) -> None:
+        """The user cut her off or started talking: answers being written are
+        no longer voiced (what she does not get to say is shown as text)."""
+        for stream in list(self._streams):
+            stream._cut_off()
 
     def _queue_line(self, service: VoiceService, line: _Routed) -> bool:
         line.attempt += 1
@@ -642,7 +1007,9 @@ class VoiceIntegration(QObject):
         try:
             accepted = service.say(line.event.text, solicited=line.event.solicited,
                                    on_start=lambda seconds: self._line_started(line, attempt, seconds),
-                                   on_done=lambda outcome: self._line_done(line, attempt, outcome))
+                                   on_done=lambda outcome: self._line_done(line, attempt, outcome),
+                                   is_cancelled=lambda: line.cancelled,
+                                   prefetch=line.stream is not None)
         except Exception as exc:
             _log_failure("queueing a voiced line", exc)
             accepted = False
@@ -697,14 +1064,20 @@ class VoiceIntegration(QObject):
             line.announced = False
             self._bus.publish(SpeechPlayback(playing=False))
         if line.cancelled or self._closed:
-            return  # "помовч" / DND / stop watching / app exit: not said, not shown
-        if outcome == "interrupted" and not self._system_interrupt and not line.event.solicited:
+            return  # "помовч" / DND / stop watching / an abandoned answer / app exit
+        user_cut = outcome == "interrupted" and not self._system_interrupt
+        if user_cut and line.stream is not None:
+            line.stream._cut_off(line)  # the rest of that answer is shown once, at its end
+            return
+        if user_cut and not line.event.solicited:
             return  # the user cut her off: her own lines are not shown either
         # Failed, dropped, an empty clip, interrupted by a settings change - or an
         # answer still waiting behind the line the user cut off (the service drops
         # its whole queue): never lose the line - show it as text.  One already
         # showing (its audio had started) stays as it is.
         self._show(line, None)
+        if line.stream is not None:
+            line.stream._maybe_flush()
 
     def _forget(self, line: _Routed) -> None:
         line.done = True
@@ -737,6 +1110,8 @@ class VoiceIntegration(QObject):
             if not self._queue_line(service, line):
                 self._forget(line)
                 self._show(line, None)
+        if any(not stream._cut for stream in self._streams):
+            self._hold(service)  # an answer is still being written
 
     @staticmethod
     def _show(line: _Routed, seconds: float | None) -> None:
@@ -752,6 +1127,7 @@ class VoiceIntegration(QObject):
         """The user cut her off (clicked her while she speaks)."""
         if self._service is not None:
             self._service.interrupt()
+            self._cut_streams()
 
     # -- listening --------------------------------------------------------------------------------
 
@@ -800,7 +1176,10 @@ class VoiceIntegration(QObject):
     # -- service callbacks (main thread) -------------------------------------------------------------
 
     def _on_state(self, state: Any, reason: str) -> None:
-        self._bus.publish(VoiceStateChanged(state=str(getattr(state, "value", state)), reason=reason))
+        value = str(getattr(state, "value", state))
+        if value == "listening":
+            self._cut_streams()  # the user talks to her now: the old answer is not voiced on
+        self._bus.publish(VoiceStateChanged(state=value, reason=reason))
 
     def _on_result(self, text: str, status: str) -> None:
         if status == "ok":
@@ -848,6 +1227,7 @@ class VoiceIntegration(QObject):
     def _on_permission_changed(self, event: PermissionChanged) -> None:
         if event.permission is Permission.APP_METADATA and not self._granted(Permission.APP_METADATA):
             self._drop_unsolicited()  # they may be about the game she just saw (as the controller does)
+            self._forget_foreground()
         if event.permission is Permission.MICROPHONE and not self._granted(Permission.MICROPHONE):
             self._close_microphone()
         if event.permission in (Permission.MICROPHONE, Permission.CLOUD_AI):
@@ -856,24 +1236,39 @@ class VoiceIntegration(QObject):
     def _on_observation_stopped(self, _event: ObservationStopped) -> None:
         self._close_microphone()
         self._drop_unsolicited()
+        self._foreground_private = self._foreground_call = False
         self.reconfigure()
 
     def _on_fullscreen(self, event: FullscreenChanged) -> None:
         self._fullscreen = bool(event.active)
-        service = self._service
-        if service is None or self._closed:
-            return
-        try:
-            wake_in_fullscreen = self._settings().voice.wake_in_fullscreen
-        except Exception:
-            wake_in_fullscreen = False
-        self._set_suspended(service, self._fullscreen and not wake_in_fullscreen)
+        self._refresh_pause()
+
+    def _on_foreground(self, event: ForegroundAppChanged) -> None:
+        """Only published while APP_METADATA is granted; private apps arrive nameless."""
+        if not self._granted(Permission.APP_METADATA):
+            return  # queued before a revoke
+        private = event.app.private or event.category is ActivityCategory.PRIVATE
+        self._foreground_private = private
+        self._foreground_call = not private and is_call_app(event.app.process_name)
+        self._refresh_pause()
+
+    def _forget_foreground(self) -> None:
+        """APP_METADATA revoked: the app in front is unknown from now on."""
+        if self._foreground_private or self._foreground_call:
+            self._foreground_private = self._foreground_call = False
+            self._refresh_pause()
+
+    def _on_dnd(self, event: DoNotDisturbChanged) -> None:
+        self._dnd = bool(event.enabled)
+        if event.enabled:
+            self._drop_unsolicited()
+        self._refresh_pause()
 
     def _on_settings_changed(self, event: SettingsChanged) -> None:
         if event.section in WATCHED_SECTIONS:
             self.reconfigure()
 
-    def _on_quiet(self, event: QuietModeChanged | DoNotDisturbChanged) -> None:
+    def _on_quiet(self, event: QuietModeChanged) -> None:
         if event.enabled:
             self._drop_unsolicited()
 
@@ -881,6 +1276,7 @@ class VoiceIntegration(QObject):
         service = self._service
         if event.kind in INTERRUPTING and service is not None and service.state == "speaking":
             service.interrupt()
+            self._cut_streams()
 
     # -- push-to-talk hotkey ------------------------------------------------------------------------
 
@@ -965,6 +1361,7 @@ class VoiceIntegration(QObject):
             title = ""
         tts_ready = service is not None and self._tts is not None and not self._closed
         stt_ready = service is not None and self._stt is not None and not self._closed
+        listen_mode = str(service.listen_mode) if stt_ready and service is not None else "push"
         return VoiceStatus(
             tts_ready=tts_ready,
             stt_ready=stt_ready,
@@ -974,6 +1371,8 @@ class VoiceIntegration(QObject):
             hotkey=title,
             hotkey_active=self._hotkey is not None,
             hotkey_reason=self._hotkey_reason if stt_ready else "",
+            listen_mode=listen_mode,
+            pause_reason=self._pause_reason if listen_mode != "push" else "",
         )
 
     def test_voice(self, text: str = "", on_done: Callable[[bool, str], None] | None = None) -> None:

@@ -3,6 +3,7 @@ anti-spam behaviour.  Leak tests check that a frame never reaches capture /
 analysis / disk when it must not."""
 
 import builtins
+import itertools
 import random
 
 import pytest
@@ -372,3 +373,134 @@ def test_game_session_end_clears_context(mode):
     assert h.service.recent
     h.service.game_session(False)
     assert not h.service.recent
+
+
+# --- any-window scope: pace, away, dedup per window, re-check ---------------------------------------------
+
+
+def capture_times(h: H, seconds: int) -> list[float]:
+    times = []
+    for _ in range(seconds):
+        before = len(h.capture.calls)
+        h.advance(1)
+        if len(h.capture.calls) > before:
+            times.append(h.now)
+    return times
+
+
+def test_paced_auto_mode_looks_less_often_while_the_picture_stays_the_same():
+    h = H(mode=VisionMode.AUTO)
+    h.service.paced = True
+    h.hashes = iter([7] * 50)
+    times = capture_times(h, 400)
+    gaps = [b - a for a, b in itertools.pairwise(times)]
+    # Each identical frame stretches the next-but-one 30 s pause by half, up to 3x
+    # (the pause is set before the frame is compared, as in GAME mode).
+    assert gaps == [30, 30, 45, 60, 75, 90]
+    assert len(h.analyzer.calls) == 1  # identical frames are never analysed twice
+    h.hashes = iter(0xFFFF << (16 * (i % 4)) for i in range(1, 100))  # changing: back to the normal pace
+    times = capture_times(h, 200)
+    assert [b - a for a, b in itertools.pairwise(times)][1:] == [30, 30]
+
+
+def test_unpaced_auto_mode_keeps_its_interval():
+    h = H(mode=VisionMode.AUTO)
+    h.hashes = iter([7] * 50)
+    h.service.high_load = True
+    h.advance(3)
+    for _ in range(4):
+        h.advance(31)
+    assert len(h.capture.calls) == 5  # the "allowed" scope behaves as before
+
+
+def test_paced_auto_mode_adapts_to_load():
+    h = H(mode=VisionMode.AUTO)
+    h.service.paced = True
+    h.service.high_load = True
+    h.advance(3)
+    h.advance(31)
+    assert len(h.capture.calls) == 1  # 60 s under load
+    h.advance(30)
+    assert len(h.capture.calls) == 2
+
+
+def test_a_quiet_but_changing_work_window_is_not_slowed_down():
+    h = H(mode=VisionMode.AUTO, analyzer=Analyzer([obs("none", "code")]))
+    h.service.paced = True
+    h.advance(3)
+    for _ in range(4):
+        h.advance(31)
+    assert len(h.analyzer.calls) == 5
+
+
+@pytest.mark.parametrize("mode", [VisionMode.AUTO, VisionMode.GAME])
+def test_no_automatic_frames_while_the_user_is_away(mode):
+    h = H(mode=mode)
+    h.advance(1)
+    assert h.service.state == VisionState.WATCHING
+    h.service.away = True
+    h.advance(1)
+    assert h.service.state == VisionState.IDLE and h.service.target is None
+    h.advance(600)
+    assert h.capture.calls == []
+    h.service.away = False
+    h.advance(1)  # back: the window settles first
+    assert h.capture.calls == [] and h.service.state == VisionState.WATCHING
+    h.advance(3)
+    assert h.capture.calls == [111]
+
+
+def test_a_request_works_while_away():
+    h = H(mode=VisionMode.AUTO)
+    h.service.away = True
+    assert h.service.request()
+    h.worker.run()
+    assert h.capture.calls == [111] and len(h.seen) == 1
+
+
+def test_dedup_only_compares_frames_of_the_same_window():
+    h = H(mode=VisionMode.AUTO)
+    h.hashes = iter([7, 7, 7])
+    h.advance(3)
+    assert len(h.analyzer.calls) == 1
+    h.front = NOTEPAD  # another window that happens to hash the same
+    h.advance(1)
+    h.advance(3)
+    assert h.capture.calls == [111, 333] and len(h.analyzer.calls) == 2
+
+
+def test_a_result_no_longer_allowed_is_dropped_before_it_is_used():
+    allowed = {"ok": True}
+
+    class Revoking(Analyzer):
+        def analyze(self, *args):
+            if not self.calls:
+                allowed["ok"] = False  # e.g. the app became private while the model looked
+            return super().analyze(*args)
+
+    h = H(mode=VisionMode.AUTO, analyzer=Revoking())
+    targets = []
+
+    def still_allowed(target):
+        targets.append(target)
+        return allowed["ok"]
+
+    h.service._still_allowed = still_allowed
+    h.advance(3)
+    assert len(h.analyzer.calls) == 1
+    assert h.seen == [] and not h.service.recent
+    assert [t.hwnd for t in targets] == [111]
+    allowed["ok"] = True
+    h.advance(31)
+    assert len(h.seen) == 1
+
+
+def test_a_failing_recheck_fails_closed():
+    h = H(mode=VisionMode.AUTO)
+
+    def broken(_target):
+        raise RuntimeError("boom")
+
+    h.service._still_allowed = broken
+    h.advance(3)
+    assert len(h.analyzer.calls) == 1 and h.seen == []

@@ -3,10 +3,14 @@ import json
 import pytest
 
 from chibi.vision.analysis import (
+    CONFIRM_EVENTS,
     EMOTIONS,
     EVENTS,
+    NOTABLE_EVENTS,
     SCENES,
     SYSTEM_PROMPT,
+    WORK_EVENTS,
+    WORK_SCENES,
     AnalysisError,
     Observation,
     parse_observation,
@@ -97,3 +101,97 @@ def test_prompts_declare_untrusted_content_and_vocabulary():
     prompt = user_prompt("<b>S.T.A.L.K.E.R. 2</b>", previous)
     assert "<b>" not in prompt and "S.T.A.L.K.E.R. 2" in prompt
     assert "<previous_scene>menu</previous_scene>" in prompt
+
+
+# --- work windows ---------------------------------------------------------------------------------
+
+
+WORK = {"scene": "code", "event": "error_on_screen", "confidence": 0.8, "interesting": True,
+        "suggested_emotion": "thinking", "description": "Пише код на Python, у терміналі помилка",
+        "spoiler": False}
+
+
+def test_work_scenes_and_events_parse():
+    obs = parse_observation(json.dumps(WORK, ensure_ascii=False))
+    assert (obs.scene, obs.event, obs.confidence) == ("code", "error_on_screen", 0.8)
+    assert obs.work and obs.interesting and not obs.notable and not obs.needs_confirmation
+    assert not parse_observation(json.dumps(GOOD)).work
+    for scene in ("code", "terminal", "document", "spreadsheet", "browser", "video", "chat", "email",
+                  "design"):
+        assert scene in WORK_SCENES and scene in SCENES
+    for event in ("error_on_screen", "build_failed", "tests_passed", "waiting"):
+        assert event in WORK_EVENTS and event in EVENTS
+
+
+def test_work_events_never_trigger_the_game_event_policy():
+    # "Лише помітні події в іграх": a red build is for the observer, not for the event policy.
+    assert not WORK_EVENTS & NOTABLE_EVENTS
+    assert not WORK_EVENTS & CONFIRM_EVENTS
+
+
+@pytest.mark.parametrize(("scene", "event"), [
+    ("code", "player_death"), ("spreadsheet", "victory"), ("document", "level_up"), ("video", "boss_fight"),
+    ("browser", "achievement"), ("gameplay", "build_failed"), ("menu", "tests_passed"),
+])
+def test_contradicting_work_and_game_answers_are_distrusted(scene, event):
+    obs = parse_observation(json.dumps({**GOOD, "scene": scene, "event": event}))
+    assert obs.scene == scene and obs.event == "other" and obs.confidence <= 0.3
+    assert not obs.notable
+
+
+@pytest.mark.parametrize("scene", ["code", "terminal", "browser", "other"])
+def test_build_results_are_plausible_in_editors_terminals_and_ci_pages(scene):
+    obs = parse_observation(json.dumps({**WORK, "scene": scene, "event": "build_failed"}))
+    assert obs.event == "build_failed" and obs.confidence == 0.8
+
+
+@pytest.mark.parametrize("scene", ["chat", "email"])
+def test_correspondence_is_never_described(scene):
+    obs = parse_observation(json.dumps({**WORK, "scene": scene, "event": "none",
+                                        "description": "Лист від Олени про зустріч у п'ятницю"},
+                                       ensure_ascii=False))
+    assert obs.scene == scene and obs.description == "" and obs.interesting is False
+
+
+def test_prompt_handles_work_and_forbids_personal_data():
+    for phrase in ("code editor", "terminal", "spreadsheet", "what the user is doing", "personal data",
+                   "e-mail", "card", "passwords", "messages", "Never use a game event for a work window"):
+        assert phrase in SYSTEM_PROMPT, phrase
+
+
+@pytest.mark.parametrize("text", [
+    "Пише листа на ivan.petrenko@gmail.com про зустріч",
+    "Пошта тест@приклад.укр відкрита",
+    "Пише @ivan_petrenko у коментарях",
+    "Телефон +380 (67) 123-45-67 у таблиці",
+    "Номер 0671234567 у формі",
+    "Картка 4111-1111-1111-1111 на сторінці",
+    "Рахунок UA21 3223 1300 0002 6007 2335 6600 1",
+    "Відкрито example.com/login?token=abc123 у браузері",
+    "Посилання https://bank.example/pay?id=7 на екрані",
+    "Сторінка site.ua?session=f00 відкрита",
+    "Репозиторій github.com/ivan/secret-project у браузері",
+    r"Файл C:\Users\Ivan\Documents\звіт.docx у Word",
+    "Термінал у /home/ivan/projects",
+])
+def test_personal_data_is_redacted(text):
+    d = sanitize_description(text)
+    for leak in ("@", "ivan", "Ivan", "петренко", "тест", "123", "1111", "3223", "token", "abc123", "session",
+                 "?", "=", "example", "github", "site.ua", "Users", "звіт", "home"):
+        assert leak not in d, (text, d)
+    assert d  # the rest of the sentence stays
+
+
+@pytest.mark.parametrize("text", [
+    "Пише код на Node.js, версія 1.20.3",
+    "HP 1500/2000, рівень 12, 34 золота",
+    "Файл src/main.py і tests/test_a.py відкриті",
+    "Рахунок 3:2 у другому таймі",
+])
+def test_ordinary_text_survives(text):
+    assert sanitize_description(text) == text
+
+
+def test_length_cap_still_applies_after_redaction():
+    d = sanitize_description("пише код " * 40 + "ivan@example.com")
+    assert len(d) <= 161 and d.endswith("…") and "@" not in d

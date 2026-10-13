@@ -1,4 +1,4 @@
-"""Screen vision: the pipeline from "an allowed game is open" to "she saw it".
+"""Screen vision: the pipeline from "a window she may see is in front" to "she saw it".
 
 Main-thread state machine (like :mod:`chibi.voice.service`); capture and
 analysis run on one worker thread and post results back.  The pipeline is
@@ -6,16 +6,20 @@ the one the spec prescribes, in this order:
 
 1. permission check (Permission.SCREEN_CAPTURE; CLOUD_VISION before any
    frame goes to a cloud model)
-2. the foreground window must be an *allowed* app and not private
-3. is a new frame needed (mode, interval, back-off, busy)?
+2. the foreground window must be one she may see (``resolve_target``: an
+   allowed app, or any non-private window for the "foreground" scope)
+3. is a new frame needed (mode, interval, back-off, busy, user away)?
 4. capture that one window (never the whole screen)
 5. privacy re-check after capture: same window still in front, still
    allowed, permission still granted - otherwise the frame is dropped
 6. downscale (<= 1024 px) and skip if it looks like the last analysed frame
+   of the same window
 7. analysis by a local model or, with CLOUD_VISION, a cloud model
 8. strict parsing of the structured answer (:mod:`chibi.vision.analysis`)
-9. confidence / confirmation / anti-spam rules (:mod:`chibi.vision.policy`)
-10. the app decides how she reacts (``on_observation``)
+9. re-check before the result is used (``still_allowed``: permissions and
+   privacy rules may have changed while the model looked)
+10. confidence / confirmation / anti-spam rules (:mod:`chibi.vision.policy`)
+11. the app decides how she reacts (``on_observation``)
 
 Frames are never written to disk; the last few *observations* (scene, event,
 short description) are kept in memory as context for her chat answers.
@@ -42,14 +46,14 @@ log = logging.getLogger(__name__)
 class VisionMode(StrEnum):
     OFF = "off"  # "Vision Disabled": no capture at all
     MANUAL = "manual"  # only when the user asks
-    AUTO = "auto"  # periodically, while an allowed app is in front
+    AUTO = "auto"  # periodically, while a window she may see is in front
     GAME = "game"  # periodically, allowed games only, adapting to load
 
 
 class VisionState(StrEnum):
     OFF = "off"
-    IDLE = "idle"  # enabled, nothing allowed in front
-    WATCHING = "watching"  # an allowed app is in front; frames are taken periodically
+    IDLE = "idle"  # enabled, nothing she may see in front (or the user is away)
+    WATCHING = "watching"  # a window she may see is in front; frames are taken periodically
     ANALYZING = "analyzing"  # capture / analysis in progress
     PAUSED = "paused"  # repeated errors or the AI budget is spent
 
@@ -58,7 +62,7 @@ class VisionState(StrEnum):
 class Target:
     hwnd: int
     process_name: str
-    title: str  # display title (games database / user list), never the window title
+    title: str  # display title (games database / app catalog / user list), never the window title
     is_game: bool
 
 
@@ -88,6 +92,8 @@ class AnalyzerError(RuntimeError):
 SAME_FRAME_DISTANCE = 5
 CONFIRM_DELAY = 3.0
 MAX_CAPTURE_FAILURES = 4
+#: Paced AUTO mode: each identical frame in a row stretches the interval by this much (up to 3x).
+SAME_FRAME_SLOWDOWN = 0.5
 
 
 class VisionService:
@@ -108,6 +114,7 @@ class VisionService:
         on_observation: Callable[[Observation, Decision], None] | None = None,
         on_error: Callable[[str], None] | None = None,
         process_frame: Callable[[Any], tuple[bytes, str, int]] | None = None,
+        still_allowed: Callable[[Target], bool] | None = None,
     ) -> None:
         self._post = post
         self._worker = worker
@@ -123,11 +130,19 @@ class VisionService:
         self._on_observation = on_observation
         self._on_error = on_error
         self._process_frame = process_frame or _default_process_frame
+        self._still_allowed = still_allowed
 
         self.mode = VisionMode.OFF
         self.interval = 30.0
         self.analyzer: FrameAnalyzer | None = None
         self.high_load = False
+        #: AUTO mode paces itself (any-window scope): slower under load and while
+        #: the window keeps showing the same picture.  GAME mode always does.
+        self.paced = False
+        #: The user is away (the activity monitor reported them idle): no automatic
+        #: frames.  A request from the user still works - they are obviously back.
+        #: (A locked screen needs no flag: there is no window in front to resolve.)
+        self.away = False
         self._state = VisionState.OFF
         self._gen = 0
         self._busy = False
@@ -138,7 +153,10 @@ class VisionService:
         self._quiet_streak = 0
         self._capture_failures = 0
         self._reported: set[str] = set()
+        #: dHash of the last analysed frame and the window it came from.
         self._last_hash: int | None = None
+        self._last_hash_hwnd = 0
+        self._same_streak = 0
         self.recent: deque[Observation] = deque(maxlen=5)
 
     # -- configuration ---------------------------------------------------------------------
@@ -180,6 +198,7 @@ class VisionService:
         self._target = None
         self._confirm_due = None
         self._last_hash = None
+        self._same_streak = 0
         self.recent.clear()
         if self.mode != VisionMode.OFF:
             self._set_state(VisionState.IDLE if self._enabled() else VisionState.OFF, "stopped")
@@ -189,6 +208,7 @@ class VisionService:
         self.policy.reset_session()
         self._last_hash = None
         self._quiet_streak = 0
+        self._same_streak = 0
         if not active:
             self.recent.clear()
 
@@ -211,6 +231,13 @@ class VisionService:
         now = self._clock()
         if self._state == VisionState.PAUSED and now < self._backoff_until:
             return
+        if self.away and self.mode != VisionMode.MANUAL:
+            # Nobody to watch: no frames (and no cost) until the user is back.
+            self._target = None
+            self._confirm_due = None
+            if self._state in (VisionState.WATCHING, VisionState.PAUSED):
+                self._set_state(VisionState.IDLE, "user away")
+            return
         if self.mode == VisionMode.MANUAL:
             # Only the confirmation frame of a manual request is ever automatic.
             if self._confirm_due is not None and now >= self._confirm_due:
@@ -231,6 +258,7 @@ class VisionService:
             self._confirm_due = None
             self._next_due = now + 2.0  # let the window settle
             self._capture_failures = 0
+            self._same_streak = 0
         if self._state != VisionState.WATCHING:
             self._set_state(VisionState.WATCHING, target.title)
         if self._confirm_due is not None and now >= self._confirm_due:
@@ -286,6 +314,13 @@ class VisionService:
                 interval *= 2.0
             # Nothing happening for a while: look less often (up to 3x).
             interval *= min(3.0, 1.0 + 0.25 * self._quiet_streak)
+        elif self.mode == VisionMode.AUTO and self.paced:
+            if self.high_load:
+                interval *= 2.0
+            # The window keeps showing the same picture (a document being read, a
+            # paused video): capture less often (up to 3x).  A quiet but changing
+            # work window is not slowed down - the observer needs to see it.
+            interval *= min(3.0, 1.0 + SAME_FRAME_SLOWDOWN * self._same_streak)
         return interval
 
     # -- the pipeline ---------------------------------------------------------------------------
@@ -298,7 +333,8 @@ class VisionService:
         self._busy = True
         gen = self._gen
         previous = self.recent[-1] if self.recent else None
-        last_hash = None if force else self._last_hash
+        # Dedup only against the last frame of the same window.
+        last_hash = None if force or target.hwnd != self._last_hash_hwnd else self._last_hash
         self._set_state(VisionState.ANALYZING, reason)
 
         def job() -> None:
@@ -358,10 +394,14 @@ class VisionService:
         self._next_due = now + self._effective_interval()
         if kind == "observation" and not self._capture_allowed():
             kind, payload = "dropped", "permission revoked"
+        if kind == "observation" and not self._may_use(target):
+            kind, payload = "dropped", "no longer allowed"
         if kind == "observation":
             observation, frame_hash = payload
             self._capture_failures = 0
+            self._same_streak = 0
             self._last_hash = frame_hash
+            self._last_hash_hwnd = target.hwnd
             observation = replace(observation, app_title=target.title, at=time.time())
             self.recent.append(observation)
             decision = self.policy.consider(observation, quiet=self._quiet())
@@ -378,6 +418,7 @@ class VisionService:
                 self._on_observation(decision.observation or observation, decision)
         elif kind == "same":
             self._quiet_streak += 1
+            self._same_streak += 1
         elif kind == "capture_error":
             self._capture_failures += 1
             error: CaptureError = payload
@@ -402,6 +443,16 @@ class VisionService:
         state = VisionState.WATCHING if self._target is not None and self.mode != VisionMode.MANUAL \
             else VisionState.IDLE
         self._set_state(state, kind)
+
+    def _may_use(self, target: Target) -> bool:
+        """The re-check before a result becomes something she knows (main thread)."""
+        if self._still_allowed is None:
+            return True
+        try:
+            return bool(self._still_allowed(target))
+        except Exception:
+            log.exception("vision re-check failed")
+            return False
 
     def _pause(self, until: float, reason: str) -> None:
         self._backoff_until = until

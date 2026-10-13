@@ -7,7 +7,15 @@ import logging
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QAbstractButton, QApplication, QComboBox, QLabel, QLineEdit, QSlider
+from PySide6.QtWidgets import (
+    QAbstractButton,
+    QApplication,
+    QComboBox,
+    QLabel,
+    QLineEdit,
+    QRadioButton,
+    QSlider,
+)
 
 from chibi.core.config import Settings
 from chibi.core.events import Permission
@@ -20,9 +28,11 @@ from chibi.settings.voice_page import (
     MICROPHONE_CONSENT_TITLE,
     PRIVACY_NOTE,
     VoicePage,
+    format_follow_up,
     format_seconds,
     format_size,
     model_choice_title,
+    vocative,
 )
 from chibi.voice.hotkey_win import PRESETS
 from chibi.voice.integration import STT_OFF, VOICE_MODULE_MISSING, DownloadProgress, VoiceStatus
@@ -158,6 +168,8 @@ def test_formatting_helpers():
     assert format_size(1_527_906_378) == "1,5\u00a0ГБ"
     assert format_size(2_002) == "1\u00a0МБ"
     assert format_seconds(800) == "0,8\u00a0с"
+    assert format_follow_up(20) == "20\u00a0с" and format_follow_up(0) == "вимкнено"
+    assert vocative("Мія") == "Міє" and vocative("Аня") == "Аня"
     spec = CATALOG["whisper-small"]
     assert model_choice_title(spec) == f"Збалансоване (small) — {format_size(spec.size)}"
 
@@ -233,15 +245,108 @@ def test_stt_model_choices_come_from_the_catalog(make_page):
     assert CATALOG["whisper-medium"].description in page.stt_model_row.description_label.text()
 
 
-def test_privacy_note_and_experimental_wake_phrase(make_page):
+def test_privacy_note_and_how_she_listens(make_page):
     page = make_page()
     shown = labels(page)
     assert PRIVACY_NOTE in shown
-    assert PRIVACY_NOTE == ("Мікрофон вмикається лише коли ти натискаєш клавішу або кнопку. "
-                            "Звук не зберігається і не надсилається в інтернет.")
-    assert "експериментально" in shown
-    assert voice_page.WAKE_WARNING in shown
+    assert PRIVACY_NOTE == ("Мовлення розпізнається на цьому ПК: звук не зберігається і не надсилається "
+                            "в інтернет. До AI потрапляє лише розпізнаний текст того, що сказано їй.")
+    assert "Як слухати" in shown and "експериментально" not in shown
+    assert [b.text() for b in page.listen_buttons.values()] == [
+        "Клавіша або кнопка мікрофона", "Постійно, коли звертаюся на ім'я (рекомендовано)",
+        "Постійно — усе, що чую, для неї"]
+    assert all(isinstance(b, QRadioButton) for b in page.listen_buttons.values())
+    assert page.listen_buttons["push"].isChecked()
+    assert any("«Міє, котра година?»" in text for text in shown)
+    assert voice_page.DND_NOTE in shown
+    # Push-to-talk: the follow-up and the pauses do not apply.
+    assert not page.follow_up_row.isEnabled() and not page.pause_in_calls_row.isEnabled()
+    assert not page.fullscreen_row.isEnabled()
     assert "Голос Мії" in shown
+
+
+def test_microphone_consent_covers_the_open_microphone():
+    for phrase in ("Клавіша або кнопка мікрофона", "Постійно", "відкритим", "не записується", "у хмару",
+                   "червона крапка", "Зупинити все спостереження"):
+        assert phrase in MICROPHONE_CONSENT_TEXT, phrase
+
+
+def test_choosing_an_open_microphone_asks_first_and_honestly(vf, make_page, confirm):
+    page = make_page()
+    page.listen_buttons["name"].click()
+    title, text = confirm.asked[-1]
+    assert title == voice_page.OPEN_MIC_CONFIRM_TITLE
+    for phrase in ("відкритим", "не записується", "звернено до неї", "в хмару", "червона крапка",
+                   "на паузу", "«Не турбувати»"):
+        assert phrase in text, phrase
+    assert "телевізор" not in text
+    assert page.listen_mode() == "name" and page.follow_up_row.isEnabled()
+    assert page.pause_in_calls_row.isEnabled() and page.fullscreen_row.isEnabled()
+    collected = page.collect(vf.settings())
+    assert collected.voice.listen_mode == "name" and collected.voice.wake_phrase_enabled
+    page.listen_buttons["open"].click()
+    title, text = confirm.asked[-1]
+    assert "телевізор" in text and "окремий запит" in text and "усього, що вона почує" in text
+    assert page.listen_mode() == "open" and not page.follow_up_row.isEnabled()
+    page.listen_buttons["name"].click()  # less open: nothing to ask
+    page.listen_buttons["push"].click()
+    assert len(confirm.asked) == 2
+    assert not page.has_edits()  # back to what was loaded
+
+
+def test_declining_keeps_the_previous_choice(vf, make_page, confirm):
+    confirm.answer = False
+    page = make_page()
+    page.listen_buttons["open"].click()
+    assert page.listen_mode() == "push" and page.listen_buttons["push"].isChecked()
+    assert not page.has_edits()
+    confirm.answer = True
+    page.listen_buttons["name"].click()
+    confirm.answer = False
+    page.listen_buttons["open"].click()
+    assert page.listen_mode() == "name"
+    assert page.collect(vf.settings()).voice.listen_mode == "name"
+
+
+def test_choices_loaded_from_the_settings_never_ask(vf, make_page, confirm):
+    v = vf._settings.voice
+    v.listen_mode, v.follow_up_seconds, v.pause_in_calls, v.wake_in_fullscreen = "open", 45, False, True
+    page = make_page()
+    assert page.listen_mode() == "open" and confirm.asked == []
+    assert page.follow_up_row.value() == 45
+    assert not page.pause_in_calls_check.isChecked() and page.wake_in_fullscreen_check.isChecked()
+    assert not page.has_edits()
+    other = vf.settings()
+    other.voice.listen_mode = "name"
+    page.sync(other, edited_too=True)
+    assert page.listen_mode() == "name" and confirm.asked == [] and page.follow_up_row.isEnabled()
+    page.listen_buttons["open"].click()  # from what the settings say now: asks
+    assert len(confirm.asked) == 1
+
+
+def test_follow_up_and_pauses_are_collected(vf, make_page):
+    vf._settings.voice.listen_mode = "name"
+    page = make_page()
+    page.follow_up_row.setValue(0)
+    assert page.follow_up_row.value_label.text() == "вимкнено"
+    page.pause_in_calls_check.setChecked(False)
+    page.wake_in_fullscreen_check.setChecked(True)
+    collected = page.collect(vf.settings()).voice
+    assert (collected.follow_up_seconds, collected.pause_in_calls, collected.wake_in_fullscreen) == (
+        0, False, True)
+    page._facade.apply_settings(page.collect(vf.settings()))
+    assert vf._settings.voice.listen_mode == "name" and vf._settings.voice.wake_phrase_enabled
+
+
+def test_keyboard_choice_asks_too(vf, make_page, confirm):
+    page = make_page()
+    page.activateWindow()
+    assert QTest.qWaitForWindowActive(page, 1000)
+    push = page.listen_buttons["push"]
+    push.setFocus()
+    QTest.keyClick(push, Qt.Key.Key_Down)
+    assert page.listen_mode() == "name"
+    assert confirm.asked and confirm.asked[-1][0] == voice_page.OPEN_MIC_CONFIRM_TITLE
 
 
 def test_header_follows_her_name(vf, make_page):
@@ -546,6 +651,21 @@ def test_status_reasons(vf, make_page):
     page.refresh_status()
     assert page.hotkey_status_label.text() == "Комбінацію вже зайнято."
     assert "кнопку мікрофона" in page.stt_status_label.text()
+
+
+def test_status_shows_how_she_listens(vf, make_page):
+    vf.status = VoiceStatus(tts_ready=True, stt_ready=True, tts_reason="", stt_reason="", state="idle",
+                            hotkey="Ctrl + Alt + Пробіл", hotkey_active=True, listen_mode="name",
+                            pause_reason="Мікрофон на паузі: «Не турбувати».")
+    page = make_page()
+    assert "клич її на ім'я" in page.stt_status_label.text()
+    assert page.listen_status_label.text() == "● Мікрофон на паузі: «Не турбувати»."
+    assert page.listen_status_label.isVisibleTo(page)
+    vf.status = VoiceStatus(tts_ready=True, stt_ready=True, tts_reason="", stt_reason="", state="standby",
+                            hotkey="", hotkey_active=False, listen_mode="open")
+    page.refresh_status()
+    assert "просто говори" in page.stt_status_label.text()
+    assert not page.listen_status_label.isVisibleTo(page)
 
 
 def test_status_failure_is_logged_once(vf, make_page, caplog):

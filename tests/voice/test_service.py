@@ -4,7 +4,16 @@ import numpy as np
 import pytest
 
 from chibi.voice.audio_io import AudioUnavailable
-from chibi.voice.service import Outcome, VoiceService, VoiceState, VoiceWorker, match_wake
+from chibi.voice.service import (
+    MIA_FORMS,
+    NameForms,
+    Outcome,
+    VoiceService,
+    VoiceState,
+    VoiceWorker,
+    find_address,
+    is_filler,
+)
 from chibi.voice.stt import STTError, Transcript
 from chibi.voice.tts import AudioClip, TTSError
 from chibi.voice.vad import VADConfig
@@ -395,18 +404,18 @@ def test_revoking_the_microphone_closes_it_immediately():
 
 def test_wake_phrase_standby_and_command_in_one_breath():
     h = Harness(stt=FakeSTT(text="Мія, котра година?"))
-    h.service.set_wake(True)
+    h.service.set_listen_mode("name")
     assert h.service.state == VoiceState.STANDBY
     assert h.service.microphone_open
     h.feed(np.concatenate([speech(1.2), silence(1.0)]))
     h.worker.run_all()
-    assert h.results == [("котра година", "ok")]
+    assert h.results == [("Котра година?", "ok")]
     assert h.service.state == VoiceState.STANDBY
 
 
 def test_wake_phrase_alone_starts_listening():
     h = Harness(stt=FakeSTT(text="Гей, Міє!"))
-    h.service.set_wake(True)
+    h.service.set_listen_mode("name")
     h.feed(np.concatenate([speech(0.8), silence(1.0)]))
     h.worker.run_all()
     assert h.wakes == 1
@@ -415,7 +424,7 @@ def test_wake_phrase_alone_starts_listening():
 
 def test_other_speech_in_standby_is_ignored():
     h = Harness(stt=FakeSTT(text="Я сьогодні йду в магазин"))
-    h.service.set_wake(True)
+    h.service.set_listen_mode("name")
     h.feed(np.concatenate([speech(1.2), silence(1.0)]))
     h.worker.run_all()
     assert h.results == []
@@ -424,7 +433,7 @@ def test_other_speech_in_standby_is_ignored():
 
 def test_standby_microphone_is_closed_while_she_speaks():
     h = Harness()
-    h.service.set_wake(True)
+    h.service.set_listen_mode("name")
     h.service.say("привіт")
     assert h.service.state == VoiceState.SPEAKING
     assert not h.service.microphone_open
@@ -436,10 +445,10 @@ def test_standby_microphone_is_closed_while_she_speaks():
 
 def test_wake_needs_permission_and_can_be_suspended():
     h = Harness(mic=False)
-    h.service.set_wake(True)
+    h.service.set_listen_mode("name")
     assert h.service.state == VoiceState.IDLE
     h = Harness()
-    h.service.set_wake(True)
+    h.service.set_listen_mode("name")
     h.service.set_suspended(True)
     assert h.service.state == VoiceState.IDLE and not h.service.microphone_open
     h.service.set_suspended(False)
@@ -448,7 +457,7 @@ def test_wake_needs_permission_and_can_be_suspended():
 
 def test_shutdown_closes_everything():
     h = Harness()
-    h.service.set_wake(True)
+    h.service.set_listen_mode("name")
     h.service.shutdown()
     assert h.service.state == VoiceState.OFF
     assert not h.service.microphone_open
@@ -456,12 +465,389 @@ def test_shutdown_closes_everything():
 
 @pytest.mark.parametrize(
     ("text", "expected"),
-    [("Мія, котра година?", "котра година"), ("Міє!", ""), ("Гей, Міє, помовч", "помовч"),
-     ("мия ти тут", "ти тут"), ("Я сьогодні втомився", None), ("", None),
-     ("Слухай, Мія, а ти знаєш...", "а ти знаєш"), ("Марія прийшла", None)],
+    [("Мія, котра година?", "Котра година?"), ("Міє!", ""), ("Гей, Міє, помовч", "Помовч"),
+     ("мия ти тут", "Ти тут"), ("Я сьогодні втомився", None), ("", None),
+     ("Слухай, Мія, а ти знаєш...", "А ти знаєш..."), ("Марія прийшла", None),
+     # anywhere in the phrase, as a separate word
+     ("Як справи, Міє?", "Як справи?"), ("А ти, Міє, що думаєш?", "А ти що думаєш?"),
+     ("Скажи мені, Міє, анекдот", "Скажи мені анекдот"), ("Привіт, Мія!", "Привіт!"),
+     ("А ти, Міє? Що думаєш", "А ти? Що думаєш"), ("Добре. Міє, котра година?", "Добре. Котра година?"),
+     ("що думаєш міє", "Що думаєш"),
+     # talking about her, not to her
+     ("Подивись, що Мія робить", None), ("Я бачила Мію вчора", None), ("Віддай Мії печиво", None),
+     ("Міємо", None), ("Мія-подібна штука", None)],
 )
-def test_match_wake(text, expected):
-    assert match_wake(text) == expected
+def test_find_address(text, expected):
+    assert find_address(text) == expected
+
+
+def test_name_forms_follow_ukrainian_declension():
+    olena = NameForms.for_name("Олена")
+    assert "олено" in olena.strong and "олена" in olena.weak and "олену" in olena.lead
+    assert find_address("Що скажеш, Олено?", olena) == "Що скажеш?"
+    assert find_address("Я бачила Олену", olena) is None
+    anya = NameForms.for_name("Аня")
+    assert "аню" in anya.weak and not anya.strong  # "Аню" is also the accusative
+    assert find_address("Ну що, Аню, граємо?", anya) == "Ну що граємо?"
+    assert find_address("я кличу аню погратися", anya) is None
+    assert "тарасе" in NameForms.for_name("Тарас").strong
+    assert NameForms.for_name("") == NameForms()
+    assert "міє" in MIA_FORMS.strong and "mia" in MIA_FORMS.weak
+
+
+@pytest.mark.parametrize(("text", "filler"), [("Угу.", True), ("Ну ну", True), ("Мм...", True), ("", True),
+                                              ("так", False), ("ні", False), ("ну давай", False)])
+def test_fillers(text, filler):
+    assert is_filler(text) is filler
+
+
+# --- the open microphone: "name" mode, conversation, "open" mode -----------------------------------
+
+
+def talk(seconds):
+    """Speech with the short dips real speech has between words."""
+    words = max(1, round(seconds / 0.6))
+    return np.concatenate([np.concatenate([speech(0.5), silence(0.1)])] * words)
+
+
+def utter(h, text, seconds=1.0):
+    """The user says *text* (the fake recogniser returns it) and it is recognised."""
+    h.stt.text = text
+    h.feed(np.concatenate([talk(seconds), silence(1.0)]))
+    h.worker.run_all()
+
+
+def test_name_anywhere_and_the_request_without_it():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    utter(h, "А ти, Міє, що думаєш?")
+    assert h.results == [("А ти що думаєш?", "ok")]
+    assert h.stt.calls[-1][1] == h.service.standby_prompt
+
+
+def test_open_microphone_uses_the_users_phrase_length():
+    h = Harness()
+    h.service.wake_config = VADConfig(end_silence_ms=800, max_utterance_seconds=30.0, min_speech_ms=350)
+    h.service.set_listen_mode("name")
+    utter(h, "Міє, розкажи, будь ласка, довгу історію", seconds=12.0)  # one long breath, not cut
+    assert h.results == [("Розкажи, будь ласка, довгу історію", "ok")]
+    assert h.stt.calls[-1][0] >= 12 * SR
+
+
+def test_very_short_sounds_are_not_recognised():
+    h = Harness()
+    h.service.set_listen_mode("open")
+    h.feed(np.concatenate([speech(0.2), silence(1.0)]))  # a clack, a cough
+    h.worker.run_all()
+    assert h.stt.calls == [] and h.results == []
+
+
+def test_conversation_follows_without_her_name_while_she_answers_and_after():
+    h = Harness()
+    h.service.follow_up_seconds = 20
+    h.service.set_listen_mode("name")
+    utter(h, "Міє, котра година?")
+    assert h.service.conversation_open
+    h.now += 25  # the model thinks for a while: the window waits for her answer
+    assert h.service.conversation_open
+    h.service.say("Пів на третю.", solicited=True)
+    h.worker.run_all()
+    h.now += 40  # a long answer: the window stays open while she speaks
+    assert h.service.conversation_open
+    h.output.finish()
+    assert h.service.state == VoiceState.STANDBY
+    h.now += 15
+    utter(h, "А завтра о котрій вставати?")  # no name: still the conversation
+    assert h.results[-1] == ("А завтра о котрій вставати?", "ok")
+    h.service.say("О сьомій.", solicited=True)
+    h.worker.run_all()
+    h.output.finish()
+    h.now += 21  # follow_up_seconds after her last answer: over
+    assert not h.service.conversation_open
+    utter(h, "Це я не тобі")
+    assert len(h.results) == 2
+
+
+def test_conversation_window_closes_when_no_answer_comes():
+    h = Harness()
+    h.service.follow_up_seconds = 10
+    h.service.set_listen_mode("name")
+    utter(h, "Міє, привіт")
+    h.now += h.service.reply_wait_seconds + 1
+    assert not h.service.conversation_open
+    utter(h, "ну то що там")
+    assert h.results == [("Привіт", "ok")]
+
+
+def test_an_answer_shown_without_voice_keeps_the_conversation_going():
+    h = Harness()
+    h.service.follow_up_seconds = 10
+    h.service.set_listen_mode("name")
+    utter(h, "Міє, привіт")
+    h.now += 5
+    h.service.note_reply_shown(4.0)  # read for 4 s, then 10 s to reply
+    h.now += 13
+    assert h.service.conversation_open
+    h.now += 2
+    assert not h.service.conversation_open
+
+
+def test_follow_up_zero_means_only_by_name():
+    h = Harness()
+    h.service.follow_up_seconds = 0
+    h.service.set_listen_mode("name")
+    utter(h, "Міє, привіт")
+    assert not h.service.conversation_open
+    utter(h, "а як справи")
+    assert h.results == [("Привіт", "ok")]
+
+
+def test_push_to_talk_opens_the_conversation_too():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    h.service.listen()
+    assert h.service.state == VoiceState.LISTENING
+    h.feed(np.concatenate([speech(1.0), silence(1.2)]))
+    h.worker.run_all()
+    assert h.results == [("Привіт, Міє", "ok")]
+    assert h.service.state == VoiceState.STANDBY and h.service.conversation_open
+
+
+def test_open_mode_hears_everything_but_fillers_and_phantoms():
+    h = Harness()
+    h.service.set_listen_mode("open")
+    utter(h, "Яка сьогодні погода?")
+    utter(h, "Угу.")
+    utter(h, "Дякую за перегляд!")  # Whisper's subtitle credits
+    utter(h, "Розмова українською.")  # its own prompt echoed back in noise
+    utter(h, "[музика]")
+    assert h.results == [("Яка сьогодні погода?", "ok")]
+    utter(h, "Міє!")  # her name alone: she listens for what comes next
+    assert h.wakes == 1 and h.service.state == VoiceState.LISTENING
+
+
+def test_fillers_in_the_conversation_are_ignored():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    utter(h, "Міє, привіт")
+    utter(h, "Ммм...")
+    utter(h, "Міє, угу")  # her name and a filler: only called
+    assert h.results == [("Привіт", "ok")]
+    assert h.wakes == 1
+
+
+def test_she_does_not_hear_the_tail_of_her_own_voice():
+    h = Harness()
+    h.service.echo_tail_seconds = 1.0
+    h.service.set_listen_mode("open")
+    h.service.say("Привіт!", solicited=True)
+    h.worker.run_all()
+    h.output.finish()
+    assert h.service.microphone_open
+    h.feed(np.concatenate([speech(0.9), silence(1.0)]))  # within the tail: ignored
+    h.worker.run_all()
+    assert h.stt.calls == []
+    utter(h, "А тепер я")
+    assert h.results == [("А тепер я", "ok")]
+
+
+def test_one_recognition_at_a_time_and_the_rest_is_dropped():
+    h = Harness()
+    h.service.set_listen_mode("open")
+    h.stt.text = "раз"
+    for _ in range(3):
+        h.feed(np.concatenate([speech(1.0), silence(1.0)]))
+    assert len(h.worker.jobs) == 1  # never piles up
+    assert h.service.dropped_utterances == 2
+    h.worker.run_all()
+    assert h.results == [("раз", "ok")]
+    utter(h, "два")  # free again
+    assert h.results[-1] == ("два", "ok")
+
+
+def test_a_request_heard_before_she_started_talking_still_arrives():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    h.stt.text = "Міє, котра година?"
+    h.feed(np.concatenate([speech(1.0), silence(1.0)]))  # recognition pending ...
+    h.service.say("коментар", solicited=True)  # ... and she starts a line meanwhile
+    assert h.service.state == VoiceState.SPEAKING
+    h.worker.run_all()
+    assert h.results == [("Котра година?", "ok")]
+
+
+def test_her_comments_wait_while_someone_is_talking():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    h.feed(speech(0.6))  # the user is mid-sentence
+    assert not h.service.say("коментар")  # shown as text instead: never talk over the user
+    assert h.service.say("відповідь", solicited=True)
+
+
+def test_pause_and_revoke_drop_what_was_being_recognised():
+    for stop in ("suspend", "revoke", "mode", "push_to_talk"):
+        h = Harness()
+        h.service.set_listen_mode("name")
+        h.stt.text = "Міє, котра година?"
+        h.feed(np.concatenate([speech(1.0), silence(1.0)]))
+        if stop == "suspend":
+            h.service.set_suspended(True)
+        elif stop == "revoke":
+            h.mic = False
+            h.service.revoke_microphone()
+        elif stop == "mode":
+            h.service.set_listen_mode("open")
+        else:
+            h.service.listen()
+        h.worker.jobs = [job for job in h.worker.jobs if job[0] == VoiceWorker.TRANSCRIBE][:1]
+        h.worker.run_all()
+        assert h.results == [], stop
+
+
+def test_revoking_ends_the_conversation():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    utter(h, "Міє, привіт")
+    h.mic = False
+    h.service.revoke_microphone()
+    assert not h.service.conversation_open and not h.service.microphone_open
+    assert h.service.state == VoiceState.IDLE
+
+
+def test_switching_modes():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    h.service.set_listen_mode("open")
+    assert h.service.state == VoiceState.STANDBY and h.service.listen_mode == "open"
+    h.service.set_listen_mode("push")
+    assert h.service.state == VoiceState.IDLE and not h.service.microphone_open
+    h.service.set_listen_mode("always")  # unknown: push
+    assert h.service.listen_mode == "push"
+
+
+def test_open_microphone_failure_falls_back_to_push_to_talk():
+    h = Harness(input_fail=True)
+    h.service.set_listen_mode("open")
+    assert h.errors == ["Немає мікрофона."]
+    assert h.service.listen_mode == "push" and h.service.state == VoiceState.IDLE
+    h.service.say("привіт")
+    h.worker.run_all()
+    h.output.finish()  # not retried (and reported) after every line
+    assert h.errors == ["Немає мікрофона."]
+
+
+# --- streamed answers: the reply hold, prefetching, cancelled lines ------------------------------------
+
+
+def test_microphone_stays_closed_between_the_sentences_of_an_answer():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    h.service.hold_for_reply(8.0)
+    h.service.say("Перше речення.", solicited=True, prefetch=True)
+    h.worker.run_all()
+    h.output.finish()
+    assert h.service.state == VoiceState.SPEAKING and not h.service.microphone_open
+    h.service.say("Друге речення.", solicited=True, prefetch=True)
+    h.worker.run_all()
+    assert h.tts.said == ["Перше речення.", "Друге речення."]
+    h.output.finish()
+    h.service.release_reply_hold()
+    assert h.service.state == VoiceState.STANDBY and h.service.microphone_open
+
+
+def test_a_stalled_answer_does_not_keep_the_microphone_closed():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    h.service.hold_for_reply(5.0)
+    h.service.say("Зараз скажу.", solicited=True)
+    h.worker.run_all()
+    h.output.finish()
+    h.service.check_hold()
+    assert h.service.state == VoiceState.SPEAKING  # still within the hold
+    h.now += 6
+    h.service.check_hold()
+    assert h.service.state == VoiceState.STANDBY
+
+
+def test_interrupting_while_she_waits_for_the_rest_of_an_answer():
+    h = Harness()
+    h.service.set_listen_mode("name")
+    h.service.hold_for_reply(8.0)
+    h.service.say("Перше.", solicited=True)
+    h.worker.run_all()
+    h.output.finish()
+    h.service.interrupt()
+    assert h.service.state == VoiceState.STANDBY
+    h.service.hold_for_reply(8.0)
+    h.service.say("Ще одне.", solicited=True)
+    h.worker.run_all()
+    h.output.finish()
+    assert h.service.listen()  # push-to-talk goes straight to listening
+    assert h.service.state == VoiceState.LISTENING
+
+
+def test_next_sentence_is_synthesised_while_the_previous_one_plays():
+    h = Harness()
+    h.service.say("Перше речення.", solicited=True, prefetch=True)
+    h.service.say("Друге речення.", solicited=True, prefetch=True)
+    h.worker.run_all()
+    assert h.tts.said == ["Перше речення.", "Друге речення."]  # both, while the first plays
+    h.output.finish()
+    assert h.output.playing is not None and h.worker.jobs == []  # no gap: already synthesised
+    h.output.finish()
+    assert h.service.state == VoiceState.IDLE
+
+
+def test_unprefetched_lines_wait_for_their_turn():
+    h = Harness()
+    h.service.say("коментар")
+    h.service.say("відповідь", solicited=True)
+    h.worker.run_all()
+    assert h.tts.said == ["коментар"]
+
+
+def test_a_prefetched_line_that_failed_reports_when_its_turn_comes():
+    class Picky(FakeTTS):
+        def synthesize(self, text):
+            if text == "Друге.":
+                raise TTSError("boom", user_message="Голос зламався.")
+            return super().synthesize(text)
+
+    h = Harness(tts=Picky())
+    outcomes = []
+    h.service.say("Перше.", solicited=True)
+    h.service.say("Друге.", solicited=True, prefetch=True, on_done=outcomes.append)
+    h.worker.run_all()
+    assert outcomes == [] and h.errors == []  # failed ahead of its turn: nothing to report yet
+    h.output.finish()
+    assert outcomes == [Outcome.FAILED] and h.errors == ["Голос зламався."]
+    assert h.service.state == VoiceState.IDLE
+
+
+def test_a_prefetched_clip_is_dropped_when_she_is_interrupted():
+    h = Harness()
+    outcomes = []
+    h.service.say("Перше.", solicited=True)
+    h.service.say("Друге.", solicited=True, prefetch=True, on_done=outcomes.append)
+    h.worker.run_all()
+    h.service.interrupt()
+    assert outcomes == [Outcome.INTERRUPTED] and h.output.playing is None
+    assert h.service.state == VoiceState.IDLE
+
+
+def test_a_cancelled_line_is_skipped_before_it_is_synthesised():
+    h = Harness()
+    cancelled = {"value": False}
+    outcomes = []
+    h.service.say("перша", solicited=True)
+    h.service.say("скасована", is_cancelled=lambda: cancelled["value"], on_done=outcomes.append)
+    h.worker.run_all()
+    cancelled["value"] = True
+    h.output.finish()
+    h.worker.run_all()
+    assert outcomes == [Outcome.DROPPED]
+    assert h.tts.said == ["перша"]
+    assert h.service.state == VoiceState.IDLE
 
 
 def test_real_worker_runs_jobs_by_priority():

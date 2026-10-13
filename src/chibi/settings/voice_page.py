@@ -1,5 +1,6 @@
 """The "Голос" page of the settings dialog: her voice, speech recognition,
-push-to-talk and the voice models.
+how she listens (push-to-talk or an always-open microphone) and the voice
+models.
 
 Design notes - why it works this way:
 
@@ -16,6 +17,11 @@ Design notes - why it works this way:
 * **"Прослухати" uses the page's values**: it applies this page's pending
   edits first (only the voice section), so the sample is spoken with the
   speaker and speed the page shows.
+* **An always-open microphone is a choice made knowingly**: picking "name" or
+  "open" in "Як слухати" asks first, with an honest account of what stays
+  open, what is recorded (nothing) and what reaches the AI (and the cloud).
+  Declining puts the previous choice back.  Values loaded from the settings
+  never ask.
 * **Never wait**: the sample and downloads are asynchronous; late answers for
   a superseded request (or a page closed meanwhile) are dropped, and a page
   reopened during a download picks it up by polling its progress.
@@ -35,11 +41,13 @@ from typing import TYPE_CHECKING, Protocol
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtGui import QHideEvent, QShowEvent
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QHBoxLayout,
     QLineEdit,
     QProgressBar,
+    QRadioButton,
     QVBoxLayout,
     QWidget,
 )
@@ -95,17 +103,61 @@ PTT_MODE_CHOICES: tuple[tuple[str, str], ...] = (
     ("hold", "Тримати, поки говориш"),
 )
 
+#: How she listens (``VoiceSettings.listen_mode``): value, choice, explanation
+#: (``{voc}`` is how the user calls her: "Міє").
+LISTEN_CHOICES: tuple[tuple[str, str, str], ...] = (
+    ("push", "Клавіша або кнопка мікрофона",
+     "Мікрофон вмикається лише на час твоєї фрази."),
+    ("name", "Постійно, коли звертаюся на ім'я (рекомендовано)",
+     "Мікрофон відкритий, поки вона мовчить. Скажи «{voc}, котра година?» чи «Як справи, {voc}?» — "
+     "і вона відповість, а далі розмова триває без імені."),
+    ("open", "Постійно — усе, що чую, для неї",
+     "Вона відповідає на кожну почуту фразу — зокрема на телевізор, музику чи інших людей поруч."),
+)
+#: Listen modes from the least to the most exposing (switching up asks first).
+_EXPOSURE = {"push": 0, "name": 1, "open": 2}
+
 PRIVACY_NOTE = (
-    "Мікрофон вмикається лише коли ти натискаєш клавішу або кнопку. "
-    "Звук не зберігається і не надсилається в інтернет."
+    "Мовлення розпізнається на цьому ПК: звук не зберігається і не надсилається в інтернет. "
+    "До AI потрапляє лише розпізнаний текст того, що сказано їй."
 )
 #: The same consent as on the privacy page (the dialog imports these).
 MICROPHONE_CONSENT_TITLE = "Дозволити слухати мікрофон?"
 MICROPHONE_CONSENT_TEXT = (
-    "Вона зможе чути тебе, коли ти натискаєш клавішу розмови або кнопку мікрофона.\n\n"
-    "• Розпізнавання працює локально, звук нікуди не надсилається й не записується.\n"
-    "• Поки мікрофон відкритий, видно індикатор «слухаю».\n\n"
+    "Вона зможе чути тебе так, як обрано в налаштуваннях голосу («Як слухати»):\n\n"
+    "• «Клавіша або кнопка мікрофона» — мікрофон вмикається лише на час твоєї фрази.\n"
+    "• «Постійно» — мікрофон лишається відкритим, поки вона мовчить; до неї доходить лише те, "
+    "що звернено до неї (або все почуте — якщо так обрано).\n"
+    "• Розпізнавання працює на цьому ПК: звук нікуди не надсилається й не записується. "
+    "Розпізнаний текст того, що сказано їй, іде до AI, а з хмарним AI — у хмару.\n"
+    "• Поки мікрофон відкритий, у треї світиться червона крапка.\n\n"
     "Відкликати можна будь-коли тут або кнопкою «Зупинити все спостереження»."
+)
+OPEN_MIC_CONFIRM_TITLE = "Слухати постійно?"
+_OPEN_MIC_INTRO = (
+    "Мікрофон лишатиметься відкритим увесь час, поки вона мовчить. На паузу він стає в режимі "
+    "«Не турбувати», у грі на весь екран (це можна змінити нижче), а якщо їй дозволено бачити, "
+    "яка програма відкрита, — ще й під час дзвінків і в приватних програмах.\n\n"
+    "• Розпізнавання працює на цьому ПК: звук нікуди не надсилається й не записується.\n"
+)
+_OPEN_MIC_OUTRO = (
+    "• Поки мікрофон відкритий, у треї світиться червона крапка. Поставити його на паузу можна "
+    "в її меню.\n\n"
+    "Увімкнути?"
+)
+OPEN_MIC_CONFIRM_NAME = _OPEN_MIC_INTRO + (
+    "• До AI потрапляє лише текст того, що звернено до неї: фраза з її ім'ям і розмова одразу "
+    "після її відповіді. Якщо AI хмарний, цей текст надсилається в хмару.\n"
+) + _OPEN_MIC_OUTRO
+OPEN_MIC_CONFIRM_OPEN = _OPEN_MIC_INTRO + (
+    "• До AI потрапляє текст усього, що вона почує. Якщо AI хмарний, цей текст надсилається "
+    "в хмару.\n"
+    "• Вона відповідатиме на все: і на телевізор, музику чи розмови інших людей поруч. З платним "
+    "AI кожна почута фраза — окремий запит, тож витрати можуть швидко зростати.\n"
+) + _OPEN_MIC_OUTRO
+DND_NOTE = (
+    "Клавіша й кнопка мікрофона працюють у будь-якому режимі. У режимі «Не турбувати» постійний "
+    "мікрофон стає на паузу."
 )
 AZURE_KEY_HINT = (
     "Ключ ресурсу Speech із порталу Azure. Він зберігається в диспетчері облікових даних Windows і "
@@ -121,7 +173,6 @@ AZURE_CLOUD_OK = (
     "«Приватність» — він перестане діяти одразу."
 )
 MIC_NEEDED = "Щоб вона тебе чула, потрібен дозвіл «Слухати мікрофон»."
-WAKE_WARNING = "Тоді мікрофон лишається ввімкненим і весь час чекає на її ім'я."
 HOTKEY_WINDOWS_ONLY = "Гаряча клавіша працює лише у Windows — тут говори кнопкою мікрофона в чаті."
 DEFAULT_DEVICE = "Типовий пристрій системи"
 NOT_CONNECTED = "(не підключено)"
@@ -193,6 +244,17 @@ def format_size(size: int) -> str:
 def format_seconds(ms: int) -> str:
     """``800`` -> ``"0,8 с"``."""
     return f"{ms / 1000:.1f}".replace(".", ",") + f"{_NBSP}с"
+
+
+def format_follow_up(seconds: int) -> str:
+    """``20`` -> ``"20 с"``; ``0`` -> ``"вимкнено"``."""
+    return f"{seconds}{_NBSP}с" if seconds > 0 else "вимкнено"
+
+
+def vocative(name: str) -> str:
+    """How the examples call her: "Мія" -> "Міє"; other names as they are."""
+    name = name.strip()
+    return "Міє" if name == "Мія" else (name or "Міє")
 
 
 def model_choice_title(spec: ModelSpec) -> str:
@@ -347,6 +409,10 @@ class VoicePage(QWidget):
         v = settings.voice
         self._name = settings.character.name
         self._status_failed = False
+        #: The listen mode accepted on this page (a declined confirmation goes back to it).
+        self._listen_mode = v.listen_mode
+        #: True while the page itself checks a listen-mode button (no confirmation then).
+        self._setting_mode = False
         self._test_seq = 0
         self._test_busy = False
         self._download_seq = 0
@@ -369,6 +435,7 @@ class VoicePage(QWidget):
 
         self._fields: tuple[_Field, ...] = self._bind_fields()
         self._loaded: dict[str, object] = self._read_fields()
+        self._update_listen_controls()
 
         self.status_timer = QTimer(self)
         self.status_timer.setInterval(STATUS_REFRESH_MS)
@@ -401,6 +468,8 @@ class VoicePage(QWidget):
             if field.name == "azure_region" and not _REGION_RE.fullmatch(str(value)):
                 continue
             setattr(settings.voice, field.name, value)
+            if field.name == "listen_mode":
+                settings.voice.wake_phrase_enabled = value != "push"  # the deprecated flag follows
         return settings
 
     def has_edits(self) -> bool:
@@ -417,6 +486,7 @@ class VoicePage(QWidget):
         self._update_names()
         self._on_engine_changed()
         self._on_stt_model_changed()
+        self._update_listen_controls()
 
     def reset_baseline(self) -> None:
         """Treat what the widgets show now as unedited (after a successful apply)."""
@@ -449,6 +519,7 @@ class VoicePage(QWidget):
             set_style_property(self.tts_status_label, "role", "warning")
             self.stt_status_label.hide()
             self.hotkey_status_label.hide()
+            self.listen_status_label.hide()
             return
         self._status_failed = False
         if view.tts_ready:
@@ -460,6 +531,10 @@ class VoicePage(QWidget):
         if view.stt_ready:
             how = (f"натисни {view.hotkey} або кнопку мікрофона в чаті" if view.hotkey_active
                    else "натисни кнопку мікрофона в чаті")
+            if view.listen_mode == "name":
+                how = f"клич її на ім'я або {how}"
+            elif view.listen_mode == "open":
+                how = f"просто говори або {how}"
             text, role = f"● Розпізнавання готове — {how}.", "success"
         else:
             text, role = f"● {view.stt_reason}", "hint" if view.stt_reason == STT_OFF else "warning"
@@ -469,6 +544,9 @@ class VoicePage(QWidget):
         self.stt_status_label.setVisible(not same)  # "module not installed" once, not twice
         self.hotkey_status_label.setText(view.hotkey_reason)
         self.hotkey_status_label.setVisible(bool(view.hotkey_reason))
+        pause = view.pause_reason if view.stt_ready else ""
+        self.listen_status_label.setText(f"● {pause}" if pause else "")
+        self.listen_status_label.setVisible(bool(pause))
 
     def save_pending_key(self) -> bool:
         """Store an Azure key typed but not saved yet ("Гаразд" should not lose it).
@@ -488,8 +566,12 @@ class VoicePage(QWidget):
         self.stt_status_label.setAccessibleName("Стан розпізнавання мовлення")
         self.hotkey_status_label = make_label("", "warning")
         self.hotkey_status_label.hide()
+        self.listen_status_label = make_label("", "hint")
+        self.listen_status_label.setAccessibleName("Чи слухає мікрофон")
+        self.listen_status_label.hide()
         card.body.addWidget(self.tts_status_label)
         card.body.addWidget(self.stt_status_label)
+        card.body.addWidget(self.listen_status_label)
         card.body.addWidget(self.hotkey_status_label)
         return card
 
@@ -604,8 +686,8 @@ class VoicePage(QWidget):
         card.body.addWidget(make_label(PRIVACY_NOTE, "banner"))
         self.stt_enabled_check = self._check(
             card, "Розмовляти з нею голосом",
-            "Натисни клавішу розмови чи кнопку мікрофона в чаті й говори. Мовлення розпізнається на "
-            "цьому ПК.", v.stt_enabled)
+            "Говори з нею клавішею розмови, кнопкою мікрофона в чаті або — якщо обрано нижче — просто "
+            "вголос. Мовлення розпізнається на цьому ПК.", v.stt_enabled)
 
         self.mic_box = QWidget()
         mic = QHBoxLayout(self.mic_box)
@@ -646,18 +728,7 @@ class VoicePage(QWidget):
                                    description="Скільки тиші чекати, перш ніж вирішити, що фразу закінчено.")
         card.body.addWidget(self.pause_row)
 
-        wake_top = QHBoxLayout()
-        self.wake_check = QCheckBox("Відгукуватися на своє ім'я")
-        self.wake_check.setChecked(v.wake_phrase_enabled)
-        self.wake_check.toggled.connect(self._on_wake_toggled)
-        wake_top.addWidget(self.wake_check)
-        wake_top.addStretch(1)
-        wake_top.addWidget(make_label("експериментально", "pill", wrap=False))
-        card.body.addLayout(wake_top)
-        self.wake_warning = make_label(WAKE_WARNING, "warning")
-        self.wake_warning.setContentsMargins(28, 0, 0, 0)
-        card.body.addWidget(self.wake_warning)
-        self._on_wake_toggled(v.wake_phrase_enabled)
+        card.body.addWidget(self._build_listen_box(v))
 
         self.input_device_combo = QComboBox()
         self.input_device_combo.setAccessibleName("Мікрофон")
@@ -672,6 +743,53 @@ class VoicePage(QWidget):
         card.body.addWidget(self.devices_note)
         self._fill_devices(v.input_device, v.output_device)
         return card
+
+    def _build_listen_box(self, v: VoiceSettings) -> QWidget:
+        """"Як слухати": push-to-talk, by name, or everything - and the pauses."""
+        box = QWidget()
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(make_label("Як слухати", "value", wrap=False))
+        self.listen_group = QButtonGroup(self)
+        self.listen_group.setExclusive(True)
+        self.listen_buttons: dict[str, QRadioButton] = {}
+        self.listen_hints: dict[str, InfoLabel] = {}
+        for index, (value, text, _hint) in enumerate(LISTEN_CHOICES):
+            radio = QRadioButton(text)
+            radio.setAccessibleName(text)
+            self.listen_group.addButton(radio, index)
+            self.listen_buttons[value] = radio
+            layout.addWidget(radio)
+            hint = InfoLabel("")
+            hint.setContentsMargins(28, 0, 0, 4)
+            self.listen_hints[value] = hint
+            layout.addWidget(hint)
+            radio.toggled.connect(lambda checked, mode=value: self._on_listen_toggled(mode, checked))
+        self._check_listen_button(v.listen_mode)
+
+        self.follow_up_row = SliderRow(
+            "Розмова без імені", 0, 120, v.follow_up_seconds, step=5, formatter=format_follow_up,
+            description="Скільки після її відповіді можна говорити далі, не називаючи її. "
+                        "0 — щоразу на ім'я.")
+        layout.addWidget(self.follow_up_row)
+        self.pause_in_calls_row = CheckRow(
+            "Не слухати під час дзвінків",
+            "Пауза, поки на передньому плані Discord, Teams, Zoom, Skype чи інша програма для дзвінків. "
+            "У месенджерах, пошті, банкінгу й менеджерах паролів вона не слухає ніколи. Програму "
+            "вона розпізнає, лише якщо їй дозволено бачити, яка програма відкрита, і лише ту, що "
+            "на передньому плані: дзвониш у фоні під час гри — постав мікрофон на паузу в її меню.")
+        self.pause_in_calls_row.setChecked(v.pause_in_calls)
+        self.pause_in_calls_check = self.pause_in_calls_row.checkbox
+        layout.addWidget(self.pause_in_calls_row)
+        self.fullscreen_row = CheckRow(
+            "Слухати й у грі на весь екран",
+            "Без цього мікрофон стає на паузу, поки гра чи відео на весь екран.")
+        self.fullscreen_row.setChecked(v.wake_in_fullscreen)
+        self.wake_in_fullscreen_check = self.fullscreen_row.checkbox
+        layout.addWidget(self.fullscreen_row)
+        layout.addWidget(InfoLabel(DND_NOTE))
+        return box
 
     # --- small builders ---------------------------------------------------------------------------
 
@@ -734,7 +852,10 @@ class VoicePage(QWidget):
                    lambda value: self._select_hotkey(str(value))),
             combo("ptt_mode", self.ptt_mode_combo, "toggle"),
             slider("end_silence_ms", self.pause_row),
-            check("wake_phrase_enabled", self.wake_check),
+            _Field("listen_mode", self.listen_mode, self._set_listen_mode),
+            slider("follow_up_seconds", self.follow_up_row),
+            check("pause_in_calls", self.pause_in_calls_check),
+            check("wake_in_fullscreen", self.wake_in_fullscreen_check),
             device("input_device", self.input_device_combo),
             device("output_device", self.output_device_combo),
         )
@@ -804,6 +925,48 @@ class VoicePage(QWidget):
         self.lead_label.setText(
             f"{name} може говорити вголос і чути тебе. Усе це необов'язково: без голосу вона просто "
             "пише в бульбашках і чаті.")
+        voc = vocative(name)
+        for value, _text, hint in LISTEN_CHOICES:
+            self.listen_hints[value].setText(hint.format(voc=voc))
+
+    # --- "Як слухати" ------------------------------------------------------------------------------
+
+    def listen_mode(self) -> str:
+        """The listen mode the page shows ("push", "name" or "open")."""
+        return next((mode for mode, button in self.listen_buttons.items() if button.isChecked()), "push")
+
+    def _set_listen_mode(self, value: object) -> None:
+        """Show *value* (loaded from the settings: never asks)."""
+        mode = str(value) if str(value) in _EXPOSURE else "push"
+        self._listen_mode = mode
+        self._check_listen_button(mode)
+        self._update_listen_controls()
+
+    def _check_listen_button(self, mode: str) -> None:
+        self._setting_mode = True
+        try:
+            self.listen_buttons.get(mode, self.listen_buttons["push"]).setChecked(True)
+        finally:
+            self._setting_mode = False
+
+    def _on_listen_toggled(self, mode: str, checked: bool) -> None:
+        if not checked or self._setting_mode:
+            return
+        previous = self._listen_mode
+        if _EXPOSURE[mode] > _EXPOSURE.get(previous, 0):
+            text = OPEN_MIC_CONFIRM_OPEN if mode == "open" else OPEN_MIC_CONFIRM_NAME
+            if not self._confirm(OPEN_MIC_CONFIRM_TITLE, text):
+                self._check_listen_button(previous)  # declined: nothing changes
+                return
+        self._listen_mode = mode
+        self._update_listen_controls()
+
+    def _update_listen_controls(self) -> None:
+        """The follow-up only matters by name; the pauses only with an open microphone."""
+        mode = self.listen_mode()
+        self.follow_up_row.setEnabled(mode == "name")
+        self.pause_in_calls_row.setEnabled(mode != "push")
+        self.fullscreen_row.setEnabled(mode != "push")
 
     def _on_engine_changed(self, _index: int = -1) -> None:
         azure = self.engine() == "azure"
@@ -820,9 +983,6 @@ class VoicePage(QWidget):
 
     def _on_stt_model_changed(self, _index: int = -1) -> None:
         self._render_models()
-
-    def _on_wake_toggled(self, checked: bool) -> None:
-        set_style_property(self.wake_warning, "role", "warning" if checked else "hint")
 
     def _voice_title(self) -> str:
         """What is speaking, per the applied settings: "Piper, Тетяна"."""

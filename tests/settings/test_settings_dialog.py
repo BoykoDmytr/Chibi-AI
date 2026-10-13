@@ -1,18 +1,27 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QTextCursor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QDialog, QLabel
 
+from chibi.core.config import PERSONA_MAX_CHARS
 from chibi.core.events import Permission
 from chibi.memory.repositories import GameTotals
 from chibi.settings import settings_dialog
 from chibi.settings.settings_dialog import (
     PAGES,
     PERMISSION_TEXTS,
+    PERSONA_PLACEHOLDER,
+    PERSONA_PRESETS,
+    PERSONA_REPLACE_TITLE,
     SettingsDialog,
+    clean_persona,
     normalize_process_name,
+    persona_counter_text,
 )
 
 
@@ -271,6 +280,191 @@ def test_personality_page_explains_what_the_sliders_steer(make_dialog):
 
 def page_widget(dialog, key: str):
     return dialog.stack.widget([k for k, _ in PAGES].index(key))
+
+
+# --- her character in the user's own words ------------------------------------------------------
+
+
+def preset(title: str) -> str:
+    return dict(PERSONA_PRESETS)[title]
+
+
+def type_at(edit, position: int, text: str) -> None:
+    """Put the cursor at a (Qt) position and insert text the way typing or pasting does."""
+    cursor = edit.textCursor()
+    cursor.setPosition(position)
+    edit.setTextCursor(cursor)
+    edit.insertPlainText(text)
+
+
+def test_personality_page_has_the_description_editor_and_explains_it(make_dialog):
+    dialog = make_dialog()
+    dialog.show_page("personality")
+    page = page_widget(dialog, "personality")
+    assert page.isAncestorOf(dialog.persona_edit)
+    assert dialog.persona_edit.toPlainText() == ""
+    assert dialog.persona_edit.placeholderText() == PERSONA_PLACEHOLDER
+    assert PERSONA_PLACEHOLDER.startswith("Наприклад:")
+    text = labels_text(page)
+    assert "Характер своїми словами" in text
+    assert "лише з AI" in text and "готовими репліками" in text  # no AI -> the phrase bank
+    assert "правила" in text and "діють завжди" in text
+    assert "хмарним AI" in text and "паролів" in text
+    assert dialog.persona_counter.text() == persona_counter_text(0) == f"0 з {PERSONA_MAX_CHARS} символів"
+
+
+def test_persona_round_trip_is_cleaned_like_the_settings(make_dialog, facade, track):
+    dialog = make_dialog()
+    dialog.persona_edit.setPlainText("  Тиха й дотепна.\n\n\n\nЛюбить котів і какао.\u200b  ")
+    dialog.apply_button.click()
+    stored = facade.applied[-1].personality.persona
+    assert stored == "Тиха й дотепна.\n\nЛюбить котів і какао."
+    assert dialog.persona_edit.toPlainText() == stored  # after Apply: what the app holds
+    again = track(SettingsDialog(facade, confirm=Confirm(False)))
+    assert again.persona_edit.toPlainText() == stored
+    assert clean_persona(stored) == stored
+
+
+def test_untouched_persona_never_reverts_a_change_made_elsewhere(make_dialog, facade):
+    dialog = make_dialog()
+    change_elsewhere(facade, personality__persona="Опис, змінений деінде")
+    dialog.dnd_check.setChecked(True)
+    dialog.apply_button.click()
+    s = facade.applied[0]
+    assert (s.personality.persona, s.behavior.do_not_disturb) == ("Опис, змінений деінде", True)
+    assert dialog.persona_edit.toPlainText() == "Опис, змінений деінде"
+
+
+def test_refresh_shows_a_new_persona_but_keeps_an_unsaved_one(make_dialog, facade):
+    shown = make_dialog()
+    change_elsewhere(facade, personality__persona="Новий опис")
+    shown.hide()
+    shown.show()  # showEvent -> refresh()
+    assert shown.persona_edit.toPlainText() == "Новий опис"
+
+    dialog = make_dialog()
+    dialog.persona_edit.setPlainText("Мій опис")  # typed, not applied yet
+    change_elsewhere(facade, personality__persona="Ще інший", personality__humor=5)
+    dialog.hide()
+    dialog.show()
+    assert dialog.persona_edit.toPlainText() == "Мій опис"
+    assert dialog.personality_rows["humor"].value() == 5
+    dialog.apply_button.click()
+    s = facade.applied[0]
+    assert (s.personality.persona, s.personality.humor) == ("Мій опис", 5)
+
+
+def test_whitespace_alone_is_not_an_edit(make_dialog, facade):
+    change_elsewhere(facade, personality__persona="Опис")
+    dialog = make_dialog()
+    type_at(dialog.persona_edit, len("Опис"), "   \n\n")
+    change_elsewhere(facade, personality__persona="Опис оновлено")
+    dialog.apply_button.click()
+    assert facade.applied[0].personality.persona == "Опис оновлено"
+
+
+def test_cancel_discards_the_description(make_dialog, facade):
+    dialog = make_dialog()
+    dialog.persona_edit.setPlainText("Незбережений опис")
+    dialog.cancel_button.click()
+    assert facade.applied == [] and facade.settings().personality.persona == ""
+
+
+def test_enter_in_the_description_is_a_new_line_not_ok(make_dialog, facade):
+    dialog = make_dialog()
+    dialog.show_page("personality")
+    dialog.persona_edit.setFocus()
+    QTest.keyClicks(dialog.persona_edit, "one")  # QTest types Latin-1 only
+    QTest.keyClick(dialog.persona_edit, Qt.Key.Key_Return)
+    QTest.keyClicks(dialog.persona_edit, "two")
+    assert dialog.persona_edit.toPlainText() == "one\ntwo"
+    assert dialog.isVisible() and facade.applied == []
+
+
+def test_counter_is_live_and_typing_stops_at_the_limit(make_dialog):
+    dialog = make_dialog()
+    edit, counter = dialog.persona_edit, dialog.persona_counter
+    edit.setPlainText("Привіт")
+    assert counter.text() == persona_counter_text(6) and counter.property("role") == "hint"
+    edit.setPlainText("я" * (PERSONA_MAX_CHARS - 1))
+    edit.moveCursor(QTextCursor.MoveOperation.End)
+    QTest.keyClicks(edit, "abc")  # only "a" still fits
+    assert edit.toPlainText() == "я" * (PERSONA_MAX_CHARS - 1) + "a"
+    assert counter.text() == persona_counter_text(PERSONA_MAX_CHARS)
+    assert counter.property("role") == "warning"
+    QTest.keyClick(edit, Qt.Key.Key_Backspace)
+    assert counter.text() == persona_counter_text(PERSONA_MAX_CHARS - 1)
+    assert counter.property("role") == "hint"
+
+
+def test_an_overlong_paste_is_cut_where_it_was_pasted(make_dialog):
+    dialog = make_dialog()
+    edit = dialog.persona_edit
+    edit.setPlainText("x" * (PERSONA_MAX_CHARS - 10))
+    type_at(edit, 5, "Y" * 20)  # 10 characters too many: the end of the paste goes
+    assert edit.toPlainText() == "x" * 5 + "Y" * 10 + "x" * (PERSONA_MAX_CHARS - 15)
+    assert edit.textCursor().position() == 15
+    # Emoji are two Qt units each; the limit counts characters and never splits one.
+    edit.setPlainText("😺" * PERSONA_MAX_CHARS)
+    type_at(edit, 2 * PERSONA_MAX_CHARS, "🐾🐾")
+    assert edit.toPlainText() == "😺" * PERSONA_MAX_CHARS
+    # Text set in one go (not typed) loses its end.
+    edit.setPlainText("а" * PERSONA_MAX_CHARS + "кінець")
+    assert edit.toPlainText() == "а" * PERSONA_MAX_CHARS
+
+
+def test_presets_fill_the_editor_and_ask_before_replacing_text(make_dialog, facade):
+    confirm = Confirm(False)
+    dialog = make_dialog(confirm)
+    edit = dialog.persona_edit
+    assert list(dialog.persona_preset_buttons) == [title for title, _ in PERSONA_PRESETS]
+    assert 3 <= len(PERSONA_PRESETS) <= 4
+    # An empty editor is simply filled; the same preset again loses nothing either.
+    dialog.persona_preset_buttons["Турботлива подруга"].click()
+    dialog.persona_preset_buttons["Турботлива подруга"].click()
+    assert confirm.asked == [] and edit.toPlainText() == preset("Турботлива подруга")
+    # Another preset over existing text asks first; "no" keeps the text.
+    dialog.persona_preset_buttons["Дотепна геймерка"].click()
+    assert len(confirm.asked) == 1
+    title, text = confirm.asked[0]
+    assert title == PERSONA_REPLACE_TITLE and "«Дотепна геймерка»" in text and "Ctrl+Z" in text
+    assert edit.toPlainText() == preset("Турботлива подруга")
+    confirm.answer = True
+    dialog.persona_preset_buttons["Дотепна геймерка"].click()
+    assert edit.toPlainText() == preset("Дотепна геймерка")
+    edit.undo()  # Ctrl+Z brings the replaced text back
+    assert edit.toPlainText() == preset("Турботлива подруга")
+    # The user's own words are protected the same way.
+    edit.setPlainText("Мій власний опис")
+    confirm.answer = False
+    dialog.persona_preset_buttons["Фанатка аніме"].click()
+    assert edit.toPlainText() == "Мій власний опис"
+    # A preset is only a starting point: nothing reaches the app before Apply.
+    confirm.answer = True
+    dialog.persona_preset_buttons["Спокійна наставниця"].click()
+    assert facade.applied == []
+    dialog.apply_button.click()
+    assert facade.applied[-1].personality.persona == preset("Спокійна наставниця")
+
+
+def test_presets_are_ready_to_store_and_gender_neutral_about_the_user():
+    for title, text in (*PERSONA_PRESETS, ("placeholder", PERSONA_PLACEHOLDER)):
+        assert 150 <= len(text) <= PERSONA_MAX_CHARS, title
+        assert clean_persona(text.removeprefix("Наприклад: ")) == text.removeprefix("Наприклад: "), title
+        assert "<" not in text and ">" not in text, title
+        # The user speaks in the present tense: no "я втомився / я сама".
+        assert not re.search(r"\bя\s+(?:не\s+)?\w+(?:в|ла|вся|лася)\b", text), title
+        assert not re.search(r"\b(?:сам|сама)\b", text), title
+
+
+def test_permission_texts_follow_the_new_settings():
+    assert "опис її характеру" in PERMISSION_TEXTS[Permission.CLOUD_AI].hint
+    capture = PERMISSION_TEXTS[Permission.SCREEN_CAPTURE].consent_text
+    assert "зі списку дозволених" in capture and "будь-яке вікно, крім приватних" in capture
+    assert "не весь екран" in capture and "приватні програми — ніколи" in capture
+    microphone = PERMISSION_TEXTS[Permission.MICROPHONE].hint
+    assert "слухає постійно" in microphone and "червона крапка" in microphone
+    assert "Міє" not in microphone  # her name is the user's to choose
 
 
 def test_ai_page_is_the_real_one_and_points_to_voice_and_vision(make_dialog):

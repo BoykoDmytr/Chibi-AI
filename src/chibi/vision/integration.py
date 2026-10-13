@@ -5,13 +5,23 @@ the glue the composition root needs, kept out of ``app.py`` so it can be
 tested on its own with fakes:
 
 * **What may be looked at** (``resolve_target``): only the window in front,
-  only if it belongs to an allowed game (``settings.vision.allowed_games``,
-  matched through the games database) or an allowed app
-  (``settings.vision.allowed_processes``), never if the privacy filter calls
-  it private (process name, exe path and - when the user allowed window
-  titles - the title), and never one of our own windows.  The rules are an
-  immutable snapshot swapped on settings changes, because the service also
-  calls the resolver on its worker thread (privacy re-check after capture).
+  never if the privacy filter calls it private (process name, exe path and -
+  when the user allowed window titles - the title), and never one of our own
+  windows.  Which windows depends on ``settings.vision.scope``:
+
+  - ``"allowed"``: an allowed game (``settings.vision.allowed_games``, matched
+    through the games database) or an allowed app
+    (``settings.vision.allowed_processes``);
+  - ``"foreground"``: any window, except Windows' own surfaces (desktop,
+    taskbar, lock screen, Start and search, Task Manager, UAC and credential
+    prompts - :data:`SYSTEM_PROCESSES`) and browsers while window titles may
+    not be read: without the title the privacy filter cannot tell a private
+    tab, a bank or web mail from any other page, so a browser is skipped (and
+    the status says why).
+
+  The rules are an immutable snapshot swapped on settings changes, because the
+  service also calls the resolver on its worker thread (privacy re-check after
+  capture); the window-titles permission is read live.
 * **When** (settings + permissions + events): the mode, interval and analyzer
   come from the settings; a 1 s ``QTimer`` drives ``service.tick()`` only while
   vision can actually run (mode not off, a model configured, capture
@@ -19,12 +29,19 @@ tested on its own with fakes:
   ``CLOUD_VISION`` or the kill switch stops everything at once and forgets
   what she saw; the permission checks themselves are read live from the
   :class:`~chibi.privacy.permissions.PermissionManager` on every step, so they
-  take effect even before the bus delivers the event.
-* **What she does with it**: every observation is published as
-  :class:`~chibi.core.events.VisionObserved`; when the reaction policy says
-  "react", one line goes through the :class:`SpeechComposer` (the AI brain
-  gets the sanitised description via :meth:`latest_observation`).  A request
-  from the user ("подивись на екран") is always answered.
+  take effect even before the bus delivers the event.  With the "foreground"
+  scope in AUTO mode she does not look while the user is away
+  (``UserIdle`` .. ``UserReturned``), and a window that keeps showing the same
+  picture is captured less often.
+* **What she does with it**: every analysed observation that is still allowed
+  when its answer arrives is published as
+  :class:`~chibi.core.events.VisionObserved` (see :meth:`_publish`).  With
+  ``settings.vision.commentary == "events"``, when the reaction policy says
+  "react", one line goes through the :class:`SpeechComposer`; with
+  ``"observer"`` this class never comments on its own - the observer decides
+  from ``VisionObserved``.  The AI brain gets the sanitised description via
+  :meth:`latest_observation`.  A request from the user ("подивись на екран")
+  is always answered here, in both modes.
 * **Memory**: when a game session ends, one ``game_event`` memory with counts
   only ("S.T.A.L.K.E.R. 2: 3 смерті, 1 перемога за сесію") - never a
   description or anything read from the screen.
@@ -39,6 +56,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import dataclasses
 import logging
 import os
 import re
@@ -52,11 +70,13 @@ from typing import Any, Protocol
 from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 
 from chibi.activity.backend import ActivityBackend, ForegroundInfo, NullActivityBackend
+from chibi.activity.classifier import AppCatalog
 from chibi.ai.providers.factory import is_cloud
 from chibi.core.clock import Clock
 from chibi.core.config import AISettings, Settings, VisionSettings
 from chibi.core.event_bus import EventBus
 from chibi.core.events import (
+    ActivityCategory,
     AppShuttingDown,
     GameEnded,
     GameStarted,
@@ -65,16 +85,26 @@ from chibi.core.events import (
     PermissionChanged,
     SettingsChanged,
     SystemLoadChanged,
+    UserIdle,
+    UserReturned,
     VisionObserved,
     VisionStateChanged,
 )
 from chibi.core.worker import SerialWorker
-from chibi.gaming.games_db import GameDatabase, normalize_process, title_from_exe
+from chibi.gaming.games_db import GameDatabase, GameMatch, normalize_process, title_from_exe
 from chibi.personality.reactions import budget_limit, speakable_title
 from chibi.personality.text_uk import normalize as normalize_text
 from chibi.personality.text_uk import plural
 from chibi.privacy.filters import PrivacyFilter
-from chibi.vision.analysis import Observation
+from chibi.privacy.filters import normalize_text as collapse_spaces
+from chibi.vision.analysis import (
+    GAME_SCENES,
+    PRIVATE_SCENES,
+    WORK_EVENTS,
+    WORK_SCENES,
+    Observation,
+    sanitize_description,
+)
 from chibi.vision.analyzer import ProviderFrameAnalyzer, VisionAI
 from chibi.vision.capture_win import CaptureBackend, CaptureError, exclude_from_capture
 from chibi.vision.policy import EVENT_COOLDOWNS, Decision, PolicyConfig, VisionReactionPolicy
@@ -119,14 +149,70 @@ LOOK_REQUEST = re.compile(
 #: Ukrainian reasons shown when vision cannot run (status line, "подивись на екран").
 REASON_OFF = "Бачення екрана вимкнене: увімкни його в Налаштуваннях → «Бачення екрана»."
 REASON_UNSUPPORTED = "Бачення екрана працює лише у Windows."
-REASON_NO_CAPTURE = "Потрібен дозвіл «Знімки дозволених вікон» (Налаштування → «Бачення екрана»)."
+REASON_NO_CAPTURE = "Потрібен дозвіл «Бачити вікна ігор і програм» (Налаштування → «Бачення екрана»)."
 REASON_NO_AI = "Потрібна модель, яка бачить зображення: вибери її на сторінці «AI»."
 REASON_LOCAL_ONLY = "Увімкнено «Лише локальний аналіз», а модель на сторінці «AI» працює в хмарі."
 REASON_NO_CLOUD_VISION = "Хмарній моделі потрібен окремий дозвіл «Хмарний аналіз екрана»."
 REASON_NO_CLOUD_AI = "Хмарній моделі потрібен дозвіл на хмарний AI (сторінка «Приватність»)."
 NOTE_NOTHING_ALLOWED = "Список дозволених ігор і програм порожній — їй поки нема на що дивитися."
-OWN_WINDOW_MESSAGE = "Я бачу лише власне вікно. Перемкнися на гру й попроси ще раз."
+OWN_WINDOW_MESSAGE = "Я бачу лише власне вікно. Перемкнися на гру чи програму й попроси ще раз."
 LOOK_FAILED_MESSAGE = "Не вдалося роздивитися екран. Спробуй ще раз за хвилинку."
+
+SCOPE_ALLOWED = "allowed"
+SCOPE_FOREGROUND = "foreground"
+COMMENTARY_OBSERVER = "observer"
+
+#: Windows' own surfaces: never "what the user is doing", often personal (the lock
+#: and sign-in screens, Start and search, notification and quick-settings flyouts,
+#: the touch keyboard and emoji panel, Task Manager, Settings, UAC and credential
+#: prompts, file pickers).  Explorer is handled apart (see :data:`SHELL_TITLES`).
+SYSTEM_PROCESSES = frozenset({
+    "lockapp.exe", "logonui.exe", "winlogon.exe", "consent.exe", "credentialuibroker.exe",
+    "useraccountcontrolsettings.exe", "startmenuexperiencehost.exe", "searchhost.exe", "searchapp.exe",
+    "searchui.exe", "shellexperiencehost.exe", "shellhost.exe", "textinputhost.exe",
+    "screenclippinghost.exe", "pickerhost.exe", "taskmgr.exe", "systemsettings.exe", "control.exe",
+    "mmc.exe", "smartscreen.exe", "sihost.exe", "dwm.exe", "rundll32.exe", "securityhealthhost.exe",
+    "applicationframehost.exe",
+})
+#: explorer.exe is the desktop ("Program Manager"), the taskbar (no title), Alt+Tab
+#: and File Explorer.  Only a File Explorer window - recognisable by its title, so
+#: only while titles may be read - is something she may look at.
+EXPLORER = "explorer.exe"
+SHELL_TITLES = frozenset({"", "program manager", "task switching", "task view", "перемикання завдань",
+                          "представлення завдань"})
+
+# Why the window in front is not looked at (internal codes).
+SKIP_OWN = "own"  # one of hers: says nothing about the user's window, keeps the last reason
+SKIP_PRIVATE = "private"
+SKIP_SYSTEM = "system"
+SKIP_BROWSER = "browser"
+SKIP_NOT_LISTED = "not_listed"
+SKIP_NOT_GAME = "not_game"
+SKIP_UNKNOWN = "unknown"
+SKIP_AWAY = "away"
+
+#: Status line ("Чекає: ...") for each reason.
+SKIP_NOTES: dict[str, str] = {
+    SKIP_PRIVATE: "вікно на передньому плані приватне — на нього вона не дивиться",
+    SKIP_SYSTEM: "на передньому плані системне вікно (робочий стіл, пошук, блокування, диспетчер "
+                 "завдань чи запит безпеки) — його вона не знімає",
+    SKIP_BROWSER: "на передньому плані браузер, а без дозволу «Читати заголовки вікон» не відрізнити "
+                  "приватну вкладку, банкінг чи пошту, тож браузер вона пропускає",
+    SKIP_NOT_LISTED: "програми на передньому плані немає в списку дозволених",
+    SKIP_NOT_GAME: "в ігровому режимі вона дивиться лише на ігри",
+    SKIP_UNKNOWN: "не вдалося визначити, що за програма на передньому плані",
+    SKIP_AWAY: "тебе немає за комп'ютером, тож вона не дивиться й не витрачає ресурси",
+}
+#: Her answer to "подивись на екран" when the window in front is skipped ("foreground" scope).
+LOOK_SKIP_MESSAGES: dict[str, str] = {
+    SKIP_PRIVATE: "Це вікно приватне — на нього я не дивлюся.",
+    SKIP_SYSTEM: "Це системне вікно Windows — його я не знімаю.",
+    SKIP_BROWSER: "Браузер я не знімаю без дозволу «Читати заголовки вікон»: інакше не відрізню "
+                  "приватну вкладку, банкінг чи пошту.",
+    SKIP_UNKNOWN: "Не розумію, що це за вікно, тож краще не дивитимуся.",
+}
+#: Published observations remembered for :meth:`VisionIntegration.details_for`.
+DETAILS_LIMIT = 16
 
 
 def reactions_per_hour(reaction_frequency: int) -> int:
@@ -178,13 +264,37 @@ class SeenObservation:
 class VisionStatusView:
     mode: str  # VisionSettings.mode
     state: str  # VisionState value
-    app_title: str  # the allowed app being watched ("" if none)
+    app_title: str  # the app being watched ("" if none)
     #: Why vision cannot run now (Ukrainian), "" if it can (or the mode is off).
     blocked: str
     #: The analysing model runs on this PC; None when no model is configured.
     local: bool | None
     #: Extra hint for the page ("" if none).
     note: str = ""
+    scope: str = SCOPE_ALLOWED  # VisionSettings.scope
+    commentary: str = "events"  # VisionSettings.commentary
+    #: Why the window in front is not being looked at (a Ukrainian clause for
+    #: "Чекає: ..."), "" if it is, or if there is nothing to explain.
+    skipped: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationDetails:
+    """What a published :class:`~chibi.core.events.VisionObserved` does not carry,
+    for the observer (:meth:`VisionIntegration.details_for`)."""
+
+    #: The model thinks a friend watching over the shoulder would say something now.
+    interesting: bool
+    #: Commenting risks a spoiler (the event's description is already empty then,
+    #: unless the user allows spoilers).
+    spoiler: bool
+    #: The window is a game the games database knows (or the user listed as one).
+    is_game: bool
+    #: A work window or a work event (code, terminal, document, error, build...).
+    work: bool
+    #: The frame answers the user's own "подивись на екран": she answers it herself,
+    #: the observer must not add a second line.
+    solicited: bool
 
 
 # --- collaborators ------------------------------------------------------------------------------
@@ -263,6 +373,9 @@ class _Rules:
     allowed_processes: frozenset[str]
     own_pid: int
     own_windows: frozenset[int]
+    scope: str = SCOPE_ALLOWED
+    #: Known apps: which ones are browsers, and friendly names ("VS Code").
+    catalog: AppCatalog = dataclasses.field(default_factory=AppCatalog)
 
 
 class VisionIntegration(QObject):
@@ -320,8 +433,13 @@ class VisionIntegration(QObject):
         #: "Лише локальний аналіз" (a snapshot: read by the worker thread too).
         self._local_only = True
         self._high_load = False
+        #: The activity monitor said the user is idle (no UserReturned yet).
+        self._user_away = False
         self._rules = self._build_rules(self._read_settings())
         self._excluded: set[int] = set()
+        #: Why the last window in front (not one of hers) was not looked at ("" = it was).
+        #: Written by the resolver on the main and the worker thread; display only.
+        self._skip = ""
 
         #: (what she saw, process it came from); the process is kept only to forget
         #: an app the moment it becomes private, it is never shown.
@@ -331,9 +449,11 @@ class VisionIntegration(QObject):
         self._count_process: dict[str, str] = {}
         self._last_counted: dict[tuple[str, str], float] = {}
         self._manual_until: float | None = None
-        self._manual_first: Observation | None = None
+        #: A user's request waiting for its confirmation frame: (first frame, window is a game).
+        self._manual_first: tuple[Observation, bool] | None = None
         self._in_request = False
         self._noticed: dict[str, float] = {}
+        self._details: deque[tuple[VisionObserved, ObservationDetails]] = deque(maxlen=DETAILS_LIMIT)
 
         self._service = VisionService(
             post=self._invoker.post,
@@ -349,6 +469,7 @@ class VisionIntegration(QObject):
             on_state=self._on_state,
             on_observation=self._on_observation,
             on_error=self._on_error,
+            still_allowed=self._result_allowed,
         )
 
         self._timer = QTimer(self)
@@ -367,6 +488,8 @@ class VisionIntegration(QObject):
             bus.subscribe(SystemLoadChanged, self._on_load),
             bus.subscribe(GameStarted, self._on_game_started),
             bus.subscribe(GameEnded, self._on_game_ended),
+            bus.subscribe(UserIdle, self._on_user_idle),
+            bus.subscribe(UserReturned, self._on_user_returned),
             bus.subscribe(AppShuttingDown, lambda _event: self.shutdown()),
         ]
         self.reconfigure()
@@ -388,6 +511,8 @@ class VisionIntegration(QObject):
         if self._closed:
             return
         s = self._read_settings()
+        if s.vision.scope != self._rules.scope:
+            self._skip = ""  # a reason from the other scope would mislead
         self._rules = self._build_rules(s)
         self._local_only = s.vision.local_only
         self._forget_private()
@@ -427,6 +552,7 @@ class VisionIntegration(QObject):
             allow_spoilers=s.gaming.hints_and_spoilers,
         )
         self._service.high_load = self._high_load and s.vision.adapt_to_load
+        self._sync_pace(s)
         self._sync_timer()
 
     def request(self) -> bool:
@@ -447,6 +573,8 @@ class VisionIntegration(QObject):
         if info is not None and self._is_own(info, self._rules):
             self._retry_timer.start()
             return True
+        if not self._may_look_at(info):
+            return False
         return self._request_now()
 
     def stop(self) -> None:
@@ -462,6 +590,7 @@ class VisionIntegration(QObject):
         self._seen.clear()
         self._latest = None
         self._manual_first = None
+        self._details.clear()
         self._service.recent.clear()
         self._counts.clear()
         self._count_process.clear()
@@ -490,6 +619,20 @@ class VisionIntegration(QObject):
         """Newest first (in memory only)."""
         return [item for item, _process in reversed(self._seen)]
 
+    def details_for(self, event: VisionObserved) -> ObservationDetails | None:
+        """More about a :class:`VisionObserved` this integration published (the same
+        object, as the bus delivers it), or None if it is not one of the last few."""
+        for published, details in reversed(self._details):
+            if published is event:
+                return details
+        return None
+
+    def screen_data_may_leave(self) -> bool:
+        """Whether what she saw (a description, a scene) may go to the AI provider the
+        app is configured with *now*: always for a local model; for a cloud model only
+        with ``CLOUD_VISION`` and without "Лише локальний аналіз" (main thread)."""
+        return self._screen_data_may_leave()
+
     def game_choices(self) -> list[tuple[str, str]]:
         """(game id, title) of every game the database knows, by title."""
         try:
@@ -505,13 +648,20 @@ class VisionIntegration(QObject):
         state = self._service.state
         watching = state in (VisionState.WATCHING, VisionState.ANALYZING)
         notes = []
-        if s.vision.mode != VisionMode.OFF and not (s.vision.allowed_games or s.vision.allowed_processes):
+        if s.vision.mode != VisionMode.OFF and s.vision.scope == SCOPE_ALLOWED \
+                and not (s.vision.allowed_games or s.vision.allowed_processes):
             notes.append(NOTE_NOTHING_ALLOWED)
         local = None if s.ai.provider == "none" else not is_cloud(s.ai)
+        blocked = self._blocker(s)
+        skipped = ""
+        if s.vision.mode in (VisionMode.AUTO, VisionMode.GAME) and not blocked and state == VisionState.IDLE:
+            skip = SKIP_AWAY if self._service.away else self._skip
+            skipped = SKIP_NOTES.get(skip, "")
         return VisionStatusView(
             mode=s.vision.mode, state=state.value,
             app_title=target.title if target is not None and watching else "",
-            blocked=self._blocker(s), local=local, note=" ".join(notes),
+            blocked=blocked, local=local, note=" ".join(notes),
+            scope=s.vision.scope, commentary=s.vision.commentary, skipped=skipped,
         )
 
     def exclude_windows(self) -> None:
@@ -530,9 +680,7 @@ class VisionIntegration(QObject):
                 log.warning("could not exclude a window from capture (%s)", type(exc).__name__)
         self._excluded = ids
         if frozenset(ids) != self._rules.own_windows:
-            rules = self._rules
-            self._rules = _Rules(rules.privacy, rules.games, rules.allowed_games, rules.allowed_processes,
-                                 rules.own_pid, frozenset(ids))
+            self._rules = dataclasses.replace(self._rules, own_windows=frozenset(ids))
 
     def shutdown(self) -> None:
         """Stop the timers and the worker (<= ~2 s).  Idempotent."""
@@ -567,22 +715,38 @@ class VisionIntegration(QObject):
     def resolve_target(self, info: ForegroundInfo, require_game: bool = False) -> Target | None:
         """What may be captured of the window *info* describes (None = nothing).
         Main or worker thread; fails closed.  ``require_game`` is the service's
-        own filter (GAME mode) and is applied by the service."""
+        own filter (GAME mode) and is applied by the service; here it only
+        explains the skip."""
         try:
-            return self._resolve_with(self._rules, info)
+            target, skip = self._resolve_with(self._rules, info, self._titles_allowed())
         except Exception:
             log.exception("vision target lookup failed")
             return None
+        if skip != SKIP_OWN:  # her own window says nothing about the user's
+            if target is not None and require_game and not target.is_game:
+                skip = SKIP_NOT_GAME
+            self._skip = skip
+        return target
 
     @classmethod
-    def _resolve_with(cls, rules: _Rules, info: ForegroundInfo) -> Target | None:
+    def _resolve_with(cls, rules: _Rules, info: ForegroundInfo,
+                      titles: bool) -> tuple[Target | None, str]:
+        """(target, "") or (None, why not).  *titles*: window titles may be read now."""
         if info is None or not info.hwnd or cls._is_own(info, rules):
-            return None
+            return None, SKIP_OWN
         if rules.privacy.is_private(info):
-            return None
+            return None, SKIP_PRIVATE
         name = normalize_process(info.process_name)
         if not name:
-            return None
+            return None, SKIP_UNKNOWN
+        if rules.scope == SCOPE_FOREGROUND:
+            return cls._any_window(rules, info, name, titles)
+        target = cls._listed(rules, info, name)
+        return (target, "") if target is not None else (None, SKIP_NOT_LISTED)
+
+    @staticmethod
+    def _listed(rules: _Rules, info: ForegroundInfo, name: str) -> Target | None:
+        """The "allowed" scope: games and apps from the user's lists."""
         match = rules.games.match(name, info.exe_path)
         if match is not None and match.game_id in rules.allowed_games:
             return Target(info.hwnd, name, match.title, True)
@@ -593,14 +757,63 @@ class VisionIntegration(QObject):
             return Target(info.hwnd, name, title, match is not None)
         return None
 
+    @classmethod
+    def _any_window(cls, rules: _Rules, info: ForegroundInfo, name: str,
+                    titles: bool) -> tuple[Target | None, str]:
+        """The "foreground" scope: any (non-private) window but Windows' own surfaces,
+        and a browser only while its title can be checked by the privacy filter."""
+        skip = cls._foreground_skip(rules, name, info.title if titles else None, titles)
+        if skip:
+            return None, skip
+        match = cls._game_match(rules, name, info.exe_path)
+        known = rules.catalog.lookup(name)
+        if match is not None:
+            title = match.title
+        elif known is not None:
+            title = known.display_name
+        else:
+            title = title_from_exe(name)
+        return Target(info.hwnd, name, title, match is not None or f"exe:{name}" in rules.allowed_games), ""
+
     @staticmethod
-    def _still_allowed(target: Target, rules: _Rules) -> bool:
+    def _foreground_skip(rules: _Rules, name: str, title: str | None, titles: bool) -> str:
+        """Why a (non-private) window may not be looked at in the "foreground" scope;
+        "" if it may.  *title* is None when it was not (or may not be) read."""
+        if name in SYSTEM_PROCESSES:
+            return SKIP_SYSTEM
+        if name == EXPLORER:
+            if not titles or title is None or collapse_spaces(title).casefold() in SHELL_TITLES:
+                return SKIP_SYSTEM
+            return ""
+        known = rules.catalog.lookup(name)
+        browser = known is not None and known.category is ActivityCategory.BROWSING
+        if browser and (not titles or title is None):
+            return SKIP_BROWSER
+        return ""
+
+    @staticmethod
+    def _game_match(rules: _Rules, name: str, exe_path: str | None) -> GameMatch | None:
+        """A game for the process; a folder/exe-name guess never makes a known app a
+        game (Blender installed through Steam is not one)."""
+        match = rules.games.match(name, exe_path)
+        if match is not None and match.source == "heuristic" and rules.catalog.lookup(name) is not None:
+            return None
+        return match
+
+    @classmethod
+    def _still_allowed(cls, target: Target, rules: _Rules, titles: bool) -> bool:
         """Would *target* still resolve under *rules*?  Same decision as
         :meth:`_resolve_with` from what a target keeps (its process name): the exe
-        path only matters for heuristic matches, whose id is ``exe:<process>``."""
+        path only matters for heuristic matches, whose id is ``exe:<process>``;
+        a window title is never kept, so a window that needs one (a browser,
+        File Explorer) stays allowed only while titles may be read."""
         name = target.process_name
         if rules.privacy.is_private_process(name):
             return False
+        if rules.scope == SCOPE_FOREGROUND:
+            if name == EXPLORER:
+                return titles
+            return not cls._foreground_skip(rules, name, "" if titles else None, titles)
         if name in rules.allowed_processes or f"exe:{name}" in rules.allowed_games:
             return True
         match = rules.games.match(name)
@@ -612,6 +825,21 @@ class VisionIntegration(QObject):
 
     def _capture_allowed(self) -> bool:
         return bool(self._permissions.is_granted(Permission.SCREEN_CAPTURE))
+
+    def _titles_allowed(self) -> bool:
+        """Window titles may be read (any thread)."""
+        return bool(self._permissions.is_granted(Permission.WINDOW_TITLES))
+
+    def _result_allowed(self, target: Target) -> bool:
+        """Main thread, right before an analysed frame becomes something she knows,
+        says or publishes: capture still granted, a cloud model's answer only while
+        cloud vision still is, and the window's app still one she may see."""
+        if self._closed or not self._capture_allowed():
+            return False
+        analyzer = self._analyzer
+        if analyzer is not None and not analyzer.is_local and not self._cloud_allowed():
+            return False
+        return self._still_allowed(target, self._rules, self._titles_allowed())
 
     def _cloud_allowed(self) -> bool:
         """A frame may go to a cloud model (any thread)."""
@@ -657,30 +885,31 @@ class VisionIntegration(QObject):
         self._bus.publish(VisionStateChanged(state=state.value, app_title=title, reason=reason))
 
     def _on_observation(self, observation: Observation, decision: Decision) -> None:
+        """An analysed frame, already re-checked by the service (``_result_allowed``)."""
+        observation = self._clean(observation)
         now = self._clock.monotonic()
         react = decision.action == "react"
         # While a job runs the service keeps its target, so this is the frame's window.
         target = self._service.target
         process = target.process_name if target is not None else ""
+        is_game = target.is_game if target is not None else False
+        manual = self._manual_until is not None and now <= self._manual_until
+        # As an observer she never comments here on her own: the observer decides
+        # from VisionObserved.  What the user asked for is answered either way.
+        speak = react and (manual or not self._observer_mode())
         self._latest = (observation, now, process)
         self._seen.append((SeenObservation(
             app_title=observation.app_title, scene=observation.scene, event=observation.event,
-            confidence=observation.confidence, at=self._clock.now(), reacted=react,
+            confidence=observation.confidence, at=self._clock.now(), reacted=speak,
         ), process))
         self._count(observation, now, process)
-        self._bus.publish(VisionObserved(
-            app_title=observation.app_title, scene=observation.scene, event=observation.event,
-            confidence=observation.confidence, description=observation.description,
-            emotion=observation.suggested_emotion, confirmed=observation.confirmed, react=react,
-        ))
-        manual = self._manual_until is not None and now <= self._manual_until
+        self._publish(observation, react=react, is_game=is_game, solicited=manual)
         if manual and decision.action == "confirm":
             # The service takes a second frame in a few seconds; answer then.
-            self._manual_first = observation
+            self._manual_first = (observation, is_game)
             return
-        game = speakable_title(observation.app_title) if observation.app_title else None
-        variables = {"game": game} if game else {}
-        if react:
+        variables = self._title_variables(observation, is_game)
+        if speak:
             self._end_manual()
             said = self._composer.compose(f"vision.{observation.event}", "vision.generic", solicited=manual,
                                           **variables)
@@ -694,8 +923,37 @@ class VisionIntegration(QObject):
             # An event that still needed its second frame (it never came, or showed
             # something else) is not claimed as certain.
             confirmed = observation.confirmed or not observation.needs_confirmation
-            self._composer.compose(*self._answer_keys(observation, confirmed=confirmed), solicited=True,
-                                   **variables)
+            self._composer.compose(*self._answer_keys(observation, is_game, confirmed=confirmed),
+                                   solicited=True, **variables)
+
+    @staticmethod
+    def _clean(observation: Observation) -> Observation:
+        """The analysis already did this; a different analyzer must not undo it.  The
+        description is sanitised (no links, e-mails, numbers...) and correspondence
+        (chat, e-mail) is never described nor "interesting"."""
+        if observation.scene in PRIVATE_SCENES:
+            return dataclasses.replace(observation, description="", interesting=False)
+        return dataclasses.replace(observation, description=sanitize_description(observation.description))
+
+    def _publish(self, observation: Observation, *, react: bool, is_game: bool, solicited: bool) -> None:
+        """Publish :class:`VisionObserved` for one analysed (and cleaned) frame.
+
+        Only while what she saw may reach the AI provider configured now (the
+        observer and the brain hand it to that provider).  A spoiler's
+        description stays empty unless the user allows spoilers."""
+        if not self._screen_data_may_leave():
+            return
+        hide = observation.spoiler and not self._allow_spoilers
+        event = VisionObserved(
+            app_title=observation.app_title, scene=observation.scene, event=observation.event,
+            confidence=observation.confidence, description="" if hide else observation.description,
+            emotion=observation.suggested_emotion, confirmed=observation.confirmed, react=react,
+        )
+        self._details.append((event, ObservationDetails(
+            interesting=observation.interesting, spoiler=observation.spoiler, is_game=is_game,
+            work=observation.work, solicited=solicited,
+        )))
+        self._bus.publish(event)
 
     def _on_error(self, message: str) -> None:
         user = self._in_request or (self._manual_until is not None
@@ -711,6 +969,13 @@ class VisionIntegration(QObject):
             self.reconfigure()
 
     def _on_permission_changed(self, event: PermissionChanged) -> None:
+        if event.permission in (Permission.WINDOW_TITLES, Permission.APP_METADATA):
+            if not event.granted:
+                if event.permission == Permission.APP_METADATA:
+                    self._user_away = False  # the monitor stops: no UserReturned will come
+                # A browser (or File Explorer) being watched is no longer one she may see.
+                self.reconfigure()
+            return
         if event.permission not in (Permission.SCREEN_CAPTURE, Permission.CLOUD_VISION, Permission.CLOUD_AI):
             return
         if not event.granted:
@@ -722,8 +987,17 @@ class VisionIntegration(QObject):
         self.reconfigure()
 
     def _on_observation_stopped(self, _event: ObservationStopped) -> None:
+        self._user_away = False
         self.stop()
         self.reconfigure()
+
+    def _on_user_idle(self, _event: UserIdle) -> None:
+        self._user_away = True
+        self._sync_pace(self._read_settings())
+
+    def _on_user_returned(self, _event: UserReturned) -> None:
+        self._user_away = False
+        self._sync_pace(self._read_settings())
 
     def _on_load(self, event: SystemLoadChanged) -> None:
         self._high_load = bool(event.high or event.on_battery_saver)
@@ -775,7 +1049,19 @@ class VisionIntegration(QObject):
             allowed_processes=frozenset(normalize_process(p) for p in s.vision.allowed_processes),
             own_pid=self._own_pid,
             own_windows=previous.own_windows if previous is not None else frozenset(),
+            scope=s.vision.scope,
+            catalog=AppCatalog.load(),
         )
+
+    def _observer_mode(self) -> bool:
+        return self._read_settings().vision.commentary == COMMENTARY_OBSERVER
+
+    def _sync_pace(self, s: Settings) -> None:
+        """Any window in AUTO mode: pace like GAME mode, and no frames while the user
+        is away.  The "allowed" scope keeps its fixed pace."""
+        paced = s.vision.scope == SCOPE_FOREGROUND and s.vision.mode == VisionMode.AUTO
+        self._service.paced = paced
+        self._service.away = paced and self._user_away
 
     def _blocker(self, s: Settings) -> str:
         """Why vision cannot run with these settings and permissions ("" = it can, or it is off)."""
@@ -850,7 +1136,24 @@ class VisionIntegration(QObject):
         if info is not None and self._is_own(info, self._rules):
             self._notify(OWN_WINDOW_MESSAGE, user=True)
             return
-        self._request_now()
+        if self._may_look_at(info):
+            self._request_now()
+
+    def _may_look_at(self, info: ForegroundInfo | None) -> bool:
+        """"Подивись на екран" with the "foreground" scope: say exactly why the window
+        in front is skipped.  (The "allowed" scope keeps the service's own answer.)"""
+        if info is None or self._rules.scope != SCOPE_FOREGROUND:
+            return True
+        try:
+            target, skip = self._resolve_with(self._rules, info, self._titles_allowed())
+        except Exception:
+            log.exception("vision target lookup failed")
+            target, skip = None, SKIP_UNKNOWN
+        if target is not None or skip not in LOOK_SKIP_MESSAGES:
+            return True
+        self._skip = skip
+        self._notify(LOOK_SKIP_MESSAGES[skip], user=True)
+        return False
 
     def _expire_manual(self) -> None:
         """A user's request that got no answer in time: answer from its first frame if
@@ -862,15 +1165,25 @@ class VisionIntegration(QObject):
         if first is None:
             self._notify(LOOK_FAILED_MESSAGE, user=True)
             return
-        game = speakable_title(first.app_title) if first.app_title else None
-        self._composer.compose(*self._answer_keys(first, confirmed=False), solicited=True,
-                               **({"game": game} if game else {}))
+        observation, is_game = first
+        self._composer.compose(*self._answer_keys(observation, is_game, confirmed=False), solicited=True,
+                               **self._title_variables(observation, is_game))
 
     def _end_manual(self) -> None:
         self._manual_until = None
         self._manual_first = None
 
-    def _answer_keys(self, observation: Observation, *, confirmed: bool = True) -> tuple[str, ...]:
+    @staticmethod
+    def _title_variables(observation: Observation, is_game: bool) -> dict[str, str]:
+        """``{game}`` for a game, ``{app}`` for any other window ("Бачу гру «VS Code»"
+        would be a lie)."""
+        if not observation.app_title:
+            return {}
+        title = speakable_title(observation.app_title)
+        return {"game": title} if is_game else {"app": title}
+
+    def _answer_keys(self, observation: Observation, is_game: bool = True, *,
+                     confirmed: bool = True) -> tuple[str, ...]:
         """Phrase keys for answering "що ти бачиш?" (the user asked, so she always says something)."""
         keys: list[str] = []
         sure = observation.confidence >= self._min_confidence and confirmed
@@ -879,7 +1192,12 @@ class VisionIntegration(QObject):
             keys.append(f"vision.{observation.event}")
         if observation.event in ("combat", "puzzle") and not spoiler:
             keys.append(f"vision.look.{observation.event}")
-        keys += [f"vision.look.{observation.scene}", "vision.look"]
+        if observation.event in WORK_EVENTS and sure:
+            keys.append(f"vision.look.{observation.event}")
+        keys.append(f"vision.look.{observation.scene}")
+        if observation.scene in WORK_SCENES or (not is_game and observation.scene not in GAME_SCENES):
+            keys.append("vision.look.work")  # "граємо далі" would not fit a document
+        keys.append("vision.look")
         return tuple(keys)
 
     def _count(self, observation: Observation, now: float, process: str) -> None:
@@ -930,6 +1248,7 @@ class VisionIntegration(QObject):
     def _forget(self) -> None:
         self._seen.clear()
         self._latest = None
+        self._details.clear()
         self._counts.clear()
         self._count_process.clear()
         self._last_counted.clear()
@@ -958,16 +1277,19 @@ class VisionIntegration(QObject):
                 self._drop_counted(title)
                 purged = True
         if purged:
+            self._details.clear()
             self._service.recent.clear()  # the model's "previous scene" context
             log.info("forgot what she saw of an app that became private")
 
     def _drop_disallowed_target(self) -> None:
-        """The app being watched became private or left the allowed lists: abandon its
-        frame in flight - a request still queued for the AI never leaves, and an answer
-        never becomes something she knows or says (the service ignores late results)."""
+        """The app being watched became private, left the allowed lists, or is no longer
+        one she may see (the scope changed; window titles were revoked while a browser
+        was in front): abandon its frame in flight - a request still queued for the AI
+        never leaves, and an answer never becomes something she knows or says (the
+        service ignores late results)."""
         target = self._service.target
         try:
-            allowed = target is None or self._still_allowed(target, self._rules)
+            allowed = target is None or self._still_allowed(target, self._rules, self._titles_allowed())
         except Exception:
             log.exception("vision target re-check failed")
             allowed = False

@@ -2,9 +2,10 @@
 
 Design notes - why it works this way:
 
-* **Settings vs. permissions**, as on the AI page.  Mode, interval, the
-  allowed games and apps, the confidence threshold, "Лише локальний аналіз"
-  and the model override are ordinary ``Settings.vision`` fields: edited here
+* **Settings vs. permissions**, as on the AI page.  Mode, what she may see
+  (scope), how she comments, interval, the allowed games and apps, the
+  confidence threshold, "Лише локальний аналіз" and the model override are
+  ordinary ``Settings.vision`` fields: edited here
   and applied with the rest of the dialog through :meth:`VisionPage.collect`.
   The two permissions (window capture, cloud analysis) are not settings: their
   buttons go straight to the facade's :class:`PermissionManager` - granting
@@ -17,7 +18,11 @@ Design notes - why it works this way:
   captured even if listed, and "Що Мія бачила" lives in memory only - the page
   says so where the user makes the choice.  Adding an app the privacy filter
   treats as private is refused with an explanation instead of silently doing
-  nothing.
+  nothing.  Switching to "any window in front" asks first, with the whole
+  truth: one window only, private apps and browsers without window titles
+  skipped, frames in memory only, the cloud only with its own permission, and
+  what it may cost.  The status says what she may see and why the window in
+  front is skipped.
 * The page depends only on :class:`VisionFacade` (``chibi.app.ChibiApp``
   implements it); the view types come from :mod:`chibi.vision.integration`
   and are used by attribute only, so tests can pass any lookalike.
@@ -85,29 +90,66 @@ MODE_CHOICES: tuple[tuple[str, str, str], ...] = (
     ("manual", "Лише за запитом",
      "Дивиться, тільки коли ти просиш: «Подивись на екран» у її меню або «що ти бачиш?» у чаті."),
     ("auto", "Автоматично",
-     "Час від часу поглядає на дозволені ігри й програми, поки вони на передньому плані."),
+     "Час від часу поглядає на вікно на передньому плані, якщо їй можна його бачити (див. нижче)."),
     ("game", "Ігровий режим",
-     "Стежить лише за дозволеними іграми, а коли комп'ютер навантажений, дивиться рідше."),
+     "Стежить лише за іграми, а коли комп'ютер навантажений, дивиться рідше."),
+)
+
+#: (VisionSettings.scope, radio text, one-line explanation) in display order.
+SCOPE_CHOICES: tuple[tuple[str, str, str], ...] = (
+    ("allowed", "Лише дозволені ігри й програми",
+     "Тільки ігри й програми, які ти вибереш у списках нижче."),
+    ("foreground", "Будь-яке вікно на передньому плані, крім приватних",
+     "Гра, код, документ, відео — що завгодно, крім приватних програм і системних вікон Windows. "
+     "Браузер — лише з дозволом «Читати заголовки вікон»."),
+)
+#: (VisionSettings.commentary, radio text, one-line explanation) in display order.
+COMMENTARY_CHOICES: tuple[tuple[str, str, str], ...] = (
+    ("events", "Лише помітні події в іграх",
+     "Реагує на загибель, перемогу, боса й інші яскраві моменти гри. Про роботу мовчить, доки не "
+     "спитаєш «що ти бачиш?»."),
+    ("observer", "Як спостерігач: сама вирішує, коли є що сказати (потрібен AI)",
+     "Стежить і за грою, і за роботою, а заговорює, коли справді є що сказати: помилка в коді, довге "
+     "очікування, вдалий момент у грі. Вирішує AI-модель, тож без неї вона мовчить."),
+)
+
+#: Asked before "Будь-яке вікно на передньому плані" is chosen.
+FOREGROUND_CONSENT: tuple[str, str] = (
+    "Дозволити дивитися на будь-яке вікно?",
+    "Вона зможе поглядати на будь-яке вікно, яке зараз на передньому плані, — гру, код, документ чи "
+    "відео, — а не лише на програми зі списків.\n\n"
+    "• Лише одне вікно на передньому плані: ніколи інші вікна, весь екран чи інші монітори.\n"
+    "• Приватні програми не знімаються ніколи: менеджери паролів, месенджери, пошта, банкінг і твої "
+    "винятки з «Приватності». Системні вікна Windows — теж.\n"
+    "• Браузер — лише з дозволом «Читати заголовки вікон»: так вона розпізнає приватні вкладки, "
+    "банкінг, пошту й вебмесенджери та пропускає їх. Без цього дозволу браузер вона не знімає.\n"
+    "• Кадри аналізуються лише в пам'яті й ніколи не зберігаються.\n"
+    "• З хмарною моделлю кадри йдуть у хмару тільки з дозволом «Хмарний аналіз екрана».\n"
+    "• Якщо AI платний, кожен проаналізований кадр коштує грошей: що частіше вона дивиться, то більше "
+    "витрат. Однакові кадри вона не аналізує вдруге, а ліміти зі сторінки «AI» діють і тут.",
 )
 
 SCENE_NAMES: dict[str, str] = {
     "gameplay": "гра", "menu": "меню", "inventory": "інвентар", "map": "мапа", "dialogue": "діалог",
     "loading": "завантаження", "death_screen": "екран смерті", "victory_screen": "екран перемоги",
-    "cutscene": "заставка", "desktop": "робочий стіл", "other": "щось інше",
+    "cutscene": "заставка", "code": "код", "terminal": "термінал", "document": "документ",
+    "spreadsheet": "таблиця", "browser": "браузер", "video": "відео", "chat": "листування",
+    "email": "пошта", "design": "дизайн", "desktop": "робочий стіл", "other": "щось інше",
 }
 EVENT_NAMES: dict[str, str] = {
     "none": "нічого особливого", "player_death": "загибель", "victory": "перемога",
     "level_up": "новий рівень", "boss_fight": "бій із босом", "combat": "бій", "low_health": "мало здоров'я",
     "loot": "здобич", "achievement": "досягнення", "new_area": "нова локація", "puzzle": "головоломка",
-    "other": "щось цікаве",
+    "error_on_screen": "помилка на екрані", "build_failed": "збірка не вдалася",
+    "tests_passed": "тести пройшли", "waiting": "довге очікування", "other": "щось цікаве",
 }
 
 #: Short names used on this page; the consent texts come from the privacy page.
 PERMISSION_TITLES: dict[Permission, tuple[str, str]] = {
     Permission.SCREEN_CAPTURE: (
-        "Знімки дозволених вікон",
-        "Без цього дозволу вона не бачить нічого. Знімається лише вікно дозволеної гри чи програми, "
-        "яке зараз на передньому плані, — не весь екран.",
+        "Бачити вікна ігор і програм",
+        "Без цього дозволу вона не бачить нічого. Знімається лише одне вікно на передньому плані — "
+        "дозволеної гри чи програми або, якщо вибереш нижче, будь-яке неприватне, — і ніколи не весь екран.",
     ),
     Permission.CLOUD_VISION: (
         "Хмарний аналіз екрана",
@@ -119,9 +161,10 @@ PERMISSION_TITLES: dict[Permission, tuple[str, str]] = {
 FALLBACK_CONSENT: dict[Permission, tuple[str, str]] = {
     Permission.SCREEN_CAPTURE: (
         "Дозволити знімки дозволених вікон?",
-        "Вона зможе час від часу знімати вікно гри чи програми, яку ти додаєш до списку на цій "
-        "сторінці, і реагувати на те, що там відбувається.\n\n"
-        "• Лише вікно дозволеної програми, не весь екран; приватні програми — ніколи.\n"
+        "Вона зможе час від часу знімати вікно, яке зараз на передньому плані, — гру чи програму зі "
+        "списку на цій сторінці або, якщо ти так вибереш, будь-яке неприватне вікно — і реагувати на "
+        "те, що там відбувається.\n\n"
+        "• Лише одне вікно, не весь екран; приватні програми — ніколи.\n"
         "• Кадри не зберігаються: лише зменшена копія в пам'яті на час аналізу.\n"
         "• Хмарній моделі кадри надсилаються тільки з окремим дозволом.\n\n"
         "Відкликати можна будь-коли тут, у «Приватності» або кнопкою «Зупинити все спостереження».",
@@ -207,7 +250,27 @@ def describe_status(view: VisionStatusView, name: str = "Мія") -> tuple[str, 
         return "● На паузі після помилки — спробує ще раз трохи згодом", "warning"
     if view.mode == "manual":
         return f"● Чекає, поки ти попросиш подивитися{where}", "hint"
+    skipped = getattr(view, "skipped", "")
+    if skipped:
+        return f"● Чекає: {skipped}{where}", "hint"
+    if getattr(view, "scope", "allowed") == "foreground":
+        return f"● Чекає, поки на передньому плані з'явиться вікно, яке їй можна бачити{where}", "hint"
     return f"● Чекає: зараз на екрані немає дозволеної гри чи програми{where}", "hint"
+
+
+def describe_scope(view: VisionStatusView) -> str:
+    """What she may see and how she comments, as the app applies it now ("" while off)."""
+    if view.mode == "off":
+        return ""
+    if getattr(view, "scope", "allowed") == "foreground":
+        text = "Бачить будь-яке вікно на передньому плані, крім приватних і системних."
+    else:
+        text = "Бачить лише дозволені ігри й програми зі списків нижче."
+    if getattr(view, "commentary", "events") == "observer":
+        text += " Коментує як спостерігач: сама вирішує, коли є що сказати."
+    else:
+        text += " Коментує лише помітні події в іграх."
+    return text
 
 
 def describe_seen(item: SeenObservation) -> str:
@@ -235,6 +298,14 @@ def consent_for(permission: Permission) -> tuple[str, str]:
     if text is not None and text.consent_title and text.consent_text:
         return text.consent_title, text.consent_text
     return FALLBACK_CONSENT[permission]
+
+
+def _check(group: QButtonGroup, choices: Sequence[tuple[str, str, str]], value: str) -> None:
+    """Check the radio of *value* in *group* (the first one for an unknown value)."""
+    values = [v for v, _text, _hint in choices]
+    button = group.button(values.index(value) if value in values else 0)
+    if button is not None:
+        button.setChecked(True)
 
 
 class VisionFacade(Protocol):
@@ -304,6 +375,9 @@ class VisionPage(QWidget):
         self._choices: list[tuple[str, str]] = self._read_choices()
         self._apps: list[str] = list(settings.vision.allowed_processes)
         self._status_failed = False
+        #: The scope the radios showed before the user's click (to ask, and to undo a "no").
+        self._scope_shown = "allowed"
+        self._setting_scope = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 0, 12, 12)
@@ -315,6 +389,8 @@ class VisionPage(QWidget):
         layout.addWidget(self._build_status_card())
         layout.addWidget(self._build_permissions_card())
         layout.addWidget(self._build_mode_card(settings))
+        layout.addWidget(self._build_scope_card(settings))
+        layout.addWidget(self._build_commentary_card(settings))
         layout.addWidget(self._build_games_card(settings))
         layout.addWidget(self._build_apps_card())
         layout.addWidget(self._build_tuning_card(settings))
@@ -368,6 +444,12 @@ class VisionPage(QWidget):
     def mode(self) -> str:
         return MODE_CHOICES[max(0, self.mode_group.checkedId())][0]
 
+    def scope(self) -> str:
+        return SCOPE_CHOICES[max(0, self.scope_group.checkedId())][0]
+
+    def commentary(self) -> str:
+        return COMMENTARY_CHOICES[max(0, self.commentary_group.checkedId())][0]
+
     def refresh(self) -> None:
         """Re-read what changes outside the page: permissions, status, observations."""
         self._refresh_permissions()
@@ -384,9 +466,13 @@ class VisionPage(QWidget):
         card.body.addWidget(SectionHeader("Зараз"))
         self.status_label = make_label("", "hint")
         self.status_label.setAccessibleName("Стан бачення екрана")
+        self.scope_label = make_label("", "hint")
+        self.scope_label.setAccessibleName("Що вона може бачити зараз")
+        self.scope_label.hide()
         self.note_label = make_label("", "warning")
         self.note_label.hide()
         card.body.addWidget(self.status_label)
+        card.body.addWidget(self.scope_label)
         card.body.addWidget(self.note_label)
         return card
 
@@ -419,6 +505,42 @@ class VisionPage(QWidget):
             explanation.setContentsMargins(28, 0, 0, 4)
             card.body.addWidget(explanation)
         self._set_mode(settings.vision.mode)
+        return card
+
+    def _build_scope_card(self, settings: Settings) -> QWidget:
+        card = Card()
+        card.body.addWidget(SectionHeader("Що вона може бачити"))
+        self.scope_group = QButtonGroup(self)
+        self.scope_group.setExclusive(True)
+        self.scope_buttons: dict[str, QRadioButton] = {}
+        for index, (value, text, hint) in enumerate(SCOPE_CHOICES):
+            radio = QRadioButton(text)
+            self.scope_group.addButton(radio, index)
+            self.scope_buttons[value] = radio
+            card.body.addWidget(radio)
+            explanation = InfoLabel(hint)
+            explanation.setContentsMargins(28, 0, 0, 4)
+            card.body.addWidget(explanation)
+        self._set_scope(settings.vision.scope)
+        # Toggled, not clicked: arrow keys move the choice too.
+        self.scope_group.idToggled.connect(self._on_scope_toggled)
+        return card
+
+    def _build_commentary_card(self, settings: Settings) -> QWidget:
+        card = Card()
+        card.body.addWidget(SectionHeader("Як коментувати"))
+        self.commentary_group = QButtonGroup(self)
+        self.commentary_group.setExclusive(True)
+        self.commentary_buttons: dict[str, QRadioButton] = {}
+        for index, (value, text, hint) in enumerate(COMMENTARY_CHOICES):
+            radio = QRadioButton(text)
+            self.commentary_group.addButton(radio, index)
+            self.commentary_buttons[value] = radio
+            card.body.addWidget(radio)
+            explanation = InfoLabel(hint)
+            explanation.setContentsMargins(28, 0, 0, 4)
+            card.body.addWidget(explanation)
+        self._set_commentary(settings.vision.commentary)
         return card
 
     def _build_games_card(self, settings: Settings) -> QWidget:
@@ -491,7 +613,8 @@ class VisionPage(QWidget):
                         "планка — менше хибних реакцій, але щось вона може пропустити.")
         card.body.addWidget(self.confidence_row)
         adapt = CheckRow("Дивитися рідше, коли комп'ютер навантажений",
-                         "В ігровому режимі: щоб гра не гальмувала через неї.")
+                         "В ігровому режимі й коли вона дивиться на будь-яке вікно: щоб комп'ютер "
+                         "не гальмував через неї.")
         adapt.setChecked(v.adapt_to_load)
         self.adapt_check: QCheckBox = adapt.checkbox
         card.body.addWidget(adapt)
@@ -542,6 +665,8 @@ class VisionPage(QWidget):
 
         return (
             _Field("mode", self.mode, lambda v: self._set_mode(str(v))),
+            _Field("scope", self.scope, lambda v: self._set_scope(str(v))),
+            _Field("commentary", self.commentary, lambda v: self._set_commentary(str(v))),
             _Field("interval_seconds", self.interval_row.value, lambda v: self.interval_row.setValue(int(v))),
             _Field("allowed_games", self._checked_games, self._show_games),
             _Field("allowed_processes", lambda: list(self._apps), self._show_apps),
@@ -573,16 +698,37 @@ class VisionPage(QWidget):
 
     def _show_name(self) -> None:
         self.lead_label.setText(
-            f"За твоїм дозволом {self._name} може поглядати на вікна ігор і програм, які ти вибереш "
-            "нижче, і реагувати на те, що там відбувається: загибель, перемогу, боса.")
+            f"За твоїм дозволом {self._name} може поглядати на вікно на передньому плані — лише на "
+            "дозволені ігри й програми або на будь-яке неприватне вікно, як вибереш нижче, — і "
+            "реагувати на те, що там відбувається.")
         self.seen_header.setText(f"Що {self._name} бачила")
 
     def _set_mode(self, mode: str) -> None:
-        values = [value for value, _text, _hint in MODE_CHOICES]
-        index = values.index(mode) if mode in values else 0
-        button = self.mode_group.button(index)
-        if button is not None:
-            button.setChecked(True)
+        _check(self.mode_group, MODE_CHOICES, mode)
+
+    def _set_scope(self, scope: str) -> None:
+        """Show *scope* without asking (it is the app's value, or the user's "no")."""
+        self._setting_scope = True
+        try:
+            _check(self.scope_group, SCOPE_CHOICES, scope)
+        finally:
+            self._setting_scope = False
+        self._scope_shown = self.scope()
+
+    def _set_commentary(self, commentary: str) -> None:
+        _check(self.commentary_group, COMMENTARY_CHOICES, commentary)
+
+    def _on_scope_toggled(self, index: int, checked: bool) -> None:
+        """The user picked a scope: "any window" only after the honest question."""
+        if self._setting_scope or not checked:
+            return
+        value = SCOPE_CHOICES[index][0] if 0 <= index < len(SCOPE_CHOICES) else "allowed"
+        if value == "foreground" and self._scope_shown != "foreground":
+            title, text = FOREGROUND_CONSENT
+            if not self._confirm(title, text):
+                self._set_scope(self._scope_shown)
+                return
+        self._scope_shown = value
 
     # --- games -------------------------------------------------------------------------------
 
@@ -744,12 +890,16 @@ class VisionPage(QWidget):
             self._status_failed = True
             self.status_label.setText("● Стан бачення зараз невідомий")
             set_style_property(self.status_label, "role", "warning")
+            self.scope_label.hide()
             self.note_label.hide()
             return
         self._status_failed = False
         text, role = describe_status(view, self._name)
         self.status_label.setText(text)
         set_style_property(self.status_label, "role", role)
+        scope = describe_scope(view)
+        self.scope_label.setText(scope)
+        self.scope_label.setVisible(bool(scope))
         self.note_label.setText(view.note)
         self.note_label.setVisible(bool(view.note))
 

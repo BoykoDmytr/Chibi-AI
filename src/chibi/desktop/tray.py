@@ -6,7 +6,8 @@ observation permission is active the icon carries a small green "eye"
 badge and the tooltip says so - the user should never have to wonder
 whether the app is watching.  While the microphone is actually open the
 badge turns red (a "recording" dot) and the tooltip says she is listening;
-while she is looking at a game window the tooltip names it.
+with an always-open microphone the tooltip also says how she listens or why
+the microphone is paused; while she is looking at a window the tooltip names it.
 
 Icons are built from a portrait (rounded face crop) or, without a pack,
 from the vector chibi's face.
@@ -139,6 +140,7 @@ class TrayIcon(QObject):
         self._name = name
         self._observing = False
         self._listening = False
+        self._voice_note = ""
         self._watching = ""
         self._tray = QSystemTrayIcon(self._base_icon, self)
         if menu is not None:
@@ -201,6 +203,15 @@ class TrayIcon(QObject):
         self._listening = listening
         self._refresh()
 
+    def set_voice_note(self, text: str) -> None:
+        """One tooltip line about the always-open microphone: how she listens, or
+        why it is paused ("" = nothing to say, e.g. push-to-talk only)."""
+        text = (text or "").strip()
+        if text == self._voice_note:
+            return
+        self._voice_note = text
+        self._refresh()
+
     def set_watching(self, title: str) -> None:
         """She is looking at the allowed window *title* ("" = not looking)."""
         title = (title or "").strip()
@@ -221,6 +232,8 @@ class TrayIcon(QObject):
         lines = [self._name, OBSERVING_ON if self._observing or self._listening else OBSERVING_OFF]
         if self._listening:
             lines.append(LISTENING)
+        if self._voice_note:
+            lines.append(self._voice_note)
         if self._watching:
             lines.append(WATCHING.format(title=self._watching))
         self._tray.setToolTip("\n".join(lines))

@@ -16,10 +16,13 @@ from PySide6.QtCore import QCoreApplication
 from chibi.ai.secrets import MemorySecretStore
 from chibi.core.config import Settings
 from chibi.core.events import (
+    ActivityCategory,
+    AppInfo,
     AppShuttingDown,
     CharacterInteraction,
     DoNotDisturbChanged,
     Event,
+    ForegroundAppChanged,
     FullscreenChanged,
     InteractionKind,
     Permission,
@@ -42,13 +45,23 @@ from chibi.voice.integration import (
     AZURE_NEEDS_CLOUD,
     AZURE_NO_KEY,
     HOTKEY_WINDOWS_ONLY,
+    LISTENING_NAME,
+    LISTENING_OPEN,
     MIC_NOT_ALLOWED,
+    PAUSED_BY_USER,
+    PAUSED_CALL,
+    PAUSED_DND,
+    PAUSED_FULLSCREEN,
+    PAUSED_PRIVATE,
     PIPER_MODEL_MISSING,
+    REPLY_HOLD_SECONDS,
     STT_MODEL_MISSING,
     STT_OFF,
     TTS_OFF,
     VOICE_MODULE_MISSING,
     VoiceIntegration,
+    VoiceStatus,
+    is_call_app,
 )
 from chibi.voice.models import CATALOG, DEFAULT_TTS_MODEL, DownloadCancelled, DownloadError
 from chibi.voice.stt import STTError, Transcript
@@ -489,10 +502,17 @@ def test_service_options_follow_the_settings(heard):
     rig.change(section="character", end_silence_ms=1200, max_utterance_seconds=30, output_device="Headset")
     service = rig.service
     assert service.prompt == "Аня, привіт."
-    assert service.wake_names[0] == "аня" and "мія" in service.wake_names
+    assert service.standby_prompt == "Розмова українською. Аня слухає."
+    assert "аня" in service.names.weak and "міє" in service.names.strong  # Mia's name still works
     assert service.listen_config.end_silence_ms == 1200
     assert service.listen_config.max_utterance_seconds == 30
-    assert service.wake_config.max_utterance_seconds <= integration_module.WAKE_MAX_SECONDS
+    # The open microphone takes requests as long as push-to-talk does; only clacks are dropped.
+    assert service.wake_config.end_silence_ms == 1200
+    assert service.wake_config.max_utterance_seconds == 30
+    assert service.wake_config.min_speech_ms == 350
+    assert service.follow_up_seconds == 20
+    rig.change(follow_up_seconds=0)
+    assert service.follow_up_seconds == 0
     assert rig.output.device == "Headset"
 
 
@@ -715,7 +735,7 @@ def test_quiet_drops_queued_comments_without_showing_them(rig):
     assert [p.playing for p in rig.published(SpeechPlayback)] == [True, False, True, False]
 
 
-def test_skipping_a_cancelled_line_waits_for_the_service_and_rechecks(rig):
+def test_a_cancelled_comment_is_skipped_before_it_is_ever_spoken(rig):
     posted = []
     rig.voice._post_override = posted.append  # like the queued Qt invoker: runs later
 
@@ -733,12 +753,10 @@ def test_skipping_a_cancelled_line_waits_for_the_service_and_rechecks(rig):
     rig.output.finish()
     deliver()
     rig.worker.run_all()
-    posted.pop(0)()  # the cancelled comment starts playing ...
-    assert rig.output.playing is not None
-    assert len(posted) == 1  # ... and its skip is posted, not run inside the service
-    assert [text for text, _ in shows.calls] == ["відповідь"]
     deliver()
+    assert rig.service.tts.said == ["відповідь"]  # not even synthesised: no blip of sound
     assert rig.output.playing is None and rig.service.state == "idle"
+    assert [text for text, _ in shows.calls] == ["відповідь"]
     # A stale skip (nothing cancelled is playing any more) never cuts an answer.
     rig.voice.route(line("ще відповідь", solicited=True), shows)
     rig.worker.run_all()
@@ -850,7 +868,7 @@ def test_not_understood_and_errors_say_so(heard):
 
 def test_wake_phrase_shows_listening_as_a_bubble_only(heard):
     rig = heard
-    rig.change(wake_phrase_enabled=True)
+    rig.change(listen_mode="name")
     assert rig.service.state == "standby" and rig.mic is not None
     rig.service.stt.text = "Міє!"
     rig.feed(np.concatenate([speech(1.0), silence(1.0)]))
@@ -903,7 +921,7 @@ def test_revoking_the_microphone_closes_it_and_stops_the_hotkey(heard):
 
 def test_kill_switch_closes_the_wake_microphone_and_the_hotkey(heard):
     rig = heard
-    rig.change(wake_phrase_enabled=True)
+    rig.change(listen_mode="name")
     assert rig.mic is not None
     hotkey = rig.hotkey
     rig.permissions.stop_all_observation()
@@ -1050,11 +1068,12 @@ def test_late_hotkey_press_after_revoke_is_ignored(heard):
 
 def test_fullscreen_pauses_the_wake_microphone(heard):
     rig = heard
-    rig.change(wake_phrase_enabled=True)
+    rig.change(listen_mode="name")
     assert rig.mic is not None
     rig.bus.publish(FullscreenChanged(active=True))
     rig.dispatch()
     assert rig.mic is None and rig.service.state == "idle"
+    assert rig.voice.status().pause_reason == PAUSED_FULLSCREEN
     rig.bus.publish(FullscreenChanged(active=False))
     rig.dispatch()
     assert rig.mic is not None
@@ -1244,3 +1263,363 @@ def test_real_threads_marshal_back_to_the_main_thread(bus, permissions, clock, q
         time.sleep(0.01)
     voice.shutdown()
     assert threads == [threading.main_thread()] * 2
+
+
+# --- the open microphone: listen modes and pauses ----------------------------------------------------
+
+
+def say_aloud(rig, text, seconds=1.0):
+    """The user says *text* near the open microphone (the fake recogniser returns it)."""
+    rig.service.stt.text = text
+    rig.feed(np.concatenate([speech(seconds), silence(1.0)]))
+    rig.worker.run_all()
+
+
+def foreground(rig, process="", *, private=False):
+    app = AppInfo.private_app() if private else AppInfo(process_name=process, display_name=process)
+    category = ActivityCategory.PRIVATE if private else ActivityCategory.WORKING
+    rig.bus.publish(ForegroundAppChanged(app=app, category=category, confidence=1.0))
+    rig.dispatch()
+
+
+def test_listen_mode_comes_from_the_settings(heard):
+    rig = heard
+    status = rig.voice.status()
+    assert status.listen_mode == "push" and status.listening_text == "" and rig.mic is None
+    rig.change(listen_mode="name")
+    status = rig.voice.status()
+    assert (status.listen_mode, status.pause_reason, status.listening_text) == ("name", "", LISTENING_NAME)
+    assert rig.service.state == "standby" and rig.mic is not None
+    rig.change(listen_mode="open")
+    assert rig.voice.status().listening_text == LISTENING_OPEN and rig.mic is not None
+    rig.change(listen_mode="push")
+    assert rig.mic is None and rig.service.state == "idle"
+
+
+def test_no_open_microphone_without_the_permission(rig):
+    rig.change(listen_mode="open")
+    assert rig.mic is None
+    status = rig.voice.status()
+    assert status.listen_mode == "push" and status.listening_text == "" and status.pause_reason == ""
+
+
+def test_status_text_defaults():
+    status = VoiceStatus(tts_ready=True, stt_ready=True, tts_reason="", stt_reason="", state="idle",
+                         hotkey="", hotkey_active=False)
+    assert status.listen_mode == "push" and status.pause_reason == "" and status.listening_text == ""
+    paused = VoiceStatus(tts_ready=True, stt_ready=True, tts_reason="", stt_reason="", state="idle",
+                         hotkey="", hotkey_active=False, listen_mode="open", pause_reason=PAUSED_DND)
+    assert paused.listening_text == PAUSED_DND
+
+
+def test_a_request_by_name_becomes_a_transcript_and_is_never_logged(heard, caplog):
+    rig = heard
+    caplog.set_level(logging.DEBUG)
+    rig.change(listen_mode="name")
+    say_aloud(rig, "Слухай, Міє, " + SECRET_TEXT)
+    rig.clock.advance(60)  # long after: the conversation is over
+    say_aloud(rig, "а це не їй, " + SECRET_TEXT)
+    assert [e.text for e in rig.published(VoiceTranscript)] == [SECRET_TEXT[:1].upper() + SECRET_TEXT[1:]]
+    assert "секретний" not in caplog.text
+
+
+def test_her_name_alone_shows_listening_without_saying_it(heard):
+    rig = heard
+    rig.change(listen_mode="open")
+    say_aloud(rig, "Міє!")
+    assert rig.composer.calls == [(("voice.listening",), True)]
+    assert rig.service.state == "listening"
+
+
+def test_do_not_disturb_pauses_the_open_microphone(heard):
+    rig = heard
+    rig.change(listen_mode="name")
+    reasons = []
+    rig.voice._on_change = lambda: reasons.append(rig.voice.status().pause_reason)
+    rig.bus.publish(DoNotDisturbChanged(enabled=True))
+    rig.dispatch()
+    assert rig.mic is None and rig.service.state == "idle"
+    assert rig.voice.status().listening_text == PAUSED_DND
+    assert reasons == [PAUSED_DND]  # the app refreshes the tray / menus
+    assert rig.voice.toggle_listening() == ""  # push-to-talk still works
+    assert rig.service.state == "listening"
+    rig.voice.toggle_listening()  # nothing said
+    assert rig.service.state == "idle"
+    rig.bus.publish(DoNotDisturbChanged(enabled=False))
+    rig.dispatch()
+    assert rig.mic is not None and rig.voice.status().pause_reason == ""
+
+
+def test_do_not_disturb_from_the_settings(heard):
+    rig = heard
+    rig.settings.behavior.do_not_disturb = True
+    rig.change(listen_mode="open")
+    assert rig.mic is None and rig.voice.status().pause_reason == PAUSED_DND
+
+
+def test_private_apps_and_calls_pause_the_open_microphone(heard):
+    rig = heard
+    rig.grant(Permission.APP_METADATA)
+    rig.change(listen_mode="open")
+    foreground(rig, private=True)  # a messenger, mail, a bank, a password manager
+    assert rig.mic is None and rig.voice.status().pause_reason == PAUSED_PRIVATE
+    foreground(rig, "code.exe")
+    assert rig.mic is not None
+    foreground(rig, "Webex.exe")
+    assert rig.mic is None and rig.voice.status().pause_reason == PAUSED_CALL
+    rig.change(pause_in_calls=False)
+    assert rig.mic is not None
+    foreground(rig, private=True)
+    assert rig.mic is None  # private apps: never, whatever the settings say
+    rig.revoke(Permission.APP_METADATA)
+    assert rig.mic is not None  # the app in front is no longer known
+    foreground(rig, private=True)  # queued before the revoke
+    assert rig.mic is not None
+
+
+def test_call_apps():
+    for name in ("Discord.exe", "ms-teams.exe", "Zoom.exe", "ts3client_win64.exe", "slack.exe",
+                 "Telegram.exe"):
+        assert is_call_app(name), name
+    for name in ("code.exe", "", "zoomit.exe", "chrome.exe"):
+        assert not is_call_app(name), name
+
+
+def test_the_user_can_pause_the_open_microphone(heard):
+    rig = heard
+    rig.change(listen_mode="name")
+    rig.voice.set_open_mic_paused(True)
+    assert rig.voice.open_mic_paused and rig.mic is None
+    assert rig.voice.status().pause_reason == PAUSED_BY_USER
+    assert rig.composer.calls == [(("voice.mic_paused",), True)]
+    rig.voice.set_open_mic_paused(True)  # no change: nothing said
+    assert len(rig.composer.calls) == 1
+    assert rig.voice.toggle_listening() == "" and rig.service.state == "listening"
+    rig.voice.toggle_listening()
+    rig.voice.set_open_mic_paused(False)
+    assert rig.mic is not None and rig.voice.status().pause_reason == ""
+    assert rig.composer.calls[-1] == (("voice.mic_resumed",), True)
+
+
+def test_pausing_in_push_mode_is_silent_and_remembered(heard):
+    rig = heard
+    rig.voice.set_open_mic_paused(True, announce=True)
+    assert rig.composer.calls == [] and rig.voice.status().pause_reason == ""
+    rig.change(listen_mode="name")
+    assert rig.mic is None and rig.voice.status().pause_reason == PAUSED_BY_USER
+
+
+def test_revoking_drops_what_the_open_microphone_was_recognising(heard):
+    rig = heard
+    rig.change(listen_mode="open")
+    rig.feed(np.concatenate([speech(1.0), silence(1.0)]))
+    assert rig.worker.jobs  # being recognised
+    rig.revoke(Permission.MICROPHONE)
+    rig.worker.run_all()
+    assert rig.published(VoiceTranscript) == [] and rig.mic is None
+
+
+def test_an_answer_shown_as_text_keeps_the_conversation_going(heard):
+    rig = heard
+    rig.change(listen_mode="name", speak="off")
+    say_aloud(rig, "Міє, привіт")
+    rig.clock.advance(25)  # the model thinks
+    rig.voice.route(line("Привіт! Як ти?", solicited=True), Shows())
+    rig.clock.advance(15)
+    assert rig.service.conversation_open
+    say_aloud(rig, "добре, а ти")
+    assert [e.text for e in rig.published(VoiceTranscript)] == ["Привіт", "добре, а ти"]
+
+
+# --- streamed answers -------------------------------------------------------------------------------
+
+
+class Events:
+    def __init__(self):
+        self.events = []
+
+    def __call__(self, event, seconds):
+        self.events.append((event, seconds))
+
+    @property
+    def texts(self):
+        return [event.text for event, _ in self.events]
+
+
+def test_a_streamed_answer_is_spoken_sentence_by_sentence(rig):
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    assert stream.voiced and not stream.spoken
+    stream.feed("Привіт! Я тут, ")
+    assert rig.service.tts.said == []
+    stream.feed("поруч із тобою. Зараз ")
+    rig.worker.run_all()
+    assert rig.service.tts.said == ["Привіт! Я тут, поруч із тобою."]  # before the model is done
+    assert shown.texts == ["Привіт! Я тут, поруч із тобою."]
+    stream.feed("розповім, що бачу. І ще дещо")
+    rig.worker.run_all()  # synthesised while the first sentence plays
+    assert rig.service.tts.said[-1] == "Зараз розповім, що бачу."
+    stream.finish("Привіт! Я тут, поруч із тобою. Зараз розповім, що бачу. І ще дещо.", "happy", "smile")
+    for _ in range(3):
+        rig.output.finish()
+        rig.worker.run_all()
+    expected = ["Привіт! Я тут, поруч із тобою.", "Зараз розповім, що бачу.", "І ще дещо."]
+    assert shown.texts == expected and rig.service.tts.said == expected  # each exactly once
+    assert all(event.solicited and event.source == "chat" for event, _ in shown.events)
+    assert (shown.events[-1][0].state, shown.events[-1][0].portrait) == ("happy", "smile")
+    assert rig.service.state == "idle"
+
+
+def test_an_answer_she_cannot_voice_is_shown_once_at_the_end(rig):
+    rig.change(speak="off")
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    assert not stream.voiced
+    stream.feed("Привіт! Я тут, поруч із тобою. ")
+    assert shown.events == []
+    stream.finish("Привіт! Я тут, поруч із тобою.", "happy")
+    stream.finish("ще раз")  # ignored
+    assert [(e.text, e.state, seconds) for e, seconds in shown.events] == [
+        ("Привіт! Я тут, поруч із тобою.", "happy", None)]
+    assert rig.service.tts.said == []
+
+
+def test_a_short_answer_is_said_whole_at_the_end(rig):
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    stream.feed("Так!")
+    stream.finish("Так!", "happy")
+    rig.worker.run_all()
+    assert rig.service.tts.said == ["Так!"] and shown.events[0][0].state == "happy"
+
+
+def test_with_nothing_left_at_the_end_only_her_expression_is_shown(rig):
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    stream.feed("Ось і вся моя відповідь. ")
+    rig.worker.run_all()
+    stream.finish("Ось і вся моя відповідь.", "happy", "smile")
+    assert [(e.text, e.state) for e, _ in shown.events] == [("Ось і вся моя відповідь.", "talk"),
+                                                           ("", "happy")]
+    assert rig.service.tts.said == ["Ось і вся моя відповідь."]
+
+
+def test_a_final_text_that_differs_routes_only_what_was_not_said(rig):
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    stream.feed("Перше довге речення тут. Друге речення теж є. ")
+    rig.worker.run_all()
+    stream.finish("Перше довге речення тут.\nДруге речення змінилося. Третє речення.")
+    for _ in range(3):
+        rig.output.finish()
+        rig.worker.run_all()
+    assert shown.texts == ["Перше довге речення тут.", "Друге речення теж є.",
+                           "Друге речення змінилося. Третє речення."]
+
+
+def test_an_aborted_answer_is_never_repeated(rig):
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    stream.feed("Перше довге речення тут. Друге речення теж є. ")
+    rig.worker.run_all()  # the first plays, the second is ready
+    stream.abort()
+    assert rig.output.playing is not None  # what she is saying finishes
+    rig.output.finish()
+    rig.worker.run_all()
+    assert shown.texts == ["Перше довге речення тут."]  # the rest: neither said nor shown
+    assert len(rig.output.volumes) == 1 and rig.service.state == "idle"
+    stream.feed("Ще щось. ")
+    stream.finish("Перше довге речення тут. Друге речення теж є.")
+    assert shown.texts == ["Перше довге речення тут."] and stream.spoken
+
+
+def test_cutting_her_off_mid_answer_shows_the_rest_once_as_text(rig):
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    stream.feed("Перше довге речення тут. Друге речення теж є. ")
+    rig.worker.run_all()
+    rig.bus.publish(CharacterInteraction(kind=InteractionKind.CLICK))
+    rig.dispatch()
+    assert rig.service.state == "idle"
+    stream.feed("Третє речення вже не вголос. ")
+    rig.worker.run_all()
+    assert shown.texts == ["Перше довге речення тут."]  # the rest comes once the answer is complete
+    stream.finish("Перше довге речення тут. Друге речення теж є. Третє речення вже не вголос. Кінець.",
+                  "happy")
+    assert [(e.text, e.state, seconds) for e, seconds in shown.events[1:]] == [
+        ("Друге речення теж є. Третє речення вже не вголос. Кінець.", "happy", None)]
+    assert len(rig.output.volumes) == 1  # only the first sentence was ever played
+
+
+def test_cutting_off_a_finished_answer_shows_what_was_not_heard(rig):
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    stream.feed("Перше довге речення тут. Друге речення теж є. ")
+    stream.finish("Перше довге речення тут. Друге речення теж є. Третє речення.")
+    rig.worker.run_all()
+    rig.voice.interrupt()
+    assert shown.texts == ["Перше довге речення тут.", "Друге речення теж є. Третє речення."]
+
+
+def test_push_to_talk_mid_answer_cuts_it_too(heard):
+    rig = heard
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    stream.feed("Перше довге речення тут. ")
+    rig.worker.run_all()
+    rig.output.finish()  # said; the next sentence is not written yet
+    assert rig.service.state == "speaking" and rig.mic is None
+    rig.hotkey.press()
+    assert rig.service.state == "listening"
+    stream.feed("Друге речення теж є. ")
+    stream.finish("Перше довге речення тут. Друге речення теж є.")
+    assert shown.texts == ["Перше довге речення тут.", "Друге речення теж є."]
+    assert shown.events[-1][1] is None and len(rig.output.volumes) == 1  # shown, not voiced
+
+
+def test_the_microphone_stays_closed_between_sentences(heard):
+    rig = heard
+    rig.change(listen_mode="name")
+    stream = rig.voice.begin_reply(show=Events())
+    stream.feed("Перше довге речення тут. ")
+    rig.worker.run_all()
+    rig.output.finish()
+    assert rig.mic is None and rig.service.state == "speaking"
+    stream.feed("Друге речення теж є. ")
+    rig.worker.run_all()
+    rig.output.finish()
+    assert rig.mic is None
+    stream.finish("Перше довге речення тут. Друге речення теж є.")
+    assert rig.service.state == "standby" and rig.mic is not None
+    states = [e.state for e in rig.published(VoiceStateChanged)]
+    assert states[-3:] == ["standby", "speaking", "standby"]  # no flicker in between
+
+
+def test_a_stalled_answer_reopens_the_microphone(heard):
+    rig = heard
+    rig.change(listen_mode="name")
+    stream = rig.voice.begin_reply(show=Events())
+    stream.feed("Перше довге речення тут. ")
+    rig.worker.run_all()
+    rig.output.finish()
+    rig.voice._check_hold()
+    assert rig.mic is None
+    rig.clock.advance(REPLY_HOLD_SECONDS + 1)
+    rig.voice._check_hold()  # the hold timer
+    assert rig.service.state == "standby" and rig.mic is not None
+    stream.feed("Нарешті друге речення. ")  # late, but still said
+    rig.worker.run_all()
+    assert rig.service.tts.said[-1] == "Нарешті друге речення."
+
+
+def test_an_answer_cut_by_settings_is_shown_not_lost(rig):
+    shown = Events()
+    stream = rig.voice.begin_reply(show=shown)
+    stream.feed("Перше довге речення тут. Друге речення теж є. ")
+    rig.worker.run_all()
+    rig.change(piper_speaker="lada")  # not the user's doing
+    stream.feed("Третє речення вже новим голосом. ")
+    rig.worker.run_all()
+    stream.finish("Перше довге речення тут. Друге речення теж є. Третє речення вже новим голосом.")
+    assert shown.texts[:2] == ["Перше довге речення тут.", "Друге речення теж є."]
+    assert shown.texts[2] == "Третє речення вже новим голосом." and len(shown.texts) == 3

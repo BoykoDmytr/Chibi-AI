@@ -25,17 +25,20 @@ from chibi.core.events import (
     Permission,
     SettingsChanged,
     SystemLoadChanged,
+    UserIdle,
+    UserReturned,
     VisionObserved,
     VisionStateChanged,
 )
-from chibi.gaming.games_db import GameDatabase
+from chibi.gaming.games_db import GameDatabase, title_from_exe
 from chibi.memory.repositories import PermissionRepository
 from chibi.personality.phrases import DEFAULT_PATH, PhraseBank
 from chibi.privacy.permissions import PermissionManager
-from chibi.vision.analysis import Observation
+from chibi.vision.analysis import WORK_EVENTS, WORK_SCENES, Observation
 from chibi.vision.capture_win import Frame
 from chibi.vision.integration import (
     LOOK_FAILED_MESSAGE,
+    LOOK_SKIP_MESSAGES,
     MEMORY_EVENT_FORMS,
     OWN_WINDOW_MESSAGE,
     OWN_WINDOW_RETRY_MS,
@@ -43,6 +46,14 @@ from chibi.vision.integration import (
     REASON_NO_CAPTURE,
     REASON_NO_CLOUD_VISION,
     REASON_OFF,
+    SKIP_AWAY,
+    SKIP_BROWSER,
+    SKIP_NOT_GAME,
+    SKIP_NOT_LISTED,
+    SKIP_NOTES,
+    SKIP_PRIVATE,
+    SKIP_SYSTEM,
+    SYSTEM_PROCESSES,
     VisionIntegration,
     is_look_request,
     reactions_per_hour,
@@ -165,7 +176,8 @@ class FakeMemory:
 
 class H:
     def __init__(self, qapp, db, bus, clock, monkeypatch, *, mode="game", provider="ollama",
-                 allowed_games=("stalker2",), allowed_processes=(), grant=True, local_only=False):
+                 allowed_games=("stalker2",), allowed_processes=(), grant=True, local_only=False,
+                 scope="allowed", commentary="events", titles=False):
         monkeypatch.setattr(permissions_module, "AVAILABLE", frozenset(Permission))
         self.excluded: list[int] = []
         monkeypatch.setattr(integration_module, "exclude_from_capture",
@@ -178,6 +190,8 @@ class H:
         self.settings.vision.allowed_games = list(allowed_games)
         self.settings.vision.allowed_processes = list(allowed_processes)
         self.settings.vision.local_only = local_only
+        self.settings.vision.scope = scope
+        self.settings.vision.commentary = commentary
         self.games = GameDatabase.load()
         self.backend = FakeBackend()
         self.capture = FakeCapture()
@@ -196,6 +210,9 @@ class H:
         bus.subscribe(VisionObserved, self.observed.append)
         if grant:
             self.permissions.grant(Permission.SCREEN_CAPTURE)
+        if titles:
+            self.permissions.grant(Permission.APP_METADATA)
+            self.permissions.grant(Permission.WINDOW_TITLES)
         self.integ = VisionIntegration(
             bus, lambda: self.settings, self.permissions, object(), self.composer, clock,
             games=lambda: self.games, memory=self.memory, quiet=lambda: self.quiet,
@@ -918,3 +935,387 @@ def test_vision_phrases_follow_the_language_rules():
             for hint in ("натисни", "спробуй піти", "ключ від", "відповідь —"):
                 assert hint not in text.lower(), entry["id"]  # no gameplay hints
     assert max(ids.values()) == 1
+
+
+def test_vision_phrases_answer_about_every_work_scene_and_event():
+    bank = PhraseBank.from_dict(json.loads(VISION_FILE.read_text(encoding="utf-8")))
+    keys = [f"vision.look.{name}" for name in (*sorted(WORK_SCENES), *sorted(WORK_EVENTS), "work")]
+    for key in keys:
+        phrases = bank.phrases(key)
+        assert 3 <= len(phrases) <= 5, key
+        assert sum("app" not in p.requires for p in phrases) >= 2, key  # works without a title
+        assert all("game" not in p.requires for p in phrases), key  # never "гра" about a document
+
+
+# --- "foreground" scope: any window in front ------------------------------------------------------------
+
+
+BROWSER_TAB = info("chrome.exe", hwnd=777, title="Документація Python — Google Chrome")
+
+
+def grant_titles(h: H) -> None:
+    h.permissions.grant(Permission.APP_METADATA)
+    h.permissions.grant(Permission.WINDOW_TITLES)
+    h.dispatch()
+
+
+def test_any_window_in_front_resolves_with_a_friendly_name(make):
+    h = make(mode="auto", scope="foreground", allowed_games=("exe:indie.exe",))
+    notepad = h.integ.resolve_target(info("notepad.exe"))
+    assert notepad is not None and (notepad.title, notepad.is_game) == ("Блокнот", False)
+    assert h.integ.resolve_target(info("code.exe")).title == "VS Code"
+    tool = h.integ.resolve_target(info("mytool.exe"))
+    assert tool is not None and (tool.title, tool.is_game) == (title_from_exe("mytool.exe"), False)
+    game = h.integ.resolve_target(GAME)  # a game she knows, listed or not
+    assert game is not None and (game.title, game.is_game) == (TITLE, True)
+    indie = h.integ.resolve_target(info("indie.exe"))
+    assert indie is not None and indie.is_game  # the user's list still says what is a game
+
+
+def test_any_window_never_means_private_own_or_system_windows(make):
+    h = make(mode="auto", scope="foreground")
+    assert h.integ.resolve_target(info("keepass.exe")) is None
+    assert h.integ.resolve_target(info("telegram.exe")) is None
+    assert h.integ.resolve_target(info("code.exe", pid=OWN_PID)) is None
+    h.integ.exclude_windows()
+    assert h.integ.resolve_target(info("code.exe", hwnd=OWN_HWND)) is None
+    for process in ("lockapp.exe", "logonui.exe", "taskmgr.exe", "consent.exe", "searchhost.exe",
+                    "startmenuexperiencehost.exe", "shellexperiencehost.exe", "systemsettings.exe"):
+        assert process in SYSTEM_PROCESSES
+        assert h.integ.resolve_target(info(process)) is None, process
+    h.change("activity", excluded_processes=["notepad.exe"])
+    assert h.integ.resolve_target(info("notepad.exe")) is None  # the user's own exclusions
+
+
+def test_explorer_only_as_a_file_window_and_only_with_titles(make):
+    h = make(mode="auto", scope="foreground")
+    assert h.integ.resolve_target(info("explorer.exe", title="Проєкти")) is None  # title may not be read
+    grant_titles(h)
+    for title in ("Program Manager", "", None):  # the desktop, the taskbar, unknown
+        assert h.integ.resolve_target(info("explorer.exe", title=title)) is None, title
+    target = h.integ.resolve_target(info("explorer.exe", title="Проєкти"))
+    assert target is not None and target.title == "Провідник"
+
+
+def test_browsers_only_while_window_titles_may_be_read(make):
+    h = make(mode="auto", scope="foreground")
+    h.backend.fg = BROWSER_TAB
+    h.step(1)
+    h.step(3)
+    assert h.capture.calls == [] and h.integ.resolve_target(BROWSER_TAB) is None
+    assert h.integ.status_view().skipped == SKIP_NOTES[SKIP_BROWSER]
+    grant_titles(h)
+    h.step(1)
+    h.step(3)
+    assert h.capture.calls == [777] and h.analyzer.calls == ["Google Chrome"]
+    # With titles the privacy filter recognises a bank, mail, a private window.
+    for title in ("Monobank — особистий кабінет", "Вхідні — Gmail", "Нове вікно (інкогніто)", "Telegram Web"):
+        assert h.integ.resolve_target(info("chrome.exe", title=title)) is None, title
+
+
+def test_a_work_window_is_watched_and_published_with_a_sanitised_description(make):
+    h = make(mode="auto", scope="foreground", allowed_games=())
+    assert h.integ.status_view().note == ""  # empty lists do not matter for this scope
+    h.backend.fg = info("code.exe", hwnd=444)
+    h.results = [obs("error_on_screen", "code", description="Помилка в коді, пише ivan@example.com")]
+    h.first_frame()
+    assert h.capture.calls == [444] and h.analyzer.calls == ["VS Code"]
+    assert h.states[-1].app_title == "VS Code"
+    (seen,) = h.observed
+    assert (seen.app_title, seen.scene, seen.event) == ("VS Code", "code", "error_on_screen")
+    assert not seen.react
+    assert seen.description == "Помилка в коді, пише"
+    assert h.composer.calls == []  # a work event is no game event: "events" mode stays silent
+
+
+@pytest.mark.parametrize(("front", "skip"), [
+    (info("keepass.exe"), SKIP_PRIVATE),
+    (info("taskmgr.exe"), SKIP_SYSTEM),
+    (info("chrome.exe"), SKIP_BROWSER),
+])
+def test_status_says_why_the_window_in_front_is_skipped(make, front, skip):
+    h = make(mode="auto", scope="foreground")
+    h.backend.fg = front
+    h.step(1)
+    view = h.integ.status_view()
+    assert (view.scope, view.state, view.skipped) == ("foreground", "idle", SKIP_NOTES[skip])
+    # Her own window (the settings dialog itself) does not hide the reason.
+    h.backend.fg = info("python.exe", pid=OWN_PID, hwnd=5)
+    h.step(1)
+    assert h.integ.status_view().skipped == SKIP_NOTES[skip]
+    h.backend.fg = info("code.exe")
+    h.step(1)
+    view = h.integ.status_view()
+    assert (view.state, view.skipped, view.app_title) == ("watching", "", "VS Code")
+
+
+def test_status_reasons_for_the_lists_and_game_mode(make):
+    h = make(mode="auto")
+    h.backend.fg = info("notepad.exe")
+    h.step(1)
+    view = h.integ.status_view()
+    assert (view.scope, view.skipped) == ("allowed", SKIP_NOTES[SKIP_NOT_LISTED])
+    h.change(scope="foreground", mode="game")
+    assert h.integ.status_view().skipped == ""  # a reason from the other scope is dropped
+    h.step(1)
+    assert h.integ.status_view().skipped == SKIP_NOTES[SKIP_NOT_GAME]
+    h.change(mode="off")
+    assert h.integ.status_view().skipped == ""
+
+
+@pytest.mark.parametrize(("front", "skip"), [
+    (info("keepass.exe"), SKIP_PRIVATE),
+    (info("taskmgr.exe"), SKIP_SYSTEM),
+    (info("chrome.exe"), SKIP_BROWSER),
+])
+def test_request_says_exactly_why_a_window_is_skipped(make, front, skip):
+    h = make(mode="manual", scope="foreground")
+    h.backend.fg = front
+    assert not h.integ.request()
+    assert h.notices == [LOOK_SKIP_MESSAGES[skip]] and h.capture.calls == []
+
+
+def test_revoking_window_titles_drops_a_browser_frame_in_flight(make):
+    h = make(mode="auto", scope="foreground", titles=True)
+    h.backend.fg = BROWSER_TAB
+    analyzer = h.analyzer
+    original = analyzer.analyze
+
+    def analyze(*args):
+        h.permissions.revoke(Permission.WINDOW_TITLES)
+        h.dispatch()
+        return original(*args)
+
+    analyzer.analyze = analyze
+    h.results = [obs("none", "browser", description=SECRET_DESCRIPTION)]
+    h.first_frame()
+    assert h.capture.calls == [777] and analyzer.cancelled >= 1
+    assert h.observed == [] and h.integ.recent_observations() == []
+    h.step(300)
+    assert h.capture.calls == [777]
+
+
+def test_the_last_check_before_publishing_reads_the_titles_permission_live(make):
+    # The answer arrives on the main thread before the bus delivers the revoke.
+    h = make(mode="auto", scope="foreground", titles=True)
+    h.backend.fg = BROWSER_TAB
+    h.step(1)
+    h.clock.advance(3)
+    h.integ.tick()
+    h.worker.run()
+    h.permissions.revoke(Permission.WINDOW_TITLES)
+    h.qapp.processEvents()
+    assert h.integ.recent_observations() == [] and h.integ.latest_observation() is None
+    h.dispatch()
+    assert h.observed == []
+
+
+def test_switching_back_to_the_lists_drops_a_frame_of_an_unlisted_window(make):
+    h = make(mode="auto", scope="foreground", allowed_games=())
+    h.backend.fg = info("code.exe", hwnd=444)
+    analyzer = h.analyzer
+    original = analyzer.analyze
+
+    def analyze(*args):
+        h.change(scope="allowed")
+        return original(*args)
+
+    analyzer.analyze = analyze
+    h.first_frame()
+    assert h.capture.calls == [444] and analyzer.cancelled >= 1
+    assert h.observed == [] and h.integ.recent_observations() == []
+
+
+def test_a_cloud_answer_after_cloud_vision_was_revoked_is_dropped(make):
+    h = make(provider="anthropic")
+    h.permissions.grant(Permission.CLOUD_AI)
+    h.permissions.grant(Permission.CLOUD_VISION)
+    h.dispatch()
+    h.step(1)
+    h.clock.advance(3)
+    h.integ.tick()
+    h.worker.run()
+    assert h.analyzer.calls == [TITLE]
+    h.permissions.revoke(Permission.CLOUD_VISION)
+    h.qapp.processEvents()  # the answer arrives before the bus delivers the revoke
+    assert h.integ.recent_observations() == []
+    h.dispatch()
+    assert h.observed == []
+
+
+def test_nothing_is_published_while_what_she_saw_may_not_reach_the_current_ai(make):
+    h = make(provider="ollama")
+    h.step(1)
+    h.clock.advance(3)
+    h.integ.tick()
+    h.worker.run()
+    h.permissions.grant(Permission.CLOUD_AI)
+    h.settings.ai.provider = "anthropic"  # applied; the settings event is not delivered yet
+    assert not h.integ.screen_data_may_leave()
+    h.dispatch()
+    assert h.observed == []
+
+
+# --- "observer" commentary --------------------------------------------------------------------------------
+
+
+def test_as_an_observer_she_never_comments_on_her_own(make):
+    h = make(commentary="observer")
+    h.results = [obs("player_death", "death_screen")]
+    h.first_frame()
+    h.confirm_frame()
+    last = h.observed[-1]
+    assert last.react and last.confirmed  # the event policy's hint, for the observer
+    assert h.composer.calls == [] and h.spoken == []
+    assert not any(seen.reacted for seen in h.integ.recent_observations())
+    details = h.integ.details_for(last)
+    assert details is not None and details.is_game and not details.work and not details.solicited
+    h.change(commentary="events")  # back to events: she comments again
+    h.results = [obs("victory", "victory_screen")]
+    h.step(300)
+    h.confirm_frame()
+    assert h.composer.calls == [(("vision.victory", "vision.generic"), False, {"game": TITLE})]
+
+
+def test_every_analysed_frame_reaches_the_observer(make):
+    h = make(mode="auto", scope="foreground", commentary="observer")
+    h.backend.fg = info("code.exe", hwnd=444)
+    h.results = [obs("none", "code", description="Пише код"),
+                 obs("tests_passed", "terminal", description="Тести пройшли")]
+    h.first_frame()
+    h.step(31)
+    assert [(o.scene, o.event, o.description) for o in h.observed] == [
+        ("code", "none", "Пише код"), ("terminal", "tests_passed", "Тести пройшли")]
+    for event in h.observed:
+        details = h.integ.details_for(event)
+        assert details is not None and details.work and details.interesting
+        assert not details.is_game and not details.solicited
+    assert h.composer.calls == []
+    assert h.integ.details_for(VisionObserved("VS Code", "code", "none", 0.5)) is None  # not hers
+
+
+def test_as_an_observer_she_still_answers_when_asked(make):
+    h = make(mode="manual", commentary="observer")
+    h.results = [obs("none", "menu")]
+    assert h.integ.request()
+    h.worker.run()
+    h.dispatch()
+    assert h.composer.calls == [(("vision.look.menu", "vision.look"), True, {"game": TITLE})]
+    details = h.integ.details_for(h.observed[-1])
+    assert details is not None and details.solicited  # the observer must not answer it twice
+    h.results = [obs("player_death", "death_screen")]
+    assert h.integ.request()
+    h.worker.run()
+    h.dispatch()
+    h.confirm_frame()
+    assert h.composer.calls[-1] == (("vision.player_death", "vision.generic"), True, {"game": TITLE})
+
+
+def test_published_descriptions_hide_spoilers_and_correspondence(make):
+    h = make(mode="auto", scope="foreground")
+    h.results = [obs("other", "cutscene", description="Лиходій — батько героя", spoiler=True)]
+    h.first_frame()
+    assert h.observed[-1].description == "" and h.integ.details_for(h.observed[-1]).spoiler
+    h.backend.fg = info("notepad.exe", hwnd=555)
+    h.results = [obs("none", "chat", description="Лист від Олени про зустріч")]
+    h.step(1)
+    h.step(3)
+    assert (h.observed[-1].scene, h.observed[-1].description) == ("chat", "")
+    assert not h.integ.details_for(h.observed[-1]).interesting
+    assert h.integ.latest_observation() == "chat/none"  # nor for the brain
+    h.change("gaming", hints_and_spoilers=True)
+    h.integ.clear_history()
+    assert h.integ.details_for(h.observed[-1]) is None  # forgotten with the rest
+
+
+# --- cost: away, pace ---------------------------------------------------------------------------------------
+
+
+def test_no_frames_while_the_user_is_away(make):
+    h = make(mode="auto", scope="foreground")
+    h.backend.fg = info("code.exe", hwnd=444)
+    h.first_frame()
+    assert h.integ.service.paced and h.capture.calls == [444]
+    h.bus.publish(UserIdle(idle_seconds=600.0))
+    h.dispatch()
+    h.step(1)
+    assert h.integ.service.away
+    assert h.integ.status_view().skipped == SKIP_NOTES[SKIP_AWAY]
+    h.step(600)
+    assert h.capture.calls == [444]
+    # A request still works: whoever asks is obviously there.
+    assert h.integ.request()
+    h.worker.run()
+    h.dispatch()
+    assert h.capture.calls == [444, 444]
+    h.bus.publish(UserReturned(away_seconds=600.0))
+    h.dispatch()
+    h.step(1)
+    assert not h.integ.service.away and h.integ.service.state == VisionState.WATCHING
+    h.step(30)  # the regular pace again (the requested frame was just taken)
+    assert len(h.capture.calls) == 3
+
+
+def test_away_and_pace_only_apply_to_any_window_in_auto_mode(make):
+    h = make(mode="auto")
+    h.bus.publish(UserIdle(idle_seconds=600.0))
+    h.dispatch()
+    assert not h.integ.service.away and not h.integ.service.paced  # the lists: as before
+    h.change(scope="foreground")
+    assert h.integ.service.away and h.integ.service.paced
+    h.change(mode="game")
+    assert not h.integ.service.away and not h.integ.service.paced
+    h.change(mode="auto")
+    assert h.integ.service.away
+    h.permissions.grant(Permission.APP_METADATA)
+    h.permissions.revoke(Permission.APP_METADATA)  # the monitor stops: no UserReturned will come
+    h.dispatch()
+    assert not h.integ.service.away
+
+
+# --- answers about work windows -----------------------------------------------------------------------------
+
+
+def test_answers_about_work_windows_name_the_app_not_a_game(make):
+    h = make(mode="manual", scope="foreground")
+    h.backend.fg = info("notepad.exe", hwnd=444)
+    h.results = [obs("none", "document")]
+    assert h.integ.request()
+    h.worker.run()
+    h.dispatch()
+    assert h.composer.calls == [
+        (("vision.look.document", "vision.look.work", "vision.look"), True, {"app": "Блокнот"})]
+
+
+def test_a_work_event_is_named_only_when_the_model_is_sure(make):
+    h = make(mode="manual", scope="foreground")
+    h.backend.fg = info("code.exe", hwnd=444)
+    for confidence in (0.9, 0.3):
+        h.results = [obs("error_on_screen", "code", confidence=confidence)]
+        assert h.integ.request()
+        h.worker.run()
+        h.dispatch()
+    assert [keys for keys, _solicited, _vars in h.composer.calls] == [
+        ("vision.look.error_on_screen", "vision.look.code", "vision.look.work", "vision.look"),
+        ("vision.look.code", "vision.look.work", "vision.look"),
+    ]
+
+
+def test_any_window_frame_in_flight_when_its_app_becomes_private_is_dropped(make):
+    h = make(mode="auto", scope="foreground", commentary="observer")
+    h.backend.fg = info("code.exe", hwnd=444)
+    analyzer = h.analyzer
+    original = analyzer.analyze
+
+    def analyze(*args):
+        h.change("activity", excluded_processes=["code.exe"])
+        return original(*args)
+
+    analyzer.analyze = analyze
+    h.results = [obs("none", "code", description=SECRET_DESCRIPTION)]
+    h.first_frame()
+    assert h.capture.calls == [444] and analyzer.cancelled >= 1
+    assert h.observed == [] and h.integ.latest_observation() is None
+    h.step(300)
+    assert h.capture.calls == [444]
+    assert h.integ.status_view().skipped == SKIP_NOTES[SKIP_PRIVATE]
