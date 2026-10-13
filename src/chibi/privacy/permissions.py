@@ -4,8 +4,8 @@ Privacy is enforced here rather than by UI toggles alone:
 
 * every permission is OFF until the user grants it, and grants are persisted
   with an audit log the user can review;
-* features that do not exist in this version (screen capture, cloud AI,
-  microphone) *cannot* be granted - there is no code path that could use them;
+* a feature that does not exist in a build *cannot* be granted (``AVAILABLE``):
+  there is no code path that could use it;
 * dependent permissions are revoked together with their base
   (window titles need app metadata, cloud vision needs screen capture);
 * ``stop_all_observation`` (the kill switch) revokes every observation
@@ -31,10 +31,8 @@ from chibi.memory.repositories import PermissionRecord, PermissionRepository
 
 log = logging.getLogger(__name__)
 
-#: Permissions whose feature exists in this build.
-AVAILABLE: frozenset[Permission] = frozenset(
-    {Permission.APP_METADATA, Permission.WINDOW_TITLES, Permission.CLOUD_AI}
-)
+#: Permissions whose feature exists in this build (all of them since Phase 4).
+AVAILABLE: frozenset[Permission] = frozenset(Permission)
 
 #: permission -> permission it requires
 REQUIRES: dict[Permission, Permission] = {

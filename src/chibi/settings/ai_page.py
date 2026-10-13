@@ -645,16 +645,19 @@ class AIPage(QWidget):
 
     @staticmethod
     def _build_later_card() -> QWidget:
+        """Pointers to the voice and vision pages (they need the same provider)."""
         card = Card()
-        card.body.addWidget(SectionHeader("Згодом"))
-        for title, hint, phase in (
-            ("Зір", "За окремим дозволом вона зможе бачити, що відбувається на екрані.", 3),
-            ("Голос", "Розпізнавання мовлення та озвучення її відповідей.", 4),
+        card.body.addWidget(SectionHeader("Також"))
+        for title, hint, where in (
+            ("Голос", "Озвучення її реплік і розмова голосом (розпізнавання працює на цьому ПК).",
+             "розділ «Голос»"),
+            ("Бачення екрана", "За окремим дозволом вона бачить вікна дозволених ігор і реагує на події. "
+             "Аналізує ця ж модель, якщо вона вміє працювати із зображеннями.", "розділ «Бачення екрана»"),
         ):
             row = QHBoxLayout()
             row.addWidget(make_label(title, "value", wrap=False))
             row.addStretch(1)
-            row.addWidget(make_label(f"з'явиться у фазі {phase}", "pill", wrap=False))
+            row.addWidget(make_label(where, "pill", wrap=False))
             card.body.addLayout(row)
             card.body.addWidget(InfoLabel(hint))
         return card

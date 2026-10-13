@@ -152,14 +152,37 @@ PERMISSION_TEXTS: dict[Permission, PermissionText] = {
         ),
     ),
     Permission.SCREEN_CAPTURE: PermissionText(
-        title="Бачити екран",
-        hint="Щоб розуміти, що відбувається на екрані. Лише за твоїм окремим дозволом.",
-        phase=3,
+        title="Бачити вікна дозволених ігор і програм",
+        hint=(
+            "Зрідка знімає вікно гри чи програми, яку ти сам дозволив у «Бачення екрана» (не весь екран "
+            "і ніколи — приватні програми), щоб вона могла реагувати на те, що там відбувається. Знімки "
+            "живуть лише в пам'яті кілька секунд і ніколи не записуються на диск. Без окремого дозволу "
+            "нижче їх аналізує лише локальна модель."
+        ),
+        consent_title="Дозволити бачити вікна дозволених ігор?",
+        consent_text=(
+            "Вона зможе час від часу знімати вікно гри або програми, яку ти сам додав до списку в "
+            "налаштуваннях «Бачення екрана», і реагувати на те, що там відбувається.\n\n"
+            "• Лише вікно дозволеної програми, не весь екран; приватні програми — ніколи.\n"
+            "• Знімки не зберігаються: тільки зменшена копія в пам'яті на час аналізу.\n"
+            "• Поки знімання ввімкнене, біля неї та в треї видно індикатор.\n"
+            "• Хмарній моделі кадри надсилаються лише з окремим дозволом.\n\n"
+            "Відкликати можна будь-коли тут або кнопкою «Зупинити все спостереження»."
+        ),
     ),
     Permission.CLOUD_VISION: PermissionText(
-        title="Надсилати знімки екрана хмарному AI",
-        hint="Для розпізнавання зображення хмарною моделлю. Потребує дозволу «Бачити екран».",
-        phase=3,
+        title="Надсилати кадри дозволених вікон хмарному AI",
+        hint=(
+            "Щоб кадр аналізувала хмарна модель (Claude або OpenAI-сумісна). Кадр зменшується до "
+            "1024 пікселів і не зберігається ні тут, ні в нас. Потребує дозволу «Бачити вікна…»."
+        ),
+        consent_title="Надсилати кадри хмарному AI?",
+        consent_text=(
+            "Зменшені кадри вікна дозволеної гри чи програми надсилатимуться твоєму хмарному "
+            "AI-провайдеру для аналізу. На кадрі може бути видно все, що є в цьому вікні.\n\n"
+            "Додаток їх не зберігає; що робить із ними провайдер, визначають його умови.\n\n"
+            "Без цього дозволу аналіз працює лише з локальною моделлю (наприклад, Ollama)."
+        ),
     ),
     Permission.CLOUD_AI: PermissionText(
         title="Надсилати текст розмов хмарному AI",
@@ -174,8 +197,18 @@ PERMISSION_TEXTS: dict[Permission, PermissionText] = {
     ),
     Permission.MICROPHONE: PermissionText(
         title="Слухати мікрофон",
-        hint="Для голосових розмов.",
-        phase=4,
+        hint=(
+            "Для розмов голосом. Мікрофон вмикається лише коли ти натискаєш клавішу чи кнопку мікрофона "
+            "(або, якщо ти ввімкнеш експериментальну активацію за іменем, чекає на «Міє…»). Мовлення "
+            "розпізнається на цьому ПК, звук не зберігається і нікуди не надсилається."
+        ),
+        consent_title="Дозволити слухати мікрофон?",
+        consent_text=(
+            "Вона зможе чути тебе, коли ти натискаєш клавішу розмови або кнопку мікрофона.\n\n"
+            "• Розпізнавання працює локально, звук нікуди не надсилається й не записується.\n"
+            "• Поки мікрофон відкритий, видно індикатор «слухаю».\n\n"
+            "Відкликати можна будь-коли тут або кнопкою «Зупинити все спостереження»."
+        ),
     ),
 }
 
@@ -557,11 +590,8 @@ class SettingsDialog(QDialog):
         self.activity_unsupported_label.hide()
         perms.body.addWidget(self.activity_unsupported_label)
         self.permission_checks: dict[Permission, QCheckBox] = {}
-        for permission in (Permission.APP_METADATA, Permission.WINDOW_TITLES, Permission.CLOUD_AI):
-            perms.body.addWidget(self._permission_row(permission))
-        perms.body.addSpacing(4)
-        perms.body.addWidget(SectionHeader("Згодом"))
-        for permission in (Permission.SCREEN_CAPTURE, Permission.CLOUD_VISION, Permission.MICROPHONE):
+        for permission in (Permission.APP_METADATA, Permission.WINDOW_TITLES, Permission.SCREEN_CAPTURE,
+                           Permission.CLOUD_VISION, Permission.MICROPHONE, Permission.CLOUD_AI):
             perms.body.addWidget(self._permission_row(permission))
         layout.addWidget(perms)
 

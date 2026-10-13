@@ -15,7 +15,6 @@ from chibi.settings.settings_dialog import (
     normalize_process_name,
 )
 
-UNAVAILABLE = (Permission.SCREEN_CAPTURE, Permission.CLOUD_VISION, Permission.MICROPHONE)
 
 
 class Confirm:
@@ -440,20 +439,31 @@ def test_window_titles_disabled_until_app_metadata_granted(make_dialog, permissi
     assert not titles.isChecked() and not titles.isEnabled()
 
 
-def test_unavailable_permissions_are_shown_disabled_with_their_phase(make_dialog):
+def test_every_permission_is_a_real_toggle_with_consent_text(make_dialog):
     dialog = make_dialog(Confirm(True))
-    for permission in UNAVAILABLE:
-        box = dialog.permission_checks[permission]
-        assert not box.isEnabled() and not box.isChecked()
-    assert {p: PERMISSION_TEXTS[p].phase for p in UNAVAILABLE} == {
-        Permission.SCREEN_CAPTURE: 3, Permission.CLOUD_VISION: 3, Permission.MICROPHONE: 4}
-    text = labels_text(page_widget(dialog, "privacy"))
-    for phase in (3, 4):
-        assert f"з'явиться у фазі {phase}" in text
-    assert "з'явиться у фазі 2" not in text
-    # cloud AI exists now: a real, enabled toggle
-    assert PERMISSION_TEXTS[Permission.CLOUD_AI].phase is None
-    assert dialog.permission_checks[Permission.CLOUD_AI].isEnabled()
+    for permission in Permission:
+        text = PERMISSION_TEXTS[permission]
+        assert text.phase is None
+        assert text.consent_title and text.consent_text, permission
+        assert permission in dialog.permission_checks
+    # Independent permissions can be toggled; dependents wait for their base.
+    for permission in (Permission.APP_METADATA, Permission.SCREEN_CAPTURE, Permission.MICROPHONE,
+                       Permission.CLOUD_AI):
+        assert dialog.permission_checks[permission].isEnabled()
+    assert not dialog.permission_checks[Permission.CLOUD_VISION].isEnabled()
+    assert "з'явиться у фазі" not in labels_text(page_widget(dialog, "privacy"))
+
+
+def test_cloud_vision_needs_screen_capture_first(make_dialog, permissions):
+    dialog = make_dialog(Confirm(True))
+    cloud = dialog.permission_checks[Permission.CLOUD_VISION]
+    dialog.permission_checks[Permission.SCREEN_CAPTURE].click()
+    assert permissions.is_granted(Permission.SCREEN_CAPTURE)
+    assert cloud.isEnabled()
+    cloud.click()
+    assert permissions.is_granted(Permission.CLOUD_VISION)
+    dialog.permission_checks[Permission.SCREEN_CAPTURE].click()
+    assert not permissions.is_granted(Permission.CLOUD_VISION)
 
 
 def test_granting_cloud_ai_requires_explicit_consent(make_dialog, permissions):

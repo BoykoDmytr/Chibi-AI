@@ -555,13 +555,13 @@ def test_status_failure_is_logged_once(make_page, facade, caplog):
     assert len([r for r in caplog.records if "AI status" in r.getMessage()]) == 1
 
 
-def test_later_features_are_labelled_honestly(make_page):
+def test_voice_and_vision_are_pointed_to(make_page):
     from PySide6.QtWidgets import QLabel
 
     page = make_page()
     text = "\n".join(label.text() for label in page.findChildren(QLabel))
-    assert "з'явиться у фазі 3" in text and "з'явиться у фазі 4" in text
-    assert "Зір" in text and "Голос" in text
+    assert "розділ «Голос»" in text and "розділ «Бачення екрана»" in text
+    assert "з'явиться у фазі" not in text
 
 
 def test_switching_provider_clears_a_typed_key(make_page, facade):

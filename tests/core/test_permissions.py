@@ -2,6 +2,8 @@ import threading
 
 import pytest
 
+import chibi.privacy.permissions as permissions_module
+
 from chibi.core.event_bus import EventBus
 from chibi.core.events import ObservationStopped, Permission, PermissionChanged
 from chibi.memory.repositories import PermissionRepository
@@ -31,14 +33,21 @@ def test_grant_persists_and_announces(db, clock):
     assert PermissionManager(PermissionRepository(db)).is_granted(Permission.APP_METADATA)
 
 
-def test_unavailable_features_cannot_be_granted(manager):
+def test_every_feature_is_available_since_phase_4():
+    assert set(Permission) <= permissions_module.AVAILABLE
+
+
+def test_unavailable_features_cannot_be_granted(manager, monkeypatch):
+    # A build without a feature (e.g. a stripped one) must refuse its permission.
+    monkeypatch.setattr(permissions_module, "AVAILABLE", frozenset({Permission.APP_METADATA}))
     for p in (Permission.SCREEN_CAPTURE, Permission.CLOUD_VISION, Permission.MICROPHONE):
         with pytest.raises(PermissionUnavailableError):
             manager.grant(p)
         assert not manager.is_granted(p)
 
 
-def test_stored_grant_for_unavailable_feature_is_ignored(db):
+def test_stored_grant_for_unavailable_feature_is_ignored(db, monkeypatch):
+    monkeypatch.setattr(permissions_module, "AVAILABLE", frozenset({Permission.APP_METADATA}))
     PermissionRepository(db).save(Permission.MICROPHONE, True, 1.0)
     assert not PermissionManager(PermissionRepository(db)).is_granted(Permission.MICROPHONE)
 
