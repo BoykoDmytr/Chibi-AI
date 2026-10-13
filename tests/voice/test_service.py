@@ -7,6 +7,7 @@ from chibi.voice.audio_io import AudioUnavailable
 from chibi.voice.service import Outcome, VoiceService, VoiceState, VoiceWorker, match_wake
 from chibi.voice.stt import STTError, Transcript
 from chibi.voice.tts import AudioClip, TTSError
+from chibi.voice.vad import VADConfig
 
 SR = 16_000
 
@@ -301,6 +302,31 @@ def test_no_speech_timeout_closes_the_microphone():
     assert h.results == [("", "no_speech")]
     assert not h.service.microphone_open
     assert h.service.state == VoiceState.IDLE
+
+
+def test_hold_to_talk_keeps_listening_through_a_pause_until_released():
+    h = Harness()
+    assert h.service.listen(hold=True)
+    h.feed(np.concatenate([speech(1.0), silence(1.5), speech(1.0)]))  # a pause to think
+    assert h.service.state == VoiceState.LISTENING and h.service.microphone_open
+    h.feed(silence(8.0))  # silent, the key still held: no "nothing heard" yet
+    assert h.service.state == VoiceState.LISTENING and h.results == []
+    h.service.stop_listening()  # the key let go
+    assert h.service.state == VoiceState.TRANSCRIBING
+    h.worker.run_all()
+    assert h.stt.calls[0][0] > 3.0 * SR  # both parts, the pause between them too
+    assert h.results == [("Привіт, Міє", "ok")]
+
+
+def test_hold_to_talk_is_still_bounded():
+    h = Harness()
+    h.service.listen_config = VADConfig(max_utterance_seconds=5.0)
+    h.service.listen(hold=True)
+    h.feed(silence(6.0))  # the release never arrived: the microphone closes anyway
+    assert h.results == [("", "no_speech")] and not h.service.microphone_open
+    h.service.listen(hold=True)
+    h.feed(np.concatenate([speech(0.8), silence(0.3)] * 6))  # talking on past the length limit
+    assert h.service.state == VoiceState.TRANSCRIBING and not h.service.microphone_open
 
 
 def test_not_understood_and_errors():

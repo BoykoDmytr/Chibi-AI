@@ -383,6 +383,11 @@ def test_settings_feed_the_policy(make):
     assert h.integ.service.policy.config.reactions_per_hour == 4
     h.change("behavior", max_unsolicited_per_hour=0)
     assert h.integ.service.policy.config.reactions_per_hour == 0
+    # The shared budget is scaled by "how often she comments": 6 x 0.4 -> 2 lines an hour,
+    # and what she sees must not get more than that on its own.
+    h.change("behavior", max_unsolicited_per_hour=6)
+    h.change("personality", commentary_frequency=0)
+    assert h.integ.service.policy.config.reactions_per_hour == 2
 
 
 def test_spoken_reactions_count_against_the_shared_budget(make):
@@ -507,6 +512,50 @@ def test_an_app_that_becomes_private_is_forgotten(make):
     assert len(h.integ.service.recent) == 0
     end_session(h)
     assert h.memory.added == []  # its counts went too
+
+
+@pytest.mark.parametrize("section, values", [
+    ("activity", {"excluded_processes": ["stalker2-win64-shipping.exe"]}),  # made private
+    ("vision", {"allowed_games": []}),  # taken off the allowed list
+])
+def test_a_frame_in_flight_when_its_app_stops_being_allowed_is_dropped(make, section, values):
+    # The model is still looking at the frame when the user changes their mind:
+    # the request is abandoned and the answer never becomes something she knows or says.
+    h = make(mode="auto")
+    analyzer = h.analyzer
+    original = analyzer.analyze
+
+    def analyze(*args):
+        h.change(section, **values)
+        return original(*args)
+
+    analyzer.analyze = analyze
+    h.results = [obs("victory", "victory_screen", description=SECRET_DESCRIPTION)]
+    h.first_frame()
+    assert h.capture.calls
+    assert h.observed == [] and h.composer.calls == []
+    assert h.integ.recent_observations() == [] and h.integ.latest_observation() is None
+    assert analyzer.cancelled >= 1  # a request still queued for the AI never leaves
+    h.step(300)
+    assert len(h.capture.calls) == 1
+
+
+def test_what_she_saw_reaches_a_cloud_brain_only_under_the_cloud_vision_rules(make):
+    # Seen by a local model; then the AI page switches to a cloud provider (applied at
+    # once, the settings event still queued).  The description is screen content: it
+    # follows the same rules as a frame.
+    h = make(provider="ollama")
+    h.first_frame()
+    assert h.integ.latest_observation() == "gameplay/none: Гравець біжить полем"
+    h.permissions.grant(Permission.CLOUD_AI)
+    h.settings.ai.provider = "anthropic"
+    assert h.integ.latest_observation() is None  # no CLOUD_VISION
+    h.permissions.grant(Permission.CLOUD_VISION)
+    assert h.integ.latest_observation() is not None
+    h.settings.vision.local_only = True
+    assert h.integ.latest_observation() is None
+    h.settings.ai.provider = "ollama"
+    assert h.integ.latest_observation() is not None
 
 
 # --- game memory ------------------------------------------------------------------------------------
@@ -675,6 +724,19 @@ def test_request_waits_for_the_confirmation_frame(make):
     assert h.composer.calls == []
     h.confirm_frame()
     assert h.composer.calls == [(("vision.player_death", "vision.generic"), True, {"game": TITLE})]
+
+
+def test_request_whose_confirmation_frame_disagrees_is_answered_at_once(make):
+    h = make(mode="manual")
+    h.results = [obs("player_death", "death_screen"), obs("victory", "victory_screen")]
+    assert h.integ.request()
+    h.worker.run()
+    h.dispatch()
+    h.confirm_frame()
+    # Answered now (not a minute later), and never as if either event were certain.
+    assert h.composer.calls == [(("vision.look.victory_screen", "vision.look"), True, {"game": TITLE})]
+    h.step(200)
+    assert len(h.composer.calls) == 1 and h.notices == []
 
 
 def test_request_with_her_own_window_in_front_retries_once(make):

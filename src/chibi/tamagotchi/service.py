@@ -314,7 +314,10 @@ class TamagotchiService:
     def _grant_daily_bonus(self) -> None:
         """First start of the app on a calendar day: a little friendship XP."""
         today = _local_day(self._clock.now())
-        if self._repo.get(KEY_BONUS_DAY) == today:
+        last = self._repo.get(KEY_BONUS_DAY)
+        # Only a later day counts: a clock turned back must not pay a day twice
+        # (ISO dates compare as strings).
+        if isinstance(last, str) and today <= last:
             return
         self.needs = self._model.daily_bonus(self.needs)
         log.info("first start today: friendship bonus")

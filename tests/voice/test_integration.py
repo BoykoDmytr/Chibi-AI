@@ -640,6 +640,25 @@ def test_clicking_her_while_she_speaks_interrupts(rig, kind):
     assert [p.playing for p in rig.published(SpeechPlayback)] == [True, False]
 
 
+def test_cutting_her_off_never_loses_an_answer_waiting_behind(heard):
+    rig = heard
+    comment, answer = Shows(), Shows()
+    rig.voice.route(line("коментар"), comment)
+    rig.voice.route(line("відповідь", solicited=True), answer)
+    rig.worker.run_all()
+    rig.bus.publish(CharacterInteraction(kind=InteractionKind.CLICK))
+    rig.dispatch()
+    assert comment.calls == [("коментар", pytest.approx(1.0))]  # her own line: cut off
+    assert answer.calls == [("відповідь", None)]  # not heard yet: shown as text
+    rig.voice.route(line("друга відповідь", solicited=True), answer)
+    rig.worker.run_all()
+    rig.voice.route(line("третя відповідь", solicited=True), answer)
+    rig.hotkey.press()  # push-to-talk cuts her off too
+    assert answer.calls == [("відповідь", None), ("друга відповідь", pytest.approx(1.0)),
+                            ("третя відповідь", None)]
+    assert rig.service.tts.said == ["коментар", "друга відповідь"]
+
+
 def test_other_interactions_do_not_interrupt(rig):
     rig.voice.route(line(), Shows())
     rig.worker.run_all()
@@ -960,6 +979,18 @@ def test_hotkey_hold_mode(heard):
     rig.feed(speech(0.6))
     hotkey.release()
     assert rig.service.state == "transcribing"
+
+
+def test_hotkey_hold_mode_listens_while_the_key_is_held(heard):
+    rig = heard
+    rig.change(ptt_mode="hold")
+    rig.hotkey.press()
+    rig.feed(np.concatenate([speech(1.0), silence(1.5), speech(1.0)]))  # a pause mid-sentence
+    assert rig.service.state == "listening" and rig.mic is not None  # not cut off: still held
+    rig.hotkey.release()
+    assert rig.service.state == "transcribing" and rig.mic is None
+    rig.worker.run_all()
+    assert [e.text for e in rig.published(VoiceTranscript)] == [SECRET_TEXT]
 
 
 def test_hotkey_press_interrupts_her(heard):

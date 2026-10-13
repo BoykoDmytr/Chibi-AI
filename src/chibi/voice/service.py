@@ -33,7 +33,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 
@@ -176,6 +176,8 @@ class VoiceService:
         #: Background level learnt by the last session (see EnergyVAD).
         self._noise_floor: float | None = None
         self._listen_started = 0.0
+        #: No-speech timeout of the current listening session (longer for hold-to-talk).
+        self._listen_timeout = self.no_speech_timeout
         self._timeout_posted = False
         self._last_level_post = 0.0
         self._wake_check_pending = False
@@ -388,8 +390,10 @@ class VoiceService:
         else:
             self.listen(source)
 
-    def listen(self, source: str = "hotkey") -> bool:
-        """Open the microphone for one utterance; interrupts her speech."""
+    def listen(self, source: str = "hotkey", *, hold: bool = False) -> bool:
+        """Open the microphone for one utterance; interrupts her speech.  With
+        *hold* (hold-to-talk) a pause does not end the utterance: letting go of
+        the key (:meth:`stop_listening`) does, or the length limit."""
         if not self.can_listen:
             self._error("Розпізнавання мовлення не налаштоване (Налаштування → Голос).")
             return False
@@ -402,9 +406,17 @@ class VoiceService:
         self._close_input()
         self._listen_gen += 1
         gen = self._listen_gen
+        config, timeout = self.listen_config, self.no_speech_timeout
+        if hold:
+            # Like a walkie-talkie: the user thinks aloud while holding the key.
+            # Still bounded, should the release never arrive.
+            longest_ms = round(config.max_utterance_seconds * 1000)
+            config = replace(config, end_silence_ms=longest_ms + config.frame_ms)
+            timeout = max(timeout, config.max_utterance_seconds)
         with self._vad_lock:
-            self._vad = EnergyVAD(self.listen_config, initial_floor=self._noise_floor)
+            self._vad = EnergyVAD(config, initial_floor=self._noise_floor)
         self._listen_started = self._clock()
+        self._listen_timeout = timeout
         self._timeout_posted = False
         self._listen_source = source
         if not self._open_input(lambda chunk, g=gen: self._on_listen_audio(chunk, g)):
@@ -455,7 +467,7 @@ class VoiceService:
                 audio = event.audio
                 self._post(lambda a=audio, g=gen: self._utterance_ready(a, g))
         if not ended and not talking and not self._timeout_posted \
-                and now - self._listen_started > self.no_speech_timeout:
+                and now - self._listen_started > self._listen_timeout:
             self._timeout_posted = True
             self._post(lambda g=gen: self._no_speech(g))
         if self._on_level is not None and now - self._last_level_post >= 0.1:

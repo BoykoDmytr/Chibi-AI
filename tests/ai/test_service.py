@@ -810,3 +810,26 @@ def test_submit_from_all_purposes_and_main_thread_delivery_of_errors(make):
     for out in outs:
         assert out.threads == {threading.main_thread().name}
     assert isinstance(outs[0].error, ProviderError)
+
+
+def test_a_queued_screen_frame_never_runs_on_a_provider_configured_after_it(make):
+    # Vision checked the provider that was current when it sent the frame; the
+    # settings can switch to another (a cloud one) before the worker gets to it.
+    gate = threading.Event()
+    local = FakeProvider(["chat"], gate=gate)
+    h = make(local)
+    h.submit(Purpose.CHAT, "running")
+    wait_started(local)
+    frame = Outcome()
+    h.service.submit(GenerationRequest(system="s", purpose=Purpose.VISION, json_mode=True, turns=(
+        ChatTurn(Role.USER, "Що тут?", images=(ImageInput(b"\x89PNG-bytes"),)),)),
+        on_done=frame.on_done, on_error=frame.on_error)
+    text_line, _ = h.submit(Purpose.REACTION, "без картинок")
+    other = FakeProvider(['{"scene": "menu"}', "ok"])
+    h.provider = other
+    h.settings.ai.model = "another-model"
+    h.service.reconfigure()
+    gate.set()
+    h.wait(frame, text_line)
+    assert isinstance(frame.error, CancelledError)
+    assert [r.turns[0].text for r in other.requests] == ["без картинок"]  # text requests carry on

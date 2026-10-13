@@ -673,3 +673,21 @@ def test_html_artefacts_are_removed_from_replies(make):
     reply = h.chat("привіт")[1]
     assert "<br>" not in reply.text and "<b>" not in reply.text
     assert "Привіт!" in reply.text and "<3" in reply.text
+
+
+def test_vision_lines_carry_what_she_saw(make):
+    h = make(["<<state=surprised;action=none>>\nОго, бос величезний!"])
+    h.context = BrainContext(game_title="Elden Ring", observation="combat/boss_fight: бій з <b>босом</b>")
+    speech = h.phrase(("vision.look.combat", "vision.look"), {"game": "Elden Ring"}, solicited=True)
+    assert speech is not None and speech.text == "Ого, бос величезний!"
+    turn = h.submitted[0].turns[0].text
+    # Untrusted model text, escaped inside its data tag.
+    assert "<observation>combat/boss_fight: бій з &lt;b&gt;босом&lt;/b&gt;</observation>" in turn
+    assert "попросив тебе подивитися" in turn  # vision.look.* has its own description
+
+
+def test_vision_line_without_an_observation_is_never_made_up(make):
+    h = make(["<<state=happy;action=none>>\nБачу гарний захід сонця!"])
+    h.context = BrainContext(observation=None)  # nothing seen, or not shareable with this provider
+    assert h.phrase(("vision.look",), solicited=True) is None
+    assert h.submitted == []

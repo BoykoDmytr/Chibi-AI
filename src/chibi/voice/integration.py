@@ -24,8 +24,9 @@ Speech routing: the controller hands every :class:`SpeechRequested` to
 that should be voiced is queued on the service and its bubble appears when
 its audio starts, for as long as the audio lasts; a line that is not voiced
 - or whose synthesis fails, or that is dropped - is shown as text at once.
-No line is ever lost, except one the user cut off (a click on her, the
-push-to-talk key).  Like the controller's own queue, voiced lines she chose
+No line is ever lost, except her own lines the user cut off (a click on her,
+the push-to-talk key); an answer to the user that was cut off before it was
+heard is shown as text.  Like the controller's own queue, voiced lines she chose
 by herself are dropped - even mid-sentence - when the user asks for quiet,
 turns on Do Not Disturb or stops observation; answers to the user stay.
 
@@ -695,12 +696,14 @@ class VoiceIntegration(QObject):
         if line.announced:
             line.announced = False
             self._bus.publish(SpeechPlayback(playing=False))
-        if line.cancelled:
-            return  # "помовч" / DND / stop watching: not said, not shown
-        if outcome == "interrupted" and not self._system_interrupt:
-            return  # the user cut her off: the line is not shown either
-        # Failed, dropped, an empty clip, or interrupted by a settings change:
-        # never lose the line - show it as text.
+        if line.cancelled or self._closed:
+            return  # "помовч" / DND / stop watching / app exit: not said, not shown
+        if outcome == "interrupted" and not self._system_interrupt and not line.event.solicited:
+            return  # the user cut her off: her own lines are not shown either
+        # Failed, dropped, an empty clip, interrupted by a settings change - or an
+        # answer still waiting behind the line the user cut off (the service drops
+        # its whole queue): never lose the line - show it as text.  One already
+        # showing (its audio had started) stays as it is.
         self._show(line, None)
 
     def _forget(self, line: _Routed) -> None:
@@ -942,7 +945,7 @@ class VoiceIntegration(QObject):
         if self._hotkey is None or self._hotkey_key is None or service is None or self._closed:
             return  # stopped meanwhile (revoke, kill switch)
         if self._hotkey_key[1] == "hold":
-            service.listen("hotkey")
+            service.listen("hotkey", hold=True)
         else:
             service.toggle_listening("hotkey")
 

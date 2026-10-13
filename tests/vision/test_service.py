@@ -239,6 +239,20 @@ def test_unconfirmed_event_does_not_react():
     assert [d.action for _, d in h.seen] == ["confirm", "ignore"]
 
 
+def test_a_model_that_keeps_changing_its_mind_does_not_bypass_the_interval():
+    # On an end-of-match screen the model may say "level up", then "achievement", then
+    # "level up"...  Each answer is a new event awaiting confirmation; chaining forced
+    # confirmation frames every 3 s would analyse (and pay for) ~10x more frames.
+    level_up = obs("level_up", "gameplay", 0.9)
+    achievement = obs("achievement", "gameplay", 0.9)
+    h = H(analyzer=Analyzer([level_up, achievement] * 50))
+    for _ in range(60):
+        h.advance(1)
+    assert len(h.analyzer.calls) <= 4  # each regular frame + at most one confirmation
+    assert [d.action for _, d in h.seen[:2]] == ["confirm", "ignore"]
+    assert all(d.action != "react" for _, d in h.seen)
+
+
 def test_quiet_mode_still_observes_but_never_reacts():
     death = obs("player_death", "death_screen", 0.95)
     h = H(analyzer=Analyzer([death, death]))
@@ -270,6 +284,23 @@ def test_analyzer_failure_pauses_and_reports_budget():
     assert h.errors == ["Ліміт ШІ на сьогодні вичерпано."]
     h.advance(100)
     assert len(h.capture.calls) == 1
+
+
+def test_every_failed_request_says_why():
+    # Automatic failures are reported once; a user who asks again must not be
+    # left with "Зараз гляну!" and silence (the reason only after a minute).
+    budget = AnalyzerError("x", user_message="Ліміт ШІ на сьогодні вичерпано.", retry_after=600, budget=True)
+    h = H(mode=VisionMode.MANUAL, analyzer=Analyzer([budget]))
+    for expected in (1, 2):
+        assert h.service.request()
+        h.worker.run()
+        assert h.errors == ["Ліміт ШІ на сьогодні вичерпано."] * expected
+    h = H(mode=VisionMode.MANUAL)
+    h.capture.error = CaptureError("black")
+    for expected in (1, 2):
+        assert h.service.request()
+        h.worker.run()
+        assert len(h.errors) == expected and "Вікно без рамки" in h.errors[-1]
 
 
 def test_manual_mode_only_on_request():

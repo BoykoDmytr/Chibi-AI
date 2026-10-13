@@ -6,6 +6,8 @@ the keepsakes she keeps forever.
   just pay nothing); the first start of a calendar day adds
   :data:`DAILY_START_BONUS`.  There is deliberately no streak: missing a day
   costs nothing, and nothing ever takes stars away except a purchase.
+  Days only move forward: a clock turned back (or a time zone change)
+  neither repeats a day's bonus nor reopens its cap.
 * :class:`GiftCatalog` - ``data/gifts.json``.  A broken entry is skipped with
   a warning (one typo must not empty the shop).
 * :class:`GiftService` - buying and giving.  A *treat* is consumed when
@@ -166,8 +168,9 @@ class Wallet:
 
     @property
     def earned_today(self) -> int:
-        """Stars earned from games today (0 once the day has changed)."""
-        return self._earned_today if self._earned_day == self._today() else 0
+        """Stars earned from games today (0 once the day has changed).  A clock
+        turned back keeps counting against the later day (see :meth:`_roll_day`)."""
+        return self._earned_today if self._earned_day >= self._today() else 0
 
     def remaining_today(self) -> int:
         return max(0, self._daily_cap - self.earned_today)
@@ -250,7 +253,9 @@ class Wallet:
         """The app started: on the first start of a calendar day, a little gift
         of stars.  No streak - yesterday does not matter.  Returns the bonus."""
         today = self._today()
-        if self._bonus_day == today or self._daily_bonus <= 0:
+        # Only a later day counts: a clock turned back (or a time zone change)
+        # must not hand out a day's bonus twice.  ISO dates compare as strings.
+        if today <= self._bonus_day or self._daily_bonus <= 0:
             return 0
         self._bonus_day = today
         self._stars = min(MAX_STARS, self._stars + self._daily_bonus)
@@ -285,7 +290,9 @@ class Wallet:
 
     def _roll_day(self) -> None:
         today = self._today()
-        if self._earned_day != today:
+        # Days only move forward: going back to an earlier date must not reopen
+        # the cap (back and forth again would otherwise reset it every time).
+        if today > self._earned_day:
             self._earned_day = today
             self._earned_today = 0
 

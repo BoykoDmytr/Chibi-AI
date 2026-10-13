@@ -342,9 +342,12 @@ class ReactionEngine:
 
     # -- gating ---------------------------------------------------------------------------
 
-    def can_speak_unsolicited(self, *, ignore_gap: bool = False) -> bool:
-        """Would an unsolicited line be allowed right now (ignoring per-rule cooldowns)?"""
-        return self._blocked_reason(self._settings(), ignore_gap=ignore_gap) is None
+    def can_speak_unsolicited(self, *, ignore_gap: bool = False, ignore_fullscreen: bool = False) -> bool:
+        """Would an unsolicited line be allowed right now (ignoring per-rule cooldowns)?
+        ``ignore_fullscreen`` for screen vision, which exists to comment on (often
+        fullscreen) games - voiced only while she is hidden."""
+        return self._blocked_reason(self._settings(), ignore_gap=ignore_gap,
+                                    ignore_fullscreen=ignore_fullscreen) is None
 
     def note_unsolicited(self) -> None:
         """Count an unsolicited line said by another component (the decision engine)
@@ -358,13 +361,14 @@ class ReactionEngine:
         """The composer every line goes through (shared with the decision engine)."""
         return self._composer
 
-    def _blocked_reason(self, settings: Settings, *, ignore_gap: bool = False) -> str | None:
+    def _blocked_reason(self, settings: Settings, *, ignore_gap: bool = False,
+                        ignore_fullscreen: bool = False) -> str | None:
         self._expire_quiet()
         if settings.behavior.do_not_disturb or self._dnd_override:
             return "do not disturb"
         if self._quiet:
             return "quiet mode"
-        if self._fullscreen:
+        if self._fullscreen and not ignore_fullscreen:
             return "fullscreen"
         now = self._clock.monotonic()
         while self._spoken and now - self._spoken[0] >= BUDGET_WINDOW_SECONDS:

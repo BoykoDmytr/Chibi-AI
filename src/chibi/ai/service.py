@@ -161,6 +161,9 @@ class _Job:
     provider: TextProvider | None = None
     #: Delivered instead of CancelledError when the service aborted the job.
     abort_error: Exception | None = None
+    #: A request with images (a screen frame) runs only on the provider that was current
+    #: when it was submitted: its sender checked that one, not one configured later.
+    bound_provider: TextProvider | None = None
 
 
 class AIService(QObject):
@@ -267,6 +270,7 @@ class AIService(QObject):
             seq=next(self._seq), kind="generate", rank=purpose.rank, request=request,
             on_done=on_done, on_error=on_error, on_delta=on_delta, token=_JobToken(caller_token),
             stream=on_delta is not None and self._settings().ai.stream, cache_key=cache_key,
+            bound_provider=provider if any(t.images for t in request.turns) else None,
         )
         self._enqueue(job)
         return caller_token
@@ -569,6 +573,10 @@ class AIService(QObject):
                 error = self._build_error
             reason = user_message(error) if error is not None else REASON_OFF
             self._fail(job, AIOfflineError("AI off", user_message=reason))
+            return
+        if job.bound_provider is not None and provider is not job.bound_provider:
+            log.info("AI provider changed while an image request waited; it was dropped")
+            self._fail(job, CancelledError("provider changed"))
             return
         attempt = 0
         while True:

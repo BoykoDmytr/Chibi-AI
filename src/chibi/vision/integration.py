@@ -70,7 +70,7 @@ from chibi.core.events import (
 )
 from chibi.core.worker import SerialWorker
 from chibi.gaming.games_db import GameDatabase, normalize_process, title_from_exe
-from chibi.personality.reactions import speakable_title
+from chibi.personality.reactions import budget_limit, speakable_title
 from chibi.personality.text_uk import normalize as normalize_text
 from chibi.personality.text_uk import plural
 from chibi.privacy.filters import PrivacyFilter
@@ -391,6 +391,7 @@ class VisionIntegration(QObject):
         self._rules = self._build_rules(s)
         self._local_only = s.vision.local_only
         self._forget_private()
+        self._drop_disallowed_target()
         try:
             mode = VisionMode(s.vision.mode)
         except ValueError:
@@ -420,9 +421,9 @@ class VisionIntegration(QObject):
         self._min_confidence = s.vision.min_confidence
         self._service.policy.config = PolicyConfig(
             min_confidence=s.vision.min_confidence,
-            # The user's hard cap on unsolicited lines applies to what she sees too.
-            reactions_per_hour=min(reactions_per_hour(s.gaming.reaction_frequency),
-                                   s.behavior.max_unsolicited_per_hour),
+            # The user's cap on unsolicited lines applies to what she sees too - the
+            # shared budget as the reaction engine computes it, not the raw slider.
+            reactions_per_hour=min(reactions_per_hour(s.gaming.reaction_frequency), budget_limit(s)),
             allow_spoilers=s.gaming.hints_and_spoilers,
         )
         self._service.high_load = self._high_load and s.vision.adapt_to_load
@@ -469,9 +470,12 @@ class VisionIntegration(QObject):
 
     def latest_observation(self) -> str | None:
         """``"<scene>/<event>: <description>"`` of the newest observation younger than
-        two minutes, for the AI brain's context (sanitised, untrusted text)."""
+        two minutes, for the AI brain's context (sanitised, untrusted text).  None
+        when the current AI provider may not receive screen content: a description
+        seen by a local model never reaches a cloud one without ``CLOUD_VISION``, nor
+        while "Лише локальний аналіз" is on."""
         latest = self._latest
-        if latest is None or not self._capture_allowed():
+        if latest is None or not self._screen_data_may_leave():
             return None
         observation, seen_at, _process = latest
         if self._clock.monotonic() - seen_at > FRESH_OBSERVATION_SECONDS:
@@ -590,6 +594,19 @@ class VisionIntegration(QObject):
         return None
 
     @staticmethod
+    def _still_allowed(target: Target, rules: _Rules) -> bool:
+        """Would *target* still resolve under *rules*?  Same decision as
+        :meth:`_resolve_with` from what a target keeps (its process name): the exe
+        path only matters for heuristic matches, whose id is ``exe:<process>``."""
+        name = target.process_name
+        if rules.privacy.is_private_process(name):
+            return False
+        if name in rules.allowed_processes or f"exe:{name}" in rules.allowed_games:
+            return True
+        match = rules.games.match(name)
+        return match is not None and match.game_id in rules.allowed_games
+
+    @staticmethod
     def _is_own(info: ForegroundInfo, rules: _Rules) -> bool:
         return info.pid == rules.own_pid or (bool(info.hwnd) and info.hwnd in rules.own_windows)
 
@@ -608,7 +625,14 @@ class VisionIntegration(QObject):
         AI service rebuilds its provider the moment settings are applied, before our
         SettingsChanged arrives, so a frame captured for a local model could otherwise
         reach a cloud provider without CLOUD_VISION."""
-        if self._closed or self._analyzer is None or not self._capture_allowed():
+        if self._closed or self._analyzer is None:
+            return False
+        return self._screen_data_may_leave()
+
+    def _screen_data_may_leave(self) -> bool:
+        """Something taken from the screen (a frame, or what the model said about one)
+        may go to the AI provider the app is configured with *now* (main thread)."""
+        if not self._capture_allowed():
             return False
         s = self._read_settings()
         if not is_cloud(s.ai):
@@ -667,7 +691,11 @@ class VisionIntegration(QObject):
                     log.exception("counting a vision line failed")
         elif manual:
             self._end_manual()
-            self._composer.compose(*self._answer_keys(observation), solicited=True, **variables)
+            # An event that still needed its second frame (it never came, or showed
+            # something else) is not claimed as certain.
+            confirmed = observation.confirmed or not observation.needs_confirmation
+            self._composer.compose(*self._answer_keys(observation, confirmed=confirmed), solicited=True,
+                                   **variables)
 
     def _on_error(self, message: str) -> None:
         user = self._in_request or (self._manual_until is not None
@@ -679,7 +707,7 @@ class VisionIntegration(QObject):
     # ------------------------------------------------------------------ bus handlers
 
     def _on_settings_changed(self, event: SettingsChanged) -> None:
-        if event.section in ("", "vision", "gaming", "ai", "activity", "behavior"):
+        if event.section in ("", "vision", "gaming", "ai", "activity", "behavior", "personality"):
             self.reconfigure()
 
     def _on_permission_changed(self, event: PermissionChanged) -> None:
@@ -932,6 +960,22 @@ class VisionIntegration(QObject):
         if purged:
             self._service.recent.clear()  # the model's "previous scene" context
             log.info("forgot what she saw of an app that became private")
+
+    def _drop_disallowed_target(self) -> None:
+        """The app being watched became private or left the allowed lists: abandon its
+        frame in flight - a request still queued for the AI never leaves, and an answer
+        never becomes something she knows or says (the service ignores late results)."""
+        target = self._service.target
+        try:
+            allowed = target is None or self._still_allowed(target, self._rules)
+        except Exception:
+            log.exception("vision target re-check failed")
+            allowed = False
+        if allowed:
+            return
+        if self._analyzer is not None:
+            self._analyzer.cancel_current()
+        self._service.stop()
 
     def _notify(self, message: str, *, user: bool) -> None:
         """Tell the user, without repeating the same automatic problem every minute."""

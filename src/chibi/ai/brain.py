@@ -557,8 +557,17 @@ class AIBrain:
             # Nothing remembered (or memories off): the model would have to invent one.
             _safe_call(on_done, None)
             return
+        observation = None
+        if key.startswith("vision."):
+            context = self._brain_context()
+            observation = context.observation if context is not None else None
+            if not observation:
+                # Asked what she sees, with nothing seen (or no longer shareable): the
+                # phrase bank answers instead of a model that would invent a scene.
+                _safe_call(on_done, None)
+                return
         turn = build_event_turn(keys, values, facts, self._examples(keys, values, settings),
-                                recent=tuple(self._recent.get(key, ())))
+                                recent=tuple(self._recent.get(key, ())), observation=observation)
         request = GenerationRequest(
             system=build_persona(settings),
             turns=(ChatTurn(Role.USER, turn),),

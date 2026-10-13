@@ -305,3 +305,24 @@ def test_vision_and_voice_stop_before_the_ai_service(make_app, monkeypatch):
         monkeypatch.setattr(obj, "shutdown", lambda n=name, f=original: (order.append(n), f()))
     app.shutdown()
     assert order == ["vision", "voice", "ai"]
+
+
+def test_voice_menu_item_says_what_a_click_does(make_app, monkeypatch):
+    app = make_app()
+    app.start()
+    status = replace(app._voice.status(), stt_ready=True, state="standby")
+    monkeypatch.setattr(app._voice, "status", lambda: status)
+    app._refresh_menus()
+    assert app._act_voice.text() == "Сказати голосом"  # waiting for her name: a click starts talking
+    status = replace(status, state="listening")
+    app._refresh_menus()
+    assert app._act_voice.text() == "Перестати слухати"
+
+
+def test_wipe_all_also_withdraws_the_cloud_ai_consent(make_app, monkeypatch):
+    app = make_app()
+    app.start()
+    app.permissions.grant(Permission.CLOUD_AI)
+    monkeypatch.setattr(app_module.QTimer, "singleShot", lambda *_a: None)
+    app.wipe_all()
+    assert not any(app.permissions.snapshot().values())

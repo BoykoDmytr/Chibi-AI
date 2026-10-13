@@ -496,6 +496,25 @@ def test_daily_start_bonus_once_per_calendar_day(bus, db, clock, rec):
     assert third.needs.friendship_xp == 10.0
 
 
+def test_a_clock_turned_back_does_not_repeat_the_daily_bonus(bus, db, clock):
+    noon = local_noon()
+    clock.set_now(noon)
+    repo = StateRepository(db, clock)
+    svc = TamagotchiService(bus, repo, clock)
+    svc.load()
+    bus.publish(AppStarted())
+    bus.dispatch_pending()
+    assert svc.needs.friendship_xp == 5.0
+    for when in (noon - DAY, noon):  # back a day, then forward again: nothing new
+        svc.close()
+        clock.set_now(when)
+        svc = TamagotchiService(bus, repo, clock)
+        svc.load()
+        bus.publish(AppStarted())
+        bus.dispatch_pending()
+        assert svc.needs.friendship_xp == 5.0
+
+
 def test_daily_bonus_before_load_is_applied_after_load(bus, repo, clock):
     repo.set("needs", Needs(friendship_xp=8).to_dict())
     svc = TamagotchiService(bus, repo, clock)

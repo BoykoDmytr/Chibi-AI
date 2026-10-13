@@ -162,6 +162,8 @@ EVENT_DESCRIPTIONS: dict[str, str] = {
     "vision.new_area": "користувач потрапив у нову локацію гри; поділися враженням, без спойлерів",
     "vision.look": "користувач попросив тебе подивитися на екран; коротко скажи, що бачиш "
                    "(див. <observation>)",
+    "vision.look.": "користувач попросив тебе подивитися на екран; коротко скажи, що бачиш "
+                    "(див. <observation>)",
     "gift.": "користувач подарував тобі подарунок (назва в атрибуті gift); щиро подякуй",
     "gift.again": "користувач знову дарує тобі те, що ти вже маєш; подякуй тепло й з усмішкою",
     "game.start": "користувач відкрив міні-гру, щоб пограти з тобою",
@@ -484,7 +486,8 @@ def memory_blocks(memories: Iterable[object]) -> list[str]:
 
 
 def build_event_turn(keys: Sequence[str], variables: Mapping[str, object], facts: Iterable[object],
-                     examples: Sequence[str], *, recent: Sequence[str] = ()) -> str:
+                     examples: Sequence[str], *, recent: Sequence[str] = (),
+                     observation: str | None = None) -> str:
     """The user turn for one speech-bubble line.
 
     The event (its key, variables and related memories) and the phrase-bank
@@ -504,6 +507,10 @@ def build_event_turn(keys: Sequence[str], variables: Mapping[str, object], facts
     body = memory_blocks(facts)
     event = f"<event {' '.join(attributes)}>" + ("\n" + "\n".join(body) + "\n" if body else "") + "</event>"
     parts = [f"Подія: {describe_event(key)}.", event]
+    if observation:
+        # What vision saw (sanitised, untrusted model text): the vision.* descriptions
+        # refer to it, and without it a "що ти бачиш?" answer would be made up.
+        parts.append(f"<observation>{escape(observation, limit=600)}</observation>")
     shown = [escape(text) for text in examples[:EXAMPLE_COUNT] if text and text.strip()]
     if shown:
         parts.append("Приклади реплік на таку подію — лише орієнтир для стилю, не повторюй їх дослівно:")

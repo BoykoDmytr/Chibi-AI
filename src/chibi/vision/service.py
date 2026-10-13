@@ -365,7 +365,13 @@ class VisionService:
             observation = replace(observation, app_title=target.title, at=time.time())
             self.recent.append(observation)
             decision = self.policy.consider(observation, quiet=self._quiet())
-            if decision.action == "confirm":
+            if decision.action == "confirm" and reason == "confirm":
+                # The confirmation frame shows yet another event: the model is unsure.
+                # No third frame - a model that keeps changing its mind would otherwise
+                # be asked every few seconds, whatever the interval; the next regular
+                # frame starts over.
+                decision = Decision("ignore", "unconfirmed", decision.score, observation=decision.observation)
+            elif decision.action == "confirm":
                 self._confirm_due = now + CONFIRM_DELAY
             self._quiet_streak = 0 if observation.notable else self._quiet_streak + 1
             if self._on_observation is not None:
@@ -375,7 +381,7 @@ class VisionService:
         elif kind == "capture_error":
             self._capture_failures += 1
             error: CaptureError = payload
-            self._report_once(f"capture:{error.reason}", error.user_message)
+            self._report_once(f"capture:{error.reason}", error.user_message, always=reason == "manual")
             if error.reason == "black":
                 self._next_due = now + self._effective_interval() * 4
             if self._capture_failures >= MAX_CAPTURE_FAILURES:
@@ -383,7 +389,8 @@ class VisionService:
                 return
         elif kind == "analyzer_error":
             error_a: AnalyzerError = payload
-            self._report_once("budget" if error_a.budget else "analyzer", error_a.user_message)
+            self._report_once("budget" if error_a.budget else "analyzer", error_a.user_message,
+                              always=reason == "manual")
             self._pause(now + max(30.0, error_a.retry_after), "analysis failed")
             return
         elif kind == "bad_answer":
@@ -400,8 +407,10 @@ class VisionService:
         self._backoff_until = until
         self._set_state(VisionState.PAUSED, reason)
 
-    def _report_once(self, key: str, message: str) -> None:
-        if key in self._reported:
+    def _report_once(self, key: str, message: str, *, always: bool = False) -> None:
+        """Automatic failures are reported once; ``always`` when the user asked
+        (a request must get its answer, not silence)."""
+        if key in self._reported and not always:
             return
         self._reported.add(key)
         self._error(message)

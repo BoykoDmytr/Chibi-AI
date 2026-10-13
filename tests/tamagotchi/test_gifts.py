@@ -137,6 +137,34 @@ def test_daily_start_bonus_once_per_day_without_streaks(wallet, clock):
     assert wallet.stars == 10
 
 
+def test_a_clock_turned_back_does_not_repeat_the_bonus(wallet, repo, clock):
+    today = clock.now()
+    assert wallet.daily_start() == 5
+    clock.set_now(today - DAY)  # the clock goes back a day (or the time zone changes)...
+    restarted = Wallet(repo, clock)
+    restarted.load()
+    assert restarted.daily_start() == 0
+    clock.set_now(today)  # ...and forward again: today's bonus was already paid
+    assert restarted.daily_start() == 0
+    assert restarted.stars == 5
+    clock.set_now(today + DAY)  # a really new day
+    assert restarted.daily_start() == 5
+
+
+def test_a_clock_turned_back_does_not_reopen_the_daily_cap(wallet, clock):
+    today = clock.now()
+    assert wallet.earn(DAILY_EARN_CAP) == DAILY_EARN_CAP
+    clock.set_now(today - DAY)
+    assert wallet.earned_today == DAILY_EARN_CAP and wallet.remaining_today() == 0
+    assert wallet.earn(10) == 0
+    clock.set_now(today)
+    assert wallet.earn(10) == 0
+    assert wallet.stars == DAILY_EARN_CAP
+    clock.set_now(today + DAY)
+    assert wallet.earned_today == 0
+    assert wallet.earn(10) == 10
+
+
 def test_daily_bonus_does_not_count_towards_the_game_cap(wallet):
     wallet.daily_start()
     assert wallet.earned_today == 0

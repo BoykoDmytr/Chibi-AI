@@ -950,3 +950,12 @@ def test_spoken_rest_lines_keep_her_asleep(bus, db, clock):
     rest = InteractionOutcome(kind=InteractionKind.REST, outcome="sleep")
     states = {h.fire(rest)[0].state for _ in range(20)}
     assert states == {"sleep"}
+
+
+def test_vision_may_ignore_fullscreen_but_never_dnd_quiet_or_the_budget(h, clock):
+    h.fire(FullscreenChanged(active=True))
+    assert not h.engine.can_speak_unsolicited(ignore_gap=True)
+    assert h.engine.can_speak_unsolicited(ignore_gap=True, ignore_fullscreen=True)
+    for _ in range(budget_limit(h.settings)):
+        h.engine.note_unsolicited()
+    assert not h.engine.can_speak_unsolicited(ignore_gap=True, ignore_fullscreen=True)

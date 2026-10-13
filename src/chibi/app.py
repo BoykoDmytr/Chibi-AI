@@ -240,7 +240,10 @@ class ChibiApp(QObject):
         self._vision = VisionIntegration(
             self.bus, lambda: self._settings, self.permissions, self._ai, self._composer, self._clock,
             games=lambda: self._games, memory=self._memory, backend=self._backend,
-            quiet=lambda: self._reactions.quiet_active or self._settings.behavior.do_not_disturb,
+            # Every unsolicited line passes the reaction engine's gate: DND, quiet mode and
+            # the shared hourly budget (vision has its own cooldowns, and fullscreen games
+            # are what it is for).
+            quiet=lambda: not self._reactions.can_speak_unsolicited(ignore_gap=True, ignore_fullscreen=True),
             on_spoken=self._reactions.note_unsolicited, notify=self._vision_notice,
             own_windows=self._controller.own_window_ids, parent=self,
         )
@@ -664,6 +667,11 @@ class ChibiApp(QObject):
 
     def wipe_all(self) -> None:
         self.permissions.stop_all_observation()
+        # Cloud AI is not observation, but "everything" includes that consent too:
+        # its stored row goes with the database, so the grant in memory must go now.
+        for permission in Permission:
+            if self.permissions.is_granted(permission):
+                self.permissions.revoke(permission)
         self._monitor.stop(timeout=2.0)
         self._sessions.close()
         self._db.wipe_all()
@@ -823,8 +831,9 @@ class ChibiApp(QObject):
         self._act_stop.setEnabled(observing)
         voice = self._voice.status()
         self._act_voice.setEnabled(voice.stt_ready)
-        self._act_voice.setText("Перестати слухати" if voice.state in ("listening", "standby")
-                                else "Сказати голосом")
+        # Standby (waiting for her name) is not "listening to you": the item still
+        # starts push-to-talk there, so it must not promise to stop the microphone.
+        self._act_voice.setText("Перестати слухати" if voice.state == "listening" else "Сказати голосом")
         self._act_voice.setToolTip("" if voice.stt_ready else voice.stt_reason)
         if self._tray is not None:
             self._act_tray_dnd.setChecked(dnd)
