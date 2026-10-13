@@ -166,7 +166,8 @@ def test_short_number_groups_are_not_a_card():
     "1 " * 25_000,
     "пароль від " * 5_000,
     "+1 " * 15_000,
-])
+], ids=["letters", "dots", "digits", "digits-at", "letters-at", "spaced-digits", "password-words",
+        "phone-prefixes"])  # short ids: pytest puts the id into an env var (32 KB max on Windows)
 def test_detection_is_linear_on_pathological_input(text):
     # A backtracking pattern turns these into seconds (quadratic); linear checks take milliseconds.
     started = time.perf_counter()
