@@ -35,4 +35,4 @@ jobs:
         if: runner.os == 'Windows'
         env:
           QT_QPA_PLATFORM: windows
-        run: python -m pytest -q tests/desktop/test_platform_win.py
+        run: python -m pytest -q tests/desktop/test_platform_win.py tests/vision/test_capture_win.py
